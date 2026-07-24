@@ -290,3 +290,48 @@ Gate before Phase 3: `pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test
 3. **New tenant bootstrap (F3)**: Fresh tenant admin opens `/apps` → sees empty list → pastes downloaded service-account JSON, enters `admin@corp.example` → Register → appears in list, textarea cleared → goes to `/accounts`, runs sync (existing SyncControl). Pasting truncated JSON → inline "invalid service account JSON" before any network request. Clicking Register twice → second attempt 409 "already registered".
 4. **Label lifecycle (F2)**: An orphan gets matched after HR fixes a typo'd email → account now `matched` but still carries stale "External collaborator" label → user opens Label → Clear → chip gone. (Auto-expiry of labels on status change is deliberately out — human judgement stays authoritative; noted under SC12/labeling-v2.)
 5. **Session expiry mid-flow**: Any fetch from `/import`, `/apps`, or `LabelControl` hitting 401 routes to `/login`; after re-login the user returns via nav (no deep-link restore — matches existing pages' behavior).
+
+## Implementation Checklist
+
+Step 2-1 impact analysis (2026-07-24). Mechanical scans: `scan-shared-utils.sh` ran (sparse output — repo has no `lib/`-style shared dirs at root; monorepo packages ARE the shared layer); `build-codebase-fingerprint.sh` FAILED on macOS bash 3.2 (`declare -A` unsupported) — recorded as tooling deviation; manual inventory below substitutes. CI gate parity: workflow gates = pnpm lint / typecheck / test:unit / test:integration / compose-smoke — all runnable locally (compose smoke via docker compose); no CI-only grep gates; no pre-pr aggregate script exists.
+
+### Files to create
+- `packages/schema/migrations/0003_account_labels.sql` (C10)
+- `apps/api/src/routes/account-labels.ts` (C11)
+- `apps/web/src/lib/polling.ts` (C12 — extracted POLL_INTERVAL_MS / POLL_TIMEOUT_MS / pollJob)
+- `apps/web/src/app/import/page.tsx` (C12)
+- `apps/web/src/app/apps/page.tsx` (C13)
+- `apps/web/src/components/SaasAppForm.tsx` (C13)
+- `apps/web/src/components/LabelControl.tsx` (C14)
+- `docs/manual-tests/ui-import.md`, `ui-saas-apps.md`, `ui-labeling.md`
+
+### Files to modify
+- `packages/schema/src/tables.ts` — accountLabels mirror + tenantScopedTables (7→8)
+- `packages/schema/test/*` — member-set/RLS test extension (T-C1; check existing tables.test.ts assertion of 7)
+- `packages/api-types/src/index.ts` — AccountLabelKind/AccountLabel/AccountLabelResponse; AccountListItem.label; SaasAppListItem/SaasAppListResponse/SaasAppCreateResponse
+- `apps/api/src/app.ts` — onRoute capture extended with rateLimit config presence (T-L9); register account-labels route in authenticated scope
+- `apps/api/src/routes/accounts.ts` — LEFT JOIN account_labels; label field mapping
+- `apps/api/src/routes/saas-apps.ts` — 23505+constraint-name → 409; switch local types to api-types imports
+- `apps/api/test/api.integration.test.ts` — T-L1..T-L9, T-S1
+- `apps/worker/test/match.integration.test.ts` — T-W1
+- `apps/web/src/lib/api-types.ts` — re-export new wire types
+- `apps/web/src/lib/csv-export.ts` + `apps/web/test/csv-export.test.ts` — label/labelNote columns (T-U1)
+- `apps/web/src/components/SyncControl.tsx` — retrofit: import from polling.ts, local consts removed
+- `apps/web/src/components/NavBar.tsx` — Import / Apps links
+- `apps/web/src/app/accounts/page.tsx` — label chip + LabelControl per row
+
+### Shared assets that MUST be reused (no reimplementation)
+- `withTenant` (`packages/schema/src/db.ts`) — every route DB access
+- `MUTATION_RATE_LIMIT` / `LIST_RATE_LIMIT` (`apps/api/src/rate-limits.ts`)
+- `csvField`/`neutralizeCell`/`quoteCsvCell` (`apps/web/src/lib/csv-export.ts`)
+- `apiFetch`/`apiGetJson` (`apps/web/src/lib/api-server.ts`) for server components
+- `POLL_INTERVAL_MS`/`POLL_TIMEOUT_MS`/`pollJob` — single source becomes `apps/web/src/lib/polling.ts`
+- Test helpers: `seedTenant`/`seedUser`/`loginAndGetCookie`/`importCsv` + Origin/401 sweeps (`apps/api/test/api.integration.test.ts`)
+- RLS block + GRANT pattern: copy verbatim shape from `0001_init.sql:100-166`
+
+### Patterns to follow consistently
+- zod `.strict()` + `safeParse` → 400 `{error:'invalid_*'}`; error shape `{error:'snake_case'}`
+- tenantId/userId ONLY from `req.sessionContext` (S7)
+- Route registration inside the `authenticated` scope in app.ts (gates auto-apply)
+- Client components fetch relative `/api/*`; server components use api-server helpers + `redirect('/login')` on 401
+- D9: integration tests assert `typeof`, direct SQL roundtrips
