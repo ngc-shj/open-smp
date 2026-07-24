@@ -14,6 +14,8 @@ export type {
   DiscoveryEventListItem,
   DiscoveryEventListResponse,
   JobState,
+  ImportRowIssue,
+  HrImportResponse,
   SaasAppListItem,
   SaasAppListResponse,
   SaasAppCreateResponse,

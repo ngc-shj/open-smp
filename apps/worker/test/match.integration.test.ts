@@ -156,4 +156,98 @@ describe('C5 runMatch acceptance', () => {
     });
     expect(events).toHaveLength(1);
   });
+
+  // T-W1 (import-labeling-saasapp-ui-plan, C10): account_labels is a
+  // dedicated table the matcher never reads or writes, so a manually-set
+  // label must survive a re-match unchanged even when the account's own
+  // link status flips underneath it.
+  it('manual label survives re-match unchanged while link status flips', async () => {
+    const labelIdentityId = randomUUID();
+    const labelAccountId = randomUUID();
+    const labelId = randomUUID();
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      // Identity's email deliberately does not match the account yet, so the
+      // first runMatch classifies the account's link as orphan.
+      await tx.query(
+        `INSERT INTO identities (id, tenant_id, employee_id, primary_email, display_name, status, left_at)
+         VALUES ($1, $2, 'emp-label', 'label-identity@example.com', 'Label Person', 'active', NULL)`,
+        [labelIdentityId, tenantId],
+      );
+      await tx.query(
+        `INSERT INTO saas_accounts (id, tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, $3, 'ext-label', 'label-account@example.com', 'Label Account', 'active', false)`,
+        [labelAccountId, tenantId, saasAppId],
+      );
+    });
+
+    await runMatch({ pool: appPool }, { tenantId });
+
+    const orphanStatus = await withTenant(appPool, tenantId, async (tx) => {
+      const { rows } = await tx.query<{ status: string }>(
+        'SELECT status FROM account_links WHERE tenant_id = $1 AND saas_account_id = $2',
+        [tenantId, labelAccountId],
+      );
+      return rows[0]?.status;
+    });
+    expect(orphanStatus).toBe('orphan');
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO account_labels (id, tenant_id, saas_account_id, kind, note, created_by)
+         VALUES ($1, $2, $3, 'known_shared', 'set before re-match', NULL)`,
+        [labelId, tenantId, labelAccountId],
+      );
+    });
+
+    type LabelRow = {
+      id: string;
+      tenant_id: string;
+      saas_account_id: string;
+      kind: string;
+      note: string | null;
+      created_by: string | null;
+      created_at: Date;
+      updated_at: Date;
+    };
+
+    const fetchLabel = () =>
+      withTenant(appPool, tenantId, async (tx) => {
+        const { rows } = await tx.query<LabelRow>('SELECT * FROM account_labels WHERE id = $1', [labelId]);
+        return rows[0];
+      });
+
+    const labelBeforeRematch = await fetchLabel();
+    expect(labelBeforeRematch).toBeDefined();
+
+    // Flip the identity's email to match the account, so the second
+    // runMatch turns this account's link from orphan into matched.
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query('UPDATE identities SET primary_email = $1 WHERE id = $2', [
+        'label-account@example.com',
+        labelIdentityId,
+      ]);
+    });
+
+    await runMatch({ pool: appPool }, { tenantId });
+
+    const matchedStatus = await withTenant(appPool, tenantId, async (tx) => {
+      const { rows } = await tx.query<{ status: string }>(
+        'SELECT status FROM account_links WHERE tenant_id = $1 AND saas_account_id = $2',
+        [tenantId, labelAccountId],
+      );
+      return rows[0]?.status;
+    });
+    expect(matchedStatus).toBe('matched');
+
+    const labelAfterRematch = await fetchLabel();
+    expect(labelAfterRematch).toBeDefined();
+    expect(labelAfterRematch?.id).toBe(labelBeforeRematch?.id);
+    expect(labelAfterRematch?.kind).toBe(labelBeforeRematch?.kind);
+    expect(labelAfterRematch?.note).toBe(labelBeforeRematch?.note);
+    expect(labelAfterRematch?.created_by).toBe(labelBeforeRematch?.created_by);
+    expect(labelAfterRematch?.created_at.getTime()).toBe(labelBeforeRematch?.created_at.getTime());
+    expect(labelAfterRematch?.updated_at.getTime()).toBe(labelBeforeRematch?.updated_at.getTime());
+    expect(labelAfterRematch?.tenant_id).toBe(tenantId);
+  });
 });

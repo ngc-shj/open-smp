@@ -105,4 +105,44 @@ describe('buildAccountsCsv wiring', () => {
     const csv = buildAccountsCsv([]);
     expect(csv.split('\r\n')).toHaveLength(1);
   });
+
+  it('includes label and labelNote columns in the header', () => {
+    const csv = buildAccountsCsv([]);
+    const header = csv.split('\r\n')[0]!;
+    expect(header).toContain('label');
+    expect(header).toContain('labelNote');
+  });
+
+  it('emits empty label cells for an unlabeled item', () => {
+    const csv = buildAccountsCsv([maliciousItem]);
+    const dataLine = csv.split('\r\n')[1]!;
+    const cells = dataLine.split(',');
+    // label, labelNote are the last two columns.
+    expect(cells.slice(-2)).toEqual(['""', '""']);
+  });
+
+  it('emits kind and note columns for a labeled item', () => {
+    const labeledItem: AccountListItem = {
+      ...maliciousItem,
+      label: { kind: 'service_account', note: 'Jenkins deploy bot' },
+    };
+
+    const csv = buildAccountsCsv([labeledItem]);
+    const dataLine = csv.split('\r\n')[1]!;
+
+    expect(dataLine).toContain('"service_account"');
+    expect(dataLine).toContain('"Jenkins deploy bot"');
+  });
+
+  it('neutralizes a label note starting with a dangerous character', () => {
+    const labeledItem: AccountListItem = {
+      ...maliciousItem,
+      label: { kind: 'known_shared', note: '=HYPERLINK("http://evil.example")' },
+    };
+
+    const csv = buildAccountsCsv([labeledItem]);
+    const dataLine = csv.split('\r\n')[1]!;
+
+    expect(dataLine).toContain("'=HYPERLINK");
+  });
 });

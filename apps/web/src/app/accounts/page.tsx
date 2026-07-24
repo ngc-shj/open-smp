@@ -7,6 +7,7 @@ import { EvidencePopover } from '@/components/EvidencePopover';
 import { CsvExportButton } from '@/components/CsvExportButton';
 import { SyncControl } from '@/components/SyncControl';
 import { NavBar } from '@/components/NavBar';
+import { LabelControl, LABEL_KIND_NAMES } from '@/components/LabelControl';
 
 const TABS: LinkStatus[] = ['orphan', 'ghost', 'ambiguous', 'matched'];
 
@@ -89,6 +90,7 @@ export default async function AccountsPage({
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Link</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Confidence</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Evidence</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Label</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
@@ -113,11 +115,21 @@ export default async function AccountsPage({
                   <td className="px-3 py-2">
                     <EvidencePopover link={item.link} />
                   </td>
+                  <td className="px-3 py-2">
+                    {item.label && (
+                      <span className="status-chip bg-neutral-200 text-neutral-700">
+                        {LABEL_KIND_NAMES[item.label.kind]}
+                      </span>
+                    )}
+                    <div className="mt-1">
+                      <LabelControl accountId={item.accountId} label={item.label} />
+                    </div>
+                  </td>
                 </tr>
               ))}
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-6 text-center text-neutral-400">
+                  <td colSpan={10} className="px-3 py-6 text-center text-neutral-400">
                     No accounts in this filter.
                   </td>
                 </tr>

@@ -8,6 +8,12 @@ export function NavBar() {
         <Link href="/accounts" className="text-sm text-neutral-600 hover:text-neutral-900">
           Accounts
         </Link>
+        <Link href="/import" className="text-sm text-neutral-600 hover:text-neutral-900">
+          Import
+        </Link>
+        <Link href="/apps" className="text-sm text-neutral-600 hover:text-neutral-900">
+          Apps
+        </Link>
         <Link href="/events" className="text-sm text-neutral-600 hover:text-neutral-900">
           Events
         </Link>

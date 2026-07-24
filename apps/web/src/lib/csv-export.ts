@@ -34,6 +34,8 @@ const CSV_HEADER = [
   'ruleId',
   'matchedValue',
   'candidates',
+  'label',
+  'labelNote',
 ];
 
 // Applies neutralizeCell to every attacker-influenced field (email,
@@ -61,6 +63,8 @@ export function buildAccountsCsv(items: AccountListItem[]): string {
       item.link?.ruleId ?? '',
       item.link?.evidence?.matchedValue ?? '',
       candidates,
+      item.label?.kind ?? '',
+      item.label?.note ?? '',
     ];
     rows.push(fields.map(csvField).join(','));
   }
