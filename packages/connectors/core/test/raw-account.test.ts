@@ -25,7 +25,7 @@ describe('rawAccountSchema', () => {
   });
 
   it('rejects an account missing externalId', () => {
-    const { externalId, ...withoutExternalId } = validAccount;
+    const { externalId: _externalId, ...withoutExternalId } = validAccount;
 
     const result = rawAccountSchema.safeParse(withoutExternalId);
 

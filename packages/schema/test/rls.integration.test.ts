@@ -85,9 +85,9 @@ async function seedTenant(tenantId: string): Promise<SeedIds> {
       [ids.userId, tenantId],
     );
     await tx.query(
-      `INSERT INTO sessions (id, user_id, tenant_id, expires_at)
-       VALUES ($1, $2, $3, now() + interval '1 day')`,
-      [ids.sessionId, ids.userId, tenantId],
+      `INSERT INTO sessions (id, user_id, tenant_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4, now() + interval '1 day')`,
+      [ids.sessionId, ids.userId, tenantId, `token-hash-${ids.sessionId}`],
     );
   });
 
@@ -164,9 +164,9 @@ function insertStatementFor(
       };
     case 'sessions':
       return {
-        text: `INSERT INTO sessions (id, user_id, tenant_id, expires_at)
-               VALUES ($1, $2, $3, now() + interval '1 day')`,
-        values: [newId, foreignSeed.userId, rowTenantId],
+        text: `INSERT INTO sessions (id, user_id, tenant_id, token_hash, expires_at)
+               VALUES ($1, $2, $3, $4, now() + interval '1 day')`,
+        values: [newId, foreignSeed.userId, rowTenantId, `token-hash-${newId}`],
       };
   }
 }
@@ -287,7 +287,6 @@ describe('C1 acceptance: WITH CHECK rejects a foreign tenant_id on INSERT', () =
     '%s: INSERT with tenant_id = tenant B under tenant A GUC is rejected',
     async (table) => {
       const aIds = seeds.get(tenantA)!;
-      const bIds = seeds.get(tenantB)!;
       const stmt = insertStatementFor(table, tenantA, tenantB, aIds, aIds);
 
       await expect(

@@ -1,0 +1,94 @@
+import Fastify, { type FastifyInstance } from 'fastify';
+import cookie from '@fastify/cookie';
+import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
+import type { AppDeps } from './deps.js';
+import { requireSession, UnauthorizedError } from './auth.js';
+import { registerLoginRoute } from './routes/login.js';
+import { registerLogoutRoute } from './routes/logout.js';
+import { registerHrImportRoute } from './routes/hr-import.js';
+import { registerSaasAppsRoute } from './routes/saas-apps.js';
+import { registerSyncMatchRoutes } from './routes/sync-match.js';
+import { registerAccountsRoute } from './routes/accounts.js';
+import { registerEventsRoute } from './routes/events.js';
+
+export type RegisteredRoute = { method: string; url: string };
+
+export function buildApp(deps: AppDeps): FastifyInstance {
+  const app = Fastify({ logger: true });
+
+  // Route-table introspection for the programmatic sweeps required by C6's
+  // acceptance criteria (401 sweep, Origin 403 sweep) — collected via onRoute
+  // rather than a hardcoded list, so new routes stay covered automatically.
+  const apiRoutes: RegisteredRoute[] = [];
+  app.addHook('onRoute', (routeOptions) => {
+    if (routeOptions.url.startsWith('/api/')) {
+      for (const method of [routeOptions.method].flat()) {
+        apiRoutes.push({ method, url: routeOptions.url });
+      }
+    }
+  });
+  app.decorate('apiRoutes', apiRoutes);
+
+  void app.register(cookie);
+  void app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
+  // In-memory store: MVP runs a single api instance (docker-compose), so a
+  // shared external rate-limit store is not required. Revisit if the api
+  // service is ever scaled horizontally.
+  void app.register(rateLimit, { global: false });
+
+  // Health endpoint is a GET, so the Origin gate below (non-GET only) never
+  // applies to it, and it is registered outside the /api scope entirely so
+  // the session-auth gate never applies either. This is intentional: the
+  // docker-compose smoke test polls this endpoint before any session exists.
+  app.get('/healthz', async () => ({ status: 'ok' }));
+
+  void app.register(
+    async (api) => {
+      // --- Gate 1: Origin (S9) ---
+      // Every non-GET request under /api, ZERO exemptions (login included),
+      // is rejected with 403 unless Origin matches APP_ORIGIN exactly.
+      // Registered as a global onRequest hook at the /api scope root so new
+      // routes are covered by default (fail-closed registration pattern).
+      api.addHook('onRequest', async (req, reply) => {
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          return;
+        }
+        const origin = req.headers.origin;
+        if (origin !== deps.appOrigin) {
+          return reply.code(403).send({ error: 'origin_mismatch' });
+        }
+      });
+
+      // --- Login lives OUTSIDE the session-auth gate (its single exemption) ---
+      registerLoginRoute(api, deps);
+
+      // --- Gate 2: session-auth (S9) ---
+      // Registered as a preHandler at this nested scope root, not per-route,
+      // so every route added below requires a valid session by default.
+      void api.register(async (authenticated) => {
+        authenticated.addHook('preHandler', async (req) => {
+          const sessionContext = await requireSession(deps.pool, req);
+          req.sessionContext = sessionContext;
+        });
+
+        registerLogoutRoute(authenticated, deps);
+        registerHrImportRoute(authenticated, deps);
+        registerSaasAppsRoute(authenticated, deps);
+        registerSyncMatchRoutes(authenticated, deps);
+        registerAccountsRoute(authenticated, deps);
+        registerEventsRoute(authenticated, deps);
+      });
+    },
+    { prefix: '/api' },
+  );
+
+  app.setErrorHandler((error, _req, reply) => {
+    if (error instanceof UnauthorizedError) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    throw error;
+  });
+
+  return app;
+}

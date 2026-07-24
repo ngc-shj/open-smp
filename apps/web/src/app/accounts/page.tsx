@@ -1,0 +1,143 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { apiFetch } from '@/lib/api-server';
+import type { AccountListItem, AccountListResponse, LinkStatus } from '@/lib/api-types';
+import { StatusChip } from '@/components/StatusChip';
+import { EvidencePopover } from '@/components/EvidencePopover';
+import { CsvExportButton } from '@/components/CsvExportButton';
+import { SyncControl } from '@/components/SyncControl';
+import { NavBar } from '@/components/NavBar';
+
+const TABS: LinkStatus[] = ['orphan', 'ghost', 'ambiguous', 'matched'];
+
+async function fetchAccounts(status: string, cursor: string | undefined): Promise<AccountListResponse> {
+  const params = new URLSearchParams({ status });
+  if (cursor) params.set('cursor', cursor);
+
+  const res = await apiFetch(`/api/accounts?${params.toString()}`);
+
+  if (res.status === 401) {
+    redirect('/login');
+  }
+  if (!res.ok) {
+    throw new Error(`failed to load accounts: ${res.status}`);
+  }
+
+  return (await res.json()) as AccountListResponse;
+}
+
+function latestSync(items: AccountListItem[]): string | null {
+  let latest: string | null = null;
+  for (const item of items) {
+    if (!latest || item.lastSyncedAt > latest) latest = item.lastSyncedAt;
+  }
+  return latest;
+}
+
+export default async function AccountsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string; cursor?: string }>;
+}) {
+  const params = await searchParams;
+  const status = TABS.includes(params.status as LinkStatus) ? (params.status as LinkStatus) : 'orphan';
+  const cursor = params.cursor;
+
+  const { items, nextCursor } = await fetchAccounts(status, cursor);
+  const appKeys = [...new Set(items.map((item) => item.appKey))];
+  const freshness = latestSync(items);
+
+  return (
+    <>
+      <NavBar />
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        <div className="mb-6 flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-neutral-900">Accounts</h1>
+          <CsvExportButton items={items} status={status} />
+        </div>
+
+        <div className="mb-6">
+          <SyncControl appKeys={appKeys} />
+        </div>
+
+        <nav className="mb-4 flex gap-1 border-b border-neutral-200">
+          {TABS.map((tab) => (
+            <Link
+              key={tab}
+              href={`/accounts?status=${tab}`}
+              className={`border-b-2 px-3 py-2 text-sm font-medium ${
+                tab === status
+                  ? 'border-neutral-900 text-neutral-900'
+                  : 'border-transparent text-neutral-500 hover:text-neutral-800'
+              }`}
+            >
+              {tab}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+          <table className="min-w-full divide-y divide-neutral-200 text-sm">
+            <thead className="bg-neutral-50">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">App</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Email</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Name</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Account status</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Admin</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Last activity</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Link</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Confidence</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Evidence</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-100">
+              {items.map((item) => (
+                <tr key={item.accountId}>
+                  <td className="px-3 py-2 text-neutral-700">{item.appName}</td>
+                  <td className="px-3 py-2 text-neutral-700">{item.email ?? '—'}</td>
+                  <td className="px-3 py-2 text-neutral-700">{item.displayName ?? '—'}</td>
+                  <td className="px-3 py-2 text-neutral-700">{item.accountStatus}</td>
+                  <td className="px-3 py-2">
+                    {item.isAdmin && (
+                      <span className="status-chip bg-neutral-200 text-neutral-700">admin</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-neutral-500">{item.lastActivityAt ?? '—'}</td>
+                  <td className="px-3 py-2">
+                    {item.link ? <StatusChip status={item.link.status} /> : <StatusChip status="orphan" />}
+                  </td>
+                  <td className="px-3 py-2 text-neutral-500">
+                    {item.link ? item.link.confidence.toFixed(2) : '—'}
+                  </td>
+                  <td className="px-3 py-2">
+                    <EvidencePopover link={item.link} />
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="px-3 py-6 text-center text-neutral-400">
+                    No accounts in this filter.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between text-sm text-neutral-500">
+          <span>{freshness ? `Data as of ${freshness}` : 'No sync data yet'}</span>
+          {nextCursor && (
+            <Link
+              href={`/accounts?status=${status}&cursor=${encodeURIComponent(nextCursor)}`}
+              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 font-medium text-neutral-700 hover:bg-neutral-50"
+            >
+              Load more
+            </Link>
+          )}
+        </div>
+      </main>
+    </>
+  );
+}

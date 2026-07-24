@@ -1,0 +1,169 @@
+import { randomUUID } from 'node:crypto';
+import type { Pool, PoolClient } from 'pg';
+import { rawAccountSchema, type ConnectorContext, type Logger } from '@open-smp/connectors-core';
+import { decryptCredentials } from '@open-smp/crypto';
+import { withTenant } from '@open-smp/schema';
+import type { SyncJobData, SyncJobResult } from '@open-smp/queues';
+import type { ConnectorRegistry } from './connectors.js';
+
+export interface SyncDeps {
+  pool: Pool;
+  connectorRegistry: ConnectorRegistry;
+  encryptionKeys: Map<number, Buffer>;
+  logger: Logger;
+  discoveryStoreRaw: boolean;
+}
+
+interface SaasAppRow {
+  key: string;
+  credentials_enc: Buffer | null;
+  credentials_key_version: number;
+}
+
+async function loadSaasApp(tx: PoolClient, saasAppId: string): Promise<SaasAppRow> {
+  const { rows } = await tx.query<SaasAppRow>(
+    'SELECT key, credentials_enc, credentials_key_version FROM saas_apps WHERE id = $1',
+    [saasAppId],
+  );
+  const row = rows[0];
+  if (!row) {
+    throw new Error(`saas_apps row not found: ${saasAppId}`);
+  }
+  return row;
+}
+
+async function upsertAccount(
+  tx: PoolClient,
+  tenantId: string,
+  saasAppId: string,
+  account: {
+    externalId: string;
+    email: string | null;
+    displayName: string | null;
+    accountStatus: 'active' | 'suspended' | 'archived';
+    isAdmin: boolean;
+    lastActivityAt: string | null;
+  },
+  runStartedAt: Date,
+): Promise<void> {
+  await tx.query(
+    `INSERT INTO saas_accounts
+       (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin, last_activity_at, last_synced_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (tenant_id, saas_app_id, external_id) DO UPDATE SET
+       email = EXCLUDED.email,
+       display_name = EXCLUDED.display_name,
+       account_status = EXCLUDED.account_status,
+       is_admin = EXCLUDED.is_admin,
+       last_activity_at = EXCLUDED.last_activity_at,
+       last_synced_at = EXCLUDED.last_synced_at`,
+    [
+      tenantId,
+      saasAppId,
+      account.externalId,
+      account.email,
+      account.displayName,
+      account.accountStatus,
+      account.isAdmin,
+      account.lastActivityAt,
+      runStartedAt,
+    ],
+  );
+}
+
+const MAX_RAW_PAYLOADS_STORED = 500;
+
+/**
+ * Runs one sync job: decrypt saas_apps credentials, stream the connector's
+ * listUsers, upsert saas_accounts, and record a single discovery_events row.
+ * All DB work happens inside withTenant(job.tenantId, ...) per C5.
+ */
+export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJobResult> {
+  const runId = randomUUID();
+  const runStartedAt = new Date();
+
+  let decrypted: Buffer | null = null;
+  try {
+    const upserted = await withTenant(deps.pool, job.tenantId, async (tx) => {
+      const app = await loadSaasApp(tx, job.saasAppId);
+
+      if (!app.credentials_enc) {
+        throw new Error(`saas_apps row ${job.saasAppId} has no stored credentials`);
+      }
+
+      decrypted = Buffer.from(
+        decryptCredentials(
+          app.credentials_enc,
+          app.credentials_key_version,
+          { tenantId: job.tenantId, saasAppId: job.saasAppId },
+          deps.encryptionKeys,
+        ),
+      );
+
+      const credentials = JSON.parse(decrypted.toString('utf8')) as Record<string, string>;
+
+      const buildConnector = deps.connectorRegistry.get(app.key);
+      if (!buildConnector) {
+        throw new Error(`No connector registered for saas_apps.key = ${app.key}`);
+      }
+      const connector = buildConnector(credentials);
+
+      const ctx: ConnectorContext = {
+        credentials,
+        logger: deps.logger,
+        signal: new AbortController().signal,
+      };
+
+      let count = 0;
+      const rawPayloads: unknown[] = [];
+
+      for await (const candidate of connector.listUsers(ctx)) {
+        const account = rawAccountSchema.parse(candidate);
+
+        await upsertAccount(
+          tx,
+          job.tenantId,
+          job.saasAppId,
+          {
+            externalId: account.externalId,
+            email: account.email,
+            displayName: account.displayName,
+            accountStatus: account.accountStatus,
+            isAdmin: account.isAdmin,
+            lastActivityAt: account.lastActivityAt,
+          },
+          runStartedAt,
+        );
+        count += 1;
+
+        if (deps.discoveryStoreRaw && rawPayloads.length < MAX_RAW_PAYLOADS_STORED) {
+          rawPayloads.push(account.raw);
+        }
+      }
+
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, $2, 'sync_completed', $3::jsonb)`,
+        [job.tenantId, app.key, JSON.stringify({ counts: { upserted: count }, runId })],
+      );
+
+      if (deps.discoveryStoreRaw) {
+        await tx.query(
+          `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+           VALUES ($1, $2, 'sync_raw', $3::jsonb)`,
+          [job.tenantId, app.key, JSON.stringify({ runId, accounts: rawPayloads })],
+        );
+      }
+
+      return count;
+    });
+
+    return { upserted, runId };
+  } finally {
+    // S11: zero the decrypted credential buffer once the run completes or
+    // fails. The parsed JS strings derived from it (e.g. the PEM key) are
+    // not zeroable at the JS level and remain GC-dependent — accepted for
+    // MVP, see C9's in-memory lifecycle note.
+    (decrypted as Buffer | null)?.fill(0);
+  }
+}

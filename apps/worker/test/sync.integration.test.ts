@@ -1,0 +1,187 @@
+import { randomUUID } from 'node:crypto';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { Pool } from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runMigrations, withTenant } from '@open-smp/schema';
+import { encryptCredentials } from '@open-smp/crypto';
+import type { ConnectorContext, RawAccount, SaaSConnector } from '@open-smp/connectors-core';
+import type { ConnectorRegistry } from '../src/connectors.js';
+import { runSync } from '../src/sync.js';
+
+// C5 acceptance: (a) re-running the same sync twice yields identical row
+// counts and last_synced_at monotonicity; (b) a sync job for tenant A writes
+// zero rows visible under tenant B's GUC.
+
+const FAKE_ACCOUNTS: RawAccount[] = [
+  {
+    externalId: 'ext-1',
+    email: 'alice@example.com',
+    displayName: 'Alice',
+    accountStatus: 'active',
+    isAdmin: false,
+    lastActivityAt: '2026-01-01T00:00:00.000Z',
+    raw: { note: 'fixture' },
+  },
+  {
+    externalId: 'ext-2',
+    email: 'bob@example.com',
+    displayName: 'Bob',
+    accountStatus: 'suspended',
+    isAdmin: true,
+    lastActivityAt: null,
+    raw: { note: 'fixture' },
+  },
+];
+
+class FakeConnector implements SaaSConnector {
+  id = 'fake-app';
+  authKind: SaaSConnector['authKind'] = 'apikey';
+
+  async *listUsers(_ctx: ConnectorContext): AsyncIterable<RawAccount> {
+    for (const account of FAKE_ACCOUNTS) {
+      yield account;
+    }
+  }
+}
+
+const fakeRegistry: ConnectorRegistry = new Map([['fake-app', () => new FakeConnector()]]);
+
+const noopLogger = { info: () => {}, warn: () => {}, error: () => {} };
+
+let container: StartedPostgreSqlContainer;
+let adminPool: Pool;
+let appPool: Pool;
+
+const tenantA = randomUUID();
+const tenantB = randomUUID();
+const encryptionKeys = new Map<number, Buffer>([[1, Buffer.alloc(32, 7)]]);
+
+async function seedTenantWithApp(tenantId: string): Promise<string> {
+  const saasAppId = randomUUID();
+
+  const credentials = JSON.stringify({ apiKey: 'fake-key' });
+  const { blob, keyVersion } = encryptCredentials(
+    Buffer.from(credentials, 'utf8'),
+    { tenantId, saasAppId },
+    encryptionKeys,
+  );
+
+  await withTenant(appPool, tenantId, async (tx) => {
+    await tx.query(
+      `INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant') ON CONFLICT DO NOTHING`,
+      [tenantId, `tenant-${tenantId}`],
+    );
+    await tx.query(
+      `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_enc, credentials_key_version)
+       VALUES ($1, $2, 'fake-app', 'Fake App', $3, $4)`,
+      [saasAppId, tenantId, Buffer.from(blob), keyVersion],
+    );
+  });
+
+  return saasAppId;
+}
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer('postgres:16').start();
+  adminPool = new Pool({ connectionString: container.getConnectionUri() });
+  await runMigrations(container.getConnectionUri());
+
+  const url = new URL(container.getConnectionUri());
+  url.username = 'opensmp_app';
+  url.password = 'opensmp';
+  appPool = new Pool({ connectionString: url.toString() });
+
+  // tenants is a root table with no RLS; insert directly via the admin pool
+  // ahead of any withTenant call (tenants has no tenant_id column).
+  await adminPool.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant A') ON CONFLICT DO NOTHING`, [
+    tenantA,
+    `tenant-a-${tenantA}`,
+  ]);
+  await adminPool.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant B') ON CONFLICT DO NOTHING`, [
+    tenantB,
+    `tenant-b-${tenantB}`,
+  ]);
+}, 180_000);
+
+afterAll(async () => {
+  await appPool?.end();
+  await adminPool?.end();
+  await container?.stop();
+});
+
+describe('C5 runSync acceptance', () => {
+  it('re-running the same sync twice yields identical row counts and monotonic last_synced_at', async () => {
+    const saasAppId = await seedTenantWithApp(tenantA);
+    const deps = {
+      pool: appPool,
+      connectorRegistry: fakeRegistry,
+      encryptionKeys,
+      logger: noopLogger,
+      discoveryStoreRaw: false,
+    };
+
+    const first = await runSync(deps, { tenantId: tenantA, saasAppId });
+    expect(first.upserted).toBe(FAKE_ACCOUNTS.length);
+
+    const firstSyncedAt = await withTenant(appPool, tenantA, async (tx) => {
+      const { rows } = await tx.query<{ last_synced_at: Date }>(
+        'SELECT last_synced_at FROM saas_accounts WHERE saas_app_id = $1 ORDER BY external_id',
+        [saasAppId],
+      );
+      return rows.map((row) => row.last_synced_at);
+    });
+
+    const second = await runSync(deps, { tenantId: tenantA, saasAppId });
+    expect(second.upserted).toBe(FAKE_ACCOUNTS.length);
+    expect(second.runId).not.toBe(first.runId);
+
+    const rowCount = await withTenant(appPool, tenantA, async (tx) => {
+      const { rows } = await tx.query('SELECT * FROM saas_accounts WHERE saas_app_id = $1', [saasAppId]);
+      return rows.length;
+    });
+    expect(rowCount).toBe(FAKE_ACCOUNTS.length);
+
+    const secondSyncedAt = await withTenant(appPool, tenantA, async (tx) => {
+      const { rows } = await tx.query<{ last_synced_at: Date }>(
+        'SELECT last_synced_at FROM saas_accounts WHERE saas_app_id = $1 ORDER BY external_id',
+        [saasAppId],
+      );
+      return rows.map((row) => row.last_synced_at);
+    });
+
+    for (let i = 0; i < firstSyncedAt.length; i += 1) {
+      expect(secondSyncedAt[i]!.getTime()).toBeGreaterThanOrEqual(firstSyncedAt[i]!.getTime());
+    }
+
+    const events = await withTenant(appPool, tenantA, async (tx) => {
+      const { rows } = await tx.query(
+        "SELECT * FROM discovery_events WHERE tenant_id = $1 AND kind = 'sync_completed'",
+        [tenantA],
+      );
+      return rows;
+    });
+    expect(events).toHaveLength(2);
+  });
+
+  it('a sync job for tenant A writes zero rows visible under tenant B GUC', async () => {
+    const saasAppId = await seedTenantWithApp(tenantA);
+
+    await runSync(
+      {
+        pool: appPool,
+        connectorRegistry: fakeRegistry,
+        encryptionKeys,
+        logger: noopLogger,
+        discoveryStoreRaw: false,
+      },
+      { tenantId: tenantA, saasAppId },
+    );
+
+    const visibleUnderB = await withTenant(appPool, tenantB, async (tx) => {
+      const { rows } = await tx.query('SELECT * FROM saas_accounts WHERE saas_app_id = $1', [saasAppId]);
+      return rows.length;
+    });
+
+    expect(visibleUnderB).toBe(0);
+  });
+});

@@ -159,15 +159,22 @@ export const users = pgTable(
   (table) => [unique('users_tenant_id_email_key').on(table.tenantId, table.email)],
 );
 
-export const sessions = pgTable('sessions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id),
-  tenantId: uuid('tenant_id').notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    tenantId: uuid('tenant_id').notNull(),
+    // SHA-256 hex digest of the raw session cookie token (C7); lookup key —
+    // session id equality is never compared directly against the cookie.
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('sessions_token_hash_key').on(table.tokenHash)],
+);
 
 /** Tenant-scoped tables subject to RLS (the 7-table member set from C1; excludes `tenants`). */
 export const tenantScopedTables = {

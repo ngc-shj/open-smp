@@ -1,0 +1,33 @@
+{
+  "name": "@open-smp/worker",
+  "type": "module",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "rotate-credentials": "tsx src/rotate-credentials.ts",
+    "build": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@open-smp/connector-google-workspace": "workspace:*",
+    "@open-smp/connectors-core": "workspace:*",
+    "@open-smp/crypto": "workspace:*",
+    "@open-smp/matcher": "workspace:*",
+    "@open-smp/queues": "workspace:*",
+    "@open-smp/schema": "workspace:*",
+    "bullmq": "^5.81.1",
+    "ioredis": "^5.11.1",
+    "pg": "^8.22.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.7.1",
+    "@testcontainers/redis": "^11.7.1",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.5",
+    "testcontainers": "^11.7.1",
+    "tsx": "^4.19.2",
+    "vitest": "^4.1.10"
+  }
+}
