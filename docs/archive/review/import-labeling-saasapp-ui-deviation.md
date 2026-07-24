@@ -34,3 +34,7 @@ Step 2-5 pre-steps: `check-propagation.sh` (lib/ast-signature.sh uses `declare -
 ## D8 — T-L9 RT7 red-proof executed post-hoc by orchestrator (Self-R-Check finding, resolved)
 
 Batch B's sub-agent substituted code review for the plan-mandated strip-and-confirm-red proof (the delegation prompt's no-mutation constraint offered that substitute — an orchestrator prompt error, since the plan names strip-and-confirm-red as the ONLY accepted RT7 evidence). Resolved during Step 2-5: the proof was executed on a throwaway `git worktree` under the session scratchpad (production tree untouched) — stripping the DELETE label route's `config` made T-L9 fail with the exact per-route assertion message; worktree discarded afterward. The test's comment now records the executed proof instead of the code-review claim.
+
+## D9 — `/apps` page uses `apiFetch`, not the plan-named `apiGetJson` (Phase 3 R1, FN F-2)
+
+C13's signature sketch names `apiGetJson<SaasAppListResponse>('/saas-apps')`, but `apiGetJson` is defined yet used by ZERO existing pages — both predecessor pages use `apiFetch` + manual 401/`!res.ok` handling. The implementation follows the established convention (R8/R22: consistency with real usage beats the plan's literal token). Reviewer classified this as informational, not a defect; no code change.

@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { pollJob } from '@/lib/polling';
+import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
 import type { HrImportResponse } from '@/lib/api-types';
 
@@ -82,6 +82,10 @@ export default function ImportPage() {
       await pollJob(jobId);
       setState({ phase: 'done' });
     } catch (err) {
+      if (err instanceof SessionExpiredError) {
+        router.push('/login');
+        return;
+      }
       const message = err instanceof Error ? err.message : 'match failed';
       if (message === 'job polling timed out') {
         setState({ phase: 'match-timed-out' });

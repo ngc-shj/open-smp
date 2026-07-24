@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { pollJob } from '@/lib/polling';
+import { pollJob, SessionExpiredError } from '@/lib/polling';
 
 type Phase = 'idle' | 'syncing' | 'matching' | 'done' | 'error';
 
@@ -35,6 +35,10 @@ export function SyncControl({ appKeys }: { appKeys: string[] }) {
       setPhase('done');
       router.refresh();
     } catch (err) {
+      if (err instanceof SessionExpiredError) {
+        router.push('/login');
+        return;
+      }
       setPhase('error');
       setError(err instanceof Error ? err.message : 'sync failed');
     }

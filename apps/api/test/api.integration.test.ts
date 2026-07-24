@@ -947,6 +947,36 @@ describe('C11 acceptance: account labeling', () => {
       const rowsUnderB = await labelRow(tenantBId, tenantA.accountId);
       expect(rowsUnderB).toHaveLength(0);
     });
+
+    it('DELETE by a tenant-B session on a labeled tenant-A account is 404 and leaves the label intact', async () => {
+      const tenantA = await seedTenantWithAccount('l5-del-a');
+      const cookieA = await loginAndGetCookie(tenantA.slug, 'admin@example.com', 'correct-password');
+      expect(cookieA).not.toBeNull();
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${tenantA.accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookieA! },
+        payload: { kind: 'service_account' },
+      });
+      expect(put.statusCode).toBe(200);
+
+      const slugB = `tenant-l5-del-b-${randomUUID()}`;
+      const tenantBId = await seedTenant(slugB, 'Label Tenant B');
+      await seedUser(tenantBId, 'admin@example.com', 'correct-password');
+      const cookieB = await loginAndGetCookie(slugB, 'admin@example.com', 'correct-password');
+      expect(cookieB).not.toBeNull();
+
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${tenantA.accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookieB! },
+      });
+
+      expect(del.statusCode).toBe(404);
+      const rowsUnderA = await labelRow(tenantA.tenantId, tenantA.accountId);
+      expect(rowsUnderA).toHaveLength(1);
+      expect(rowsUnderA[0]?.kind).toBe('service_account');
+    });
   });
 
   describe('T-L6: DELETE', () => {
@@ -1039,6 +1069,48 @@ describe('C11 acceptance: account labeling', () => {
       expect(unlabeled).toBeDefined();
       expect(unlabeled!.label).toBeNull();
     });
+
+    it('a labeled orphan account survives the ?status= filter with its label attached', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('l7-filter');
+      await withTenant(appPool, tenantId, async (tx) => {
+        await tx.query(
+          `INSERT INTO account_links (id, tenant_id, saas_account_id, identity_id, status, confidence, rule_id, computed_at)
+           VALUES ($1, $2, $3, NULL, 'orphan', 0, NULL, now())`,
+          [randomUUID(), tenantId, accountId],
+        );
+      });
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'shared mailbox' },
+      });
+      expect(put.statusCode).toBe(200);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/accounts?status=orphan',
+        headers: { cookie: cookie! },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        items: {
+          accountId: string;
+          link: { status: string } | null;
+          label: { kind: string; note: string | null } | null;
+        }[];
+      };
+
+      const item = body.items.find((it) => it.accountId === accountId);
+      expect(item).toBeDefined();
+      expect(item!.link!.status).toBe('orphan');
+      expect(item!.label).not.toBeNull();
+      expect(item!.label!.kind).toBe('known_shared');
+      expect(item!.label!.note).toBe('shared mailbox');
+    });
   });
 
   describe('T-L8: Origin-mismatch PUT creates no label row', () => {
@@ -1124,6 +1196,10 @@ describe('C13 acceptance: saas-apps duplicate key', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.items).toHaveLength(1);
+      // The surviving row is the FIRST registration — the 409'd attempt's
+      // differing displayName must not have overwritten it (C13: insert-then
+      // -catch, not upsert).
+      expect(body.items[0].displayName).toBe('GWS Primary');
       expect(JSON.stringify(body)).not.toContain('credentials');
       expect(JSON.stringify(body)).not.toContain('client_email');
     });

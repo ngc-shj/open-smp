@@ -55,7 +55,7 @@ export function LabelControl({ accountId, label }: { accountId: string; label: A
     setError(null);
 
     try {
-      const res = await fetch(`/api/accounts/${accountId}/label`, {
+      const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/label`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind, ...(note.trim() ? { note: note.trim() } : {}) }),
@@ -77,7 +77,7 @@ export function LabelControl({ accountId, label }: { accountId: string; label: A
     setError(null);
 
     try {
-      const res = await fetch(`/api/accounts/${accountId}/label`, { method: 'DELETE' });
+      const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/label`, { method: 'DELETE' });
 
       if (!(await handleResponse(res))) return;
 
