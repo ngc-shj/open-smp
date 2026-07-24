@@ -17,6 +17,7 @@ const MEMBER_TABLES = [
   'discovery_events',
   'users',
   'sessions',
+  'account_labels',
 ] as const;
 
 type MemberTable = (typeof MEMBER_TABLES)[number];
@@ -38,6 +39,7 @@ type SeedIds = {
   discoveryEventId: string;
   userId: string;
   sessionId: string;
+  accountLabelId: string;
 };
 
 const seeds = new Map<string, SeedIds>();
@@ -51,6 +53,7 @@ async function seedTenant(tenantId: string): Promise<SeedIds> {
     discoveryEventId: randomUUID(),
     userId: randomUUID(),
     sessionId: randomUUID(),
+    accountLabelId: randomUUID(),
   };
 
   await withTenant(appPool, tenantId, async (tx) => {
@@ -89,6 +92,11 @@ async function seedTenant(tenantId: string): Promise<SeedIds> {
        VALUES ($1, $2, $3, $4, now() + interval '1 day')`,
       [ids.sessionId, ids.userId, tenantId, `token-hash-${ids.sessionId}`],
     );
+    await tx.query(
+      `INSERT INTO account_labels (id, tenant_id, saas_account_id, kind, created_by)
+       VALUES ($1, $2, $3, 'known_shared', $4)`,
+      [ids.accountLabelId, tenantId, ids.saasAccountId, ids.userId],
+    );
   });
 
   return ids;
@@ -110,6 +118,8 @@ function tableRowId(table: MemberTable, ids: SeedIds): string {
       return ids.userId;
     case 'sessions':
       return ids.sessionId;
+    case 'account_labels':
+      return ids.accountLabelId;
   }
 }
 
@@ -168,6 +178,15 @@ function insertStatementFor(
                VALUES ($1, $2, $3, $4, now() + interval '1 day')`,
         values: [newId, foreignSeed.userId, rowTenantId, `token-hash-${newId}`],
       };
+    case 'account_labels':
+      // Must reference a saas_account row visible under the acting session's
+      // own tenant GUC (RLS applies to the FK target read too), same
+      // reasoning as the saas_accounts case above.
+      return {
+        text: `INSERT INTO account_labels (id, tenant_id, saas_account_id, kind)
+               VALUES ($1, $2, $3, 'known_shared')`,
+        values: [newId, rowTenantId, foreignSeed.saasAccountId],
+      };
   }
 }
 
@@ -182,6 +201,17 @@ beforeAll(async () => {
   url.username = 'opensmp_app';
   url.password = 'opensmp';
   appPool = new Pool({ connectionString: url.toString() });
+
+  // account_labels.tenant_id (C10) is the first tenant-scoped column with a
+  // real FK to tenants(id), so a tenants row must exist before seeding.
+  await adminPool.query('INSERT INTO tenants (id, slug, name) VALUES ($1, $2, $3), ($4, $5, $6)', [
+    tenantA,
+    `tenant-a-${tenantA}`,
+    'Tenant A',
+    tenantB,
+    `tenant-b-${tenantB}`,
+    'Tenant B',
+  ]);
 
   seeds.set(tenantA, await seedTenant(tenantA));
   seeds.set(tenantB, await seedTenant(tenantB));

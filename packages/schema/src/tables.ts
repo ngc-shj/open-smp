@@ -40,6 +40,11 @@ export const accountStatusEnum = pgEnum('account_status', [
   'suspended',
   'archived',
 ]);
+export const accountLabelKindEnum = pgEnum('account_label_kind', [
+  'known_shared',
+  'service_account',
+  'external_collaborator',
+]);
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -176,7 +181,30 @@ export const sessions = pgTable(
   (table) => [unique('sessions_token_hash_key').on(table.tokenHash)],
 );
 
-/** Tenant-scoped tables subject to RLS (the 7-table member set from C1; excludes `tenants`). */
+export const accountLabels = pgTable(
+  'account_labels',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    saasAccountId: uuid('saas_account_id')
+      .notNull()
+      .references(() => saasAccounts.id),
+    kind: accountLabelKindEnum('kind').notNull(),
+    note: text('note'),
+    createdBy: uuid('created_by').references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('account_labels_tenant_id_saas_account_id_key').on(
+      table.tenantId,
+      table.saasAccountId,
+    ),
+    check('account_labels_note_check', sql`${table.note} IS NULL OR char_length(${table.note}) <= 500`),
+  ],
+);
+
+/** Tenant-scoped tables subject to RLS (the 8-table member set from C1/C10; excludes `tenants`). */
 export const tenantScopedTables = {
   identities,
   saasApps,
@@ -185,4 +213,5 @@ export const tenantScopedTables = {
   discoveryEvents,
   users,
   sessions,
+  accountLabels,
 } as const;

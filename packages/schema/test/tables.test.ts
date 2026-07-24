@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  accountLabelKindEnum,
   accountStatusEnum,
   identityStatusEnum,
   linkStatusEnum,
@@ -18,10 +19,18 @@ describe('enum value sets', () => {
   it('account_status matches the C1 contract', () => {
     expect(accountStatusEnum.enumValues).toEqual(['active', 'suspended', 'archived']);
   });
+
+  it('account_label_kind matches the C10 contract', () => {
+    expect(accountLabelKindEnum.enumValues).toEqual([
+      'known_shared',
+      'service_account',
+      'external_collaborator',
+    ]);
+  });
 });
 
 describe('tenant-scoped table member set', () => {
-  it('contains exactly the 7 tables from the C1 member-set derivation (tenants excluded)', () => {
+  it('contains exactly the 8 tables from the C1/C10 member-set derivation (tenants excluded)', () => {
     expect(Object.keys(tenantScopedTables).sort()).toEqual(
       [
         'identities',
@@ -31,6 +40,7 @@ describe('tenant-scoped table member set', () => {
         'discoveryEvents',
         'users',
         'sessions',
+        'accountLabels',
       ].sort(),
     );
   });
