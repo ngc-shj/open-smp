@@ -62,6 +62,7 @@ describe('buildAccountsCsv wiring', () => {
         ],
       },
     },
+    label: null,
   };
 
   it('neutralizes every unquoted cell in the generated CSV, no dangerous cell survives unescaped', () => {

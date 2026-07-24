@@ -10,9 +10,10 @@ import { registerHrImportRoute } from './routes/hr-import.js';
 import { registerSaasAppsRoute } from './routes/saas-apps.js';
 import { registerSyncMatchRoutes } from './routes/sync-match.js';
 import { registerAccountsRoute } from './routes/accounts.js';
+import { registerAccountLabelsRoute } from './routes/account-labels.js';
 import { registerEventsRoute } from './routes/events.js';
 
-export type RegisteredRoute = { method: string; url: string };
+export type RegisteredRoute = { method: string; url: string; hasRateLimit: boolean };
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: true });
@@ -23,8 +24,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const apiRoutes: RegisteredRoute[] = [];
   app.addHook('onRoute', (routeOptions) => {
     if (routeOptions.url.startsWith('/api/')) {
+      const hasRateLimit =
+        typeof routeOptions.config?.rateLimit === 'object' && routeOptions.config.rateLimit !== null;
       for (const method of [routeOptions.method].flat()) {
-        apiRoutes.push({ method, url: routeOptions.url });
+        apiRoutes.push({ method, url: routeOptions.url, hasRateLimit });
       }
     }
   });
@@ -77,6 +80,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         registerSaasAppsRoute(authenticated, deps);
         registerSyncMatchRoutes(authenticated, deps);
         registerAccountsRoute(authenticated, deps);
+        registerAccountLabelsRoute(authenticated, deps);
         registerEventsRoute(authenticated, deps);
       });
     },

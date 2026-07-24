@@ -6,9 +6,15 @@
 export type {
   LinkStatus,
   AccountLink,
+  AccountLabelKind,
+  AccountLabel,
+  AccountLabelResponse,
   AccountListItem,
   AccountListResponse,
   DiscoveryEventListItem,
   DiscoveryEventListResponse,
   JobState,
+  SaasAppListItem,
+  SaasAppListResponse,
+  SaasAppCreateResponse,
 } from '@open-smp/api-types';

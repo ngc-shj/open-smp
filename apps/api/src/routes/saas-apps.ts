@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { encryptCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
+import type { SaasAppListItem, SaasAppCreateResponse } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 
@@ -12,10 +13,6 @@ const saasAppBodySchema = z
     credentials: z.record(z.string(), z.string()),
   })
   .strict();
-
-// GET response shape never includes `credentials_enc` / `credentials_key_version`
-// raw bytes or any decrypted credential field — only these columns are selected.
-type SaasAppListItem = { id: string; key: string; displayName: string };
 
 export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void {
   app.post(
@@ -31,31 +28,49 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
 
       const plaintext = new TextEncoder().encode(JSON.stringify(credentials));
 
-      const created = await withTenant(deps.pool, tenantId, async (tx) => {
-        const insertResult = await tx.query<{ id: string }>(
-          `INSERT INTO saas_apps (tenant_id, key, display_name)
-           VALUES ($1, $2, $3)
-           RETURNING id`,
-          [tenantId, key, displayName],
-        );
-        const saasAppId = insertResult.rows[0]?.id;
-        if (!saasAppId) {
-          throw new Error('saas-apps insert returned no row');
+      let created: SaasAppCreateResponse;
+      try {
+        created = await withTenant(deps.pool, tenantId, async (tx) => {
+          const insertResult = await tx.query<{ id: string }>(
+            `INSERT INTO saas_apps (tenant_id, key, display_name)
+             VALUES ($1, $2, $3)
+             RETURNING id`,
+            [tenantId, key, displayName],
+          );
+          const saasAppId = insertResult.rows[0]?.id;
+          if (!saasAppId) {
+            throw new Error('saas-apps insert returned no row');
+          }
+
+          const { blob, keyVersion } = encryptCredentials(
+            plaintext,
+            { tenantId, saasAppId },
+            deps.encryptionKeys,
+          );
+
+          await tx.query(
+            `UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1`,
+            [saasAppId, Buffer.from(blob), keyVersion],
+          );
+
+          return { id: saasAppId, key, displayName };
+        });
+      } catch (err: unknown) {
+        // Scoped to this insert's known unique constraint only — any other
+        // error (or a future unique constraint added to this same path)
+        // rethrows rather than being mismapped to duplicate_key.
+        const isDuplicateKey =
+          typeof err === 'object' &&
+          err !== null &&
+          'code' in err &&
+          err.code === '23505' &&
+          'constraint' in err &&
+          err.constraint === 'saas_apps_tenant_id_key_key';
+        if (isDuplicateKey) {
+          return reply.code(409).send({ error: 'duplicate_key' });
         }
-
-        const { blob, keyVersion } = encryptCredentials(
-          plaintext,
-          { tenantId, saasAppId },
-          deps.encryptionKeys,
-        );
-
-        await tx.query(
-          `UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1`,
-          [saasAppId, Buffer.from(blob), keyVersion],
-        );
-
-        return { id: saasAppId, key, displayName };
-      });
+        throw err;
+      }
 
       return reply.code(201).send(created);
     },

@@ -37,6 +37,8 @@ type AccountRow = {
   link_identity_id: string | null;
   link_identity_name: string | null;
   link_evidence: unknown;
+  label_kind: string | null;
+  label_note: string | null;
 };
 
 function toListItem(row: AccountRow): AccountListItem {
@@ -64,6 +66,10 @@ function toListItem(row: AccountRow): AccountListItem {
             identityName: row.link_identity_name,
             evidence: (row.link_evidence as NonNullable<AccountListItem['link']>['evidence']) ?? null,
           },
+    label:
+      row.label_kind === null
+        ? null
+        : { kind: row.label_kind as NonNullable<AccountListItem['label']>['kind'], note: row.label_note },
   };
 }
 
@@ -115,11 +121,14 @@ export function registerAccountsRoute(app: FastifyInstance, deps: AppDeps): void
              al.rule_id AS link_rule_id,
              al.identity_id AS link_identity_id,
              ident.display_name AS link_identity_name,
-             al.evidence AS link_evidence
+             al.evidence AS link_evidence,
+             lbl.kind AS label_kind,
+             lbl.note AS label_note
            FROM saas_accounts sa
            JOIN saas_apps sap ON sap.id = sa.saas_app_id
            LEFT JOIN account_links al ON al.saas_account_id = sa.id
            LEFT JOIN identities ident ON ident.id = al.identity_id
+           LEFT JOIN account_labels lbl ON lbl.saas_account_id = sa.id
            WHERE ${conditions.join(' AND ')}
            ORDER BY sa.id
            LIMIT ${limitPlaceholder}`,

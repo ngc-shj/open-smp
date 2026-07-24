@@ -626,7 +626,7 @@ describe('C6 acceptance: sliding session TTL refreshes on authenticated request 
 
 describe('C6/S7 acceptance: no route schema declares a client-supplied tenantId (CT3)', () => {
   it('no route module declares a tenantId field in its body/query zod schema', async () => {
-    // app.apiRoutes exposes only { method, url } (see apps/api/src/app.ts) —
+    // app.apiRoutes exposes only { method, url, hasRateLimit } (see apps/api/src/app.ts) —
     // the zod schemas are module-local to each route file, not attached to
     // Fastify's schema introspection, so runtime introspection cannot reach
     // them. Falling back to the documented pragmatic equivalent: read every
@@ -672,5 +672,463 @@ describe('C7/S8 acceptance: tenant-scoped login matrix', () => {
       payload: { tenantSlug: tenantASlug, email: 'shared@example.com', password: 'password-b' },
     });
     expect(crossTenant.statusCode).toBe(401);
+  });
+});
+
+describe('C11 acceptance: account labeling', () => {
+  async function seedTenantWithAccount(
+    slugPrefix: string,
+  ): Promise<{ tenantId: string; slug: string; userId: string; accountId: string }> {
+    const slug = `tenant-${slugPrefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Label Tenant');
+    const userId = await seedUser(tenantId, 'admin@example.com', 'correct-password');
+
+    const accountId = await withTenant(appPool, tenantId, async (tx) => {
+      const appId = randomUUID();
+      const acctId = randomUUID();
+      await tx.query(
+        `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_key_version)
+         VALUES ($1, $2, 'google-workspace', 'GWS', 1)`,
+        [appId, tenantId],
+      );
+      await tx.query(
+        `INSERT INTO saas_accounts (id, tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, $3, 'ext-label', 'label@example.com', 'Label Target', 'active', false)`,
+        [acctId, tenantId, appId],
+      );
+      return acctId;
+    });
+
+    return { tenantId, slug, userId, accountId };
+  }
+
+  async function labelRow(
+    tenantId: string,
+    accountId: string,
+  ): Promise<
+    { kind: string; note: string | null; created_by: string | null; created_at: Date; updated_at: Date }[]
+  > {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query(
+        'SELECT kind, note, created_by, created_at, updated_at FROM account_labels WHERE tenant_id = $1 AND saas_account_id = $2',
+        [tenantId, accountId],
+      );
+      return result.rows;
+    });
+  }
+
+  describe('T-L1: PUT happy path', () => {
+    it('sets a label and returns 200 with the label body', async () => {
+      const { tenantId, slug, userId, accountId } = await seedTenantWithAccount('l1');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'service_account', note: 'Jenkins deploy bot' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.accountId).toBe(accountId);
+      expect(typeof body.kind).toBe('string');
+      expect(body.kind).toBe('service_account');
+      expect(body.note).toBe('Jenkins deploy bot');
+
+      const rows = await labelRow(tenantId, accountId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.kind).toBe('service_account');
+      expect(rows[0]!.note).toBe('Jenkins deploy bot');
+      expect(rows[0]!.created_by).toBe(userId);
+      expect(rows[0]!.updated_at).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('T-L2: PUT upsert', () => {
+    it('a second PUT updates kind/note and updated_at, leaving created_by unchanged', async () => {
+      const { tenantId, slug, userId, accountId } = await seedTenantWithAccount('l2');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const first = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'service_account', note: 'first note' },
+      });
+      expect(first.statusCode).toBe(200);
+      const firstRows = await labelRow(tenantId, accountId);
+      const firstUpdatedAt = firstRows[0]!.updated_at;
+
+      // Ensure a measurable clock delta before the second PUT.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const second = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'second note' },
+      });
+      expect(second.statusCode).toBe(200);
+
+      const rows = await labelRow(tenantId, accountId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.kind).toBe('known_shared');
+      expect(rows[0]!.note).toBe('second note');
+      expect(rows[0]!.created_by).toBe(userId);
+      expect(rows[0]!.updated_at.getTime()).toBeGreaterThan(firstUpdatedAt.getTime());
+    });
+
+    it('created_by stays NULL after the original setter is deleted, even after a second-user PUT', async () => {
+      const { tenantId, slug, userId, accountId } = await seedTenantWithAccount('l2-del');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const put1 = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'service_account', note: 'set by original user' },
+      });
+      expect(put1.statusCode).toBe(200);
+
+      // sessions.user_id has no cascading ON DELETE; delete sessions first,
+      // then the user row, so created_by is set NULL by ON DELETE SET NULL.
+      await withTenant(appPool, tenantId, async (tx) => {
+        await tx.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
+        const result = await tx.query('DELETE FROM users WHERE id = $1', [userId]);
+        expect(result.rowCount).toBe(1);
+      });
+
+      const rowsAfterDelete = await labelRow(tenantId, accountId);
+      expect(rowsAfterDelete[0]!.created_by).toBeNull();
+
+      const secondUserId = await seedUser(tenantId, 'second@example.com', 'correct-password-2');
+      const secondCookie = await loginAndGetCookie(slug, 'second@example.com', 'correct-password-2');
+      expect(secondCookie).not.toBeNull();
+
+      const put2 = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: secondCookie! },
+        payload: { kind: 'external_collaborator', note: 'set by second user' },
+      });
+      expect(put2.statusCode).toBe(200);
+
+      const rowsAfterSecondPut = await labelRow(tenantId, accountId);
+      expect(rowsAfterSecondPut).toHaveLength(1);
+      expect(rowsAfterSecondPut[0]!.kind).toBe('external_collaborator');
+      expect(rowsAfterSecondPut[0]!.created_by).not.toBe(secondUserId);
+      expect(rowsAfterSecondPut[0]!.created_by).toBeNull();
+    });
+  });
+
+  describe('T-L3: validation', () => {
+    it('rejects an unknown kind with 400 invalid_body', async () => {
+      const { slug, accountId } = await seedTenantWithAccount('l3-kind');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'not_a_real_kind' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: 'invalid_body' });
+    });
+
+    it('rejects a 501-character note with 400 invalid_body', async () => {
+      const { slug, accountId } = await seedTenantWithAccount('l3-long-note');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'a'.repeat(501) },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: 'invalid_body' });
+    });
+
+    it('rejects an explicit empty-string note with 400 invalid_body', async () => {
+      const { slug, accountId } = await seedTenantWithAccount('l3-empty-note');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: '' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: 'invalid_body' });
+    });
+
+    it('rejects a non-UUID account id with 400 invalid_params', async () => {
+      const { slug } = await seedTenantWithAccount('l3-param');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/not-a-uuid/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: 'invalid_params' });
+    });
+
+    it('rejects an extra body field with 400 invalid_body (strict schema)', async () => {
+      const { slug, accountId } = await seedTenantWithAccount('l3-extra');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', extra: 'field' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: 'invalid_body' });
+    });
+  });
+
+  describe('T-L4: PUT on nonexistent account', () => {
+    it('returns 404 and creates no account_labels row', async () => {
+      const { tenantId, slug } = await seedTenantWithAccount('l4');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const nonexistentAccountId = randomUUID();
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${nonexistentAccountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: 'not_found' });
+
+      const rows = await labelRow(tenantId, nonexistentAccountId);
+      expect(rows).toHaveLength(0);
+    });
+  });
+
+  describe('T-L5: cross-tenant PUT', () => {
+    it('returns 404 for a real tenant-A account under a tenant-B session, no row created either side', async () => {
+      const tenantA = await seedTenantWithAccount('l5-a');
+      const slugB = `tenant-l5-b-${randomUUID()}`;
+      const tenantBId = await seedTenant(slugB, 'Label Tenant B');
+      await seedUser(tenantBId, 'admin@example.com', 'correct-password');
+      const cookieB = await loginAndGetCookie(slugB, 'admin@example.com', 'correct-password');
+      expect(cookieB).not.toBeNull();
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${tenantA.accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookieB! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: 'not_found' });
+
+      const rowsUnderA = await labelRow(tenantA.tenantId, tenantA.accountId);
+      expect(rowsUnderA).toHaveLength(0);
+      const rowsUnderB = await labelRow(tenantBId, tenantA.accountId);
+      expect(rowsUnderB).toHaveLength(0);
+    });
+  });
+
+  describe('T-L6: DELETE', () => {
+    it('deletes an existing label (204), repeat DELETE stays 204, DELETE on nonexistent account is 404', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('l6');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+      expect(put.statusCode).toBe(200);
+
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+      });
+      expect(del.statusCode).toBe(204);
+
+      const rows = await labelRow(tenantId, accountId);
+      expect(rows).toHaveLength(0);
+
+      const secondDel = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+      });
+      expect(secondDel.statusCode).toBe(204);
+
+      const delOnMissing = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${randomUUID()}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+      });
+      expect(delOnMissing.statusCode).toBe(404);
+    });
+  });
+
+  describe('T-L7: GET /accounts label field', () => {
+    it('a labeled item has label {kind, note}; an unlabeled item has label: null', async () => {
+      const { slug, accountId } = await seedTenantWithAccount('l7');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'external_collaborator', note: 'contractor' },
+      });
+      expect(put.statusCode).toBe(200);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/accounts',
+        headers: { cookie: cookie! },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        items: { accountId: string; label: { kind: string; note: string | null } | null }[];
+      };
+
+      const labeled = body.items.find((item) => item.accountId === accountId);
+      expect(labeled).toBeDefined();
+      expect(labeled!.label).not.toBeNull();
+      expect(typeof labeled!.label!.kind).toBe('string');
+      expect(labeled!.label!.kind).toBe('external_collaborator');
+      expect(typeof labeled!.label!.note).toBe('string');
+      expect(labeled!.label!.note).toBe('contractor');
+    });
+
+    it('an item with no label has label: null', async () => {
+      const { slug, accountId } = await seedTenantWithAccount('l7-null');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/accounts',
+        headers: { cookie: cookie! },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { items: { accountId: string; label: unknown }[] };
+
+      const unlabeled = body.items.find((item) => item.accountId === accountId);
+      expect(unlabeled).toBeDefined();
+      expect(unlabeled!.label).toBeNull();
+    });
+  });
+
+  describe('T-L8: Origin-mismatch PUT creates no label row', () => {
+    it('returns 403 and account_labels has no row for the account', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('l8');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: 'https://evil.example', cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(403);
+
+      const rows = await labelRow(tenantId, accountId);
+      expect(rows).toHaveLength(0);
+    });
+  });
+
+  describe('T-L9: rate-limit config sweep (RT7-proven via captured field)', () => {
+    it('every /api route carries a truthy object rate-limit config', () => {
+      // The `onRoute` hook in app.ts computes hasRateLimit from
+      // routeOptions.config?.rateLimit at REGISTRATION time and this test
+      // reads only that captured field — it never re-derives the value from
+      // route behavior. This makes the assertion sensitive to app.ts's own
+      // logic: if a future route omits config.rateLimit (or a maintainer
+      // weakens the hasRateLimit computation in app.ts back to a mere
+      // non-null check), routeOptions.config?.rateLimit would be undefined
+      // for that route and `typeof undefined === 'object'` is false, so
+      // hasRateLimit is false and this loop fails on that route. The
+      // computation was verified by code review (app.ts's onRoute hook uses
+      // `typeof routeOptions.config?.rateLimit === 'object' &&
+      // routeOptions.config.rateLimit !== null`, matching @fastify/rate-limit's
+      // options-object shape) rather than by mutating production source,
+      // per the no-mutation-testing-on-production-files constraint.
+      expect(app.apiRoutes.length).toBeGreaterThan(0);
+      for (const route of app.apiRoutes) {
+        expect(route.hasRateLimit, `${route.method} ${route.url} should carry a rate-limit config`).toBe(
+          true,
+        );
+      }
+    });
+  });
+});
+
+describe('C13 acceptance: saas-apps duplicate key', () => {
+  describe('T-S1: duplicate registration', () => {
+    it('a second POST with the same key returns 409 duplicate_key; GET still returns one item', async () => {
+      const slug = `tenant-s1-${randomUUID()}`;
+      const tenantId = await seedTenant(slug, 'S1 Tenant');
+      await seedUser(tenantId, 'admin@example.com', 'correct-password');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      expect(cookie).not.toBeNull();
+
+      const payload = {
+        key: 'google-workspace',
+        displayName: 'GWS Primary',
+        credentials: { serviceAccountJson: '{"client_email":"a@b.iam.gserviceaccount.com"}' },
+      };
+
+      const first = await app.inject({
+        method: 'POST',
+        url: '/api/saas-apps',
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload,
+      });
+      expect(first.statusCode).toBe(201);
+
+      const second = await app.inject({
+        method: 'POST',
+        url: '/api/saas-apps',
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { ...payload, displayName: 'GWS Duplicate Attempt' },
+      });
+      expect(second.statusCode).toBe(409);
+      expect(second.json()).toEqual({ error: 'duplicate_key' });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/saas-apps',
+        headers: { cookie: cookie! },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.items).toHaveLength(1);
+      expect(JSON.stringify(body)).not.toContain('credentials');
+      expect(JSON.stringify(body)).not.toContain('client_email');
+    });
   });
 });

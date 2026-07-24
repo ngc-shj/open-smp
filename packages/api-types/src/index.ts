@@ -18,6 +18,12 @@ export type AccountLink = {
   } | null;
 };
 
+export type AccountLabelKind = 'known_shared' | 'service_account' | 'external_collaborator';
+
+export type AccountLabel = { kind: AccountLabelKind; note: string | null };
+
+export type AccountLabelResponse = { accountId: string; kind: AccountLabelKind; note: string | null };
+
 export type AccountListItem = {
   accountId: string;
   appKey: string;
@@ -29,6 +35,7 @@ export type AccountListItem = {
   lastActivityAt: string | null;
   lastSyncedAt: string;
   link: AccountLink | null;
+  label: AccountLabel | null;
 };
 
 export type AccountListResponse = {
@@ -65,3 +72,9 @@ export type HrImportResponse = {
   errors: ImportRowIssue[];
   warnings: ImportRowIssue[];
 };
+
+export type SaasAppListItem = { id: string; key: string; displayName: string };
+
+export type SaasAppListResponse = { items: SaasAppListItem[] };
+
+export type SaasAppCreateResponse = { id: string; key: string; displayName: string };
