@@ -434,6 +434,50 @@ describe('C6/S12 acceptance: login account-bucket rate limit fires (CT2)', () =>
 
     expect(statusAt21).toBe(429);
   });
+
+  it('the 429 HALTS login: a rate-limited request with CORRECT credentials sets no session cookie (CT13)', async () => {
+    // RT8: proving statusCode===429 alone does not prove the preHandler stops
+    // the login handler — a broken wrapper could return 429 while still
+    // running verifyLogin and setting a cookie. Seed a REAL user, exhaust the
+    // bucket with wrong-password attempts, then make the 21st attempt with the
+    // CORRECT password: if the preHandler halts, we get 429 and no cookie; if
+    // it does not, verifyLogin succeeds and a session cookie is set.
+    const slug = `tenant-ct13-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'CT13 Tenant');
+    await seedUser(tenantId, 'ct13@example.com', 'correct-password');
+
+    for (let i = 0; i < 20; i += 1) {
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress: `10.2.0.${i + 1}`,
+        headers: { origin: APP_ORIGIN },
+        payload: { tenantSlug: slug, email: 'ct13@example.com', password: 'wrong' },
+      });
+    }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: '10.2.0.99',
+      headers: { origin: APP_ORIGIN },
+      payload: { tenantSlug: slug, email: 'ct13@example.com', password: 'correct-password' },
+    });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.cookies.find((c) => c.name === 'session')).toBeUndefined();
+
+    // Cross-check the persistence side: no session row was created for the user.
+    const sessionCount = await withTenant(appPool, tenantId, async (tx) => {
+      const { rows } = await tx.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM sessions s
+         JOIN users u ON u.id = s.user_id WHERE u.email = $1`,
+        ['ct13@example.com'],
+      );
+      return Number(rows[0]?.n ?? '0');
+    });
+    expect(sessionCount).toBe(0);
+  });
 });
 
 describe('C6/S13 acceptance: no HTTP route exposes the rotation sweep (CT11, cross-check)', () => {

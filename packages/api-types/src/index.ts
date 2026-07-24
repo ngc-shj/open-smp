@@ -53,3 +53,15 @@ export type JobState = {
   state: string;
   result: unknown;
 };
+
+// hr-import response (C6). Single-sourced here per D6; imported by
+// apps/api/src/routes/hr-import.ts. `warnings` carries non-fatal per-row
+// notices (e.g. duplicate employee_id overwrote an earlier row).
+export type ImportRowIssue = { row: number; message: string };
+
+export type HrImportResponse = {
+  imported: number;
+  skipped: number;
+  errors: ImportRowIssue[];
+  warnings: ImportRowIssue[];
+};

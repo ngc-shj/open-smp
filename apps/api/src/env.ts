@@ -8,7 +8,11 @@ const envSchema = z.object({
   // Privileged URL used ONLY for runMigrations at boot (DDL, role creation).
   ADMIN_DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
-  APP_ORIGIN: z.string().min(1),
+  // Must be a full URL with scheme (CF6): the login route derives the session
+  // cookie's Secure flag from `new URL(APP_ORIGIN).protocol`, which throws on a
+  // scheme-less value — validate here so a misconfig fails fast at startup, not
+  // per-request as a 500.
+  APP_ORIGIN: z.string().url(),
   ENCRYPTION_KEYS: z.string().min(1),
   PORT: z.coerce.number().int().positive().default(3001),
   DISCOVERY_STORE_RAW: z

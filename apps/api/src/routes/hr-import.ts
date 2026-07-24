@@ -3,6 +3,7 @@ import { parse } from 'csv-parse/sync';
 import { withTenant } from '@open-smp/schema';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
+import type { ImportRowIssue, HrImportResponse } from '@open-smp/api-types';
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_ERRORS = 100;
@@ -10,8 +11,9 @@ const MAX_ROWS = 20_000;
 const EMAIL_MAX_LENGTH = 320;
 const NAME_MAX_LENGTH = 200;
 
-type ImportRowError = { row: number; message: string };
-type ImportWarning = { row: number; message: string };
+// Single-sourced in @open-smp/api-types per D6/CF8.
+type ImportRowError = ImportRowIssue;
+type ImportWarning = ImportRowIssue;
 
 type ValidRow = {
   employeeId: string;
@@ -190,12 +192,13 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
         });
       }
 
-      return reply.code(200).send({
+      const body: HrImportResponse = {
         imported,
         skipped: errors.length,
         errors,
         warnings,
-      });
+      };
+      return reply.code(200).send(body);
     },
   );
 }

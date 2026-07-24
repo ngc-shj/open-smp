@@ -102,3 +102,26 @@ R1/R17, R2, R9, R13, R33, R39, R42, R44 checked-clean re-verified; R3-R8/R10-R12
 R2/R9/R13/R42 clean; RS1 (single verify call all branches), RS2 (IP+account+route limits wired), RS3 (.strict() everywhere), RS4 (no secret in logs), RS6 n/a; R14/R31/R39/R43/R44 no contradicting evidence.
 ### Testing expert
 R33/R44/R42/R39 evidence-checked; no .skip/.only; RT1 PASS (boundary-only mocking), RT8 PASS (genuine re-query), RT9 CLOSED re-verified, RT2 applied; RT3-RT7 no distinct findings.
+
+---
+
+# Code Review: mvp-account-matching — Round 2
+Date: 2026-07-24
+
+## Changes from Previous Round
+All 22 round-1 findings fixed and verified. Round-2 incremental review of the fix diff surfaced 8 new findings (2 introduced by round-1 fixes).
+
+## Round-2 Findings & Resolution
+- CF6 Major (introduced by CF1 fix): APP_ORIGIN not URL-validated → new URL() 500 on misconfig. FIXED: env.ts APP_ORIGIN = z.string().url() (startup fail-fast).
+- CF7 Minor / CS7-A Minor (introduced by D8 fix; convergent functionality+security): account-bucket Map unbounded growth (memory-DoS). FIXED: per-window lazy sweep in account-bucket.ts + eviction unit test.
+- CF8 Minor: hr-import warnings shape not in api-types (CF5 carryover). FIXED: HrImportResponse single-sourced in @open-smp/api-types, wired into hr-import.ts.
+- CT13 Major (RT8): account-bucket 429 test didn't prove login halted. FIXED: added correct-password 21st-attempt test asserting 429 + no session cookie + zero sessions rows.
+- CT14 Minor [Adjacent]: ambiguous candidates shape untested at worker level. FIXED: match.integration.test.ts asserts persisted evidence.candidates {identityId, displayName} pairs.
+- CS1/CS2/CS3-A/CS4-A/CT2-fix: all verified correct by the security expert (preHandler 429 empirically proven to halt login; enumeration-resistance preserved).
+- R43 boundary-widening review: CF1's conditional Secure flag assessed as operator-gated (APP_ORIGIN is server config, not attacker-influenced), CSRF defense is the independent unconditional Origin gate — acceptable, not a widening. All other fixes narrow boundaries.
+- Process finding (security expert): .claude/settings.json (a sub-agent permission-grant residue) had leaked into commit f003866. REMOVED and gitignored.
+
+## Recurring Issue Check (Round 2)
+### Functionality: R43 checked (no widening); RS2 re-verified enforced; R33/R39/R42/R44 clean in diff.
+### Security: RS2 both limits now genuinely independent+enforced; RS1/RS3-RS6 not implicated; R43 full review done (CF1 acceptable); R2 constants centralized.
+### Testing: RT8 recurred (CT13) → fixed; RT9 clean (no new twin); RT1-RT7 no recurrence (real Testcontainers, own-tenant isolation, falsifiable assertions).

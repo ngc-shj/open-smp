@@ -20,7 +20,11 @@ const MAX = LOGIN_ACCOUNT_BUCKET_MAX;
 
 type Bucket = { count: number; resetAt: number };
 
-export function createAccountBucketLimiter(now: () => number = () => Date.now()) {
+export type AccountBucketPreHandler = ((req: FastifyRequest, reply: FastifyReply) => Promise<void>) & {
+  trackedKeyCount: () => number;
+};
+
+export function createAccountBucketLimiter(now: () => number = () => Date.now()): AccountBucketPreHandler {
   const buckets = new Map<string, Bucket>();
 
   function key(req: FastifyRequest): string {
@@ -33,11 +37,30 @@ export function createAccountBucketLimiter(now: () => number = () => Date.now())
     return createHash('sha256').update(`${tenantSlug}:${email}`).digest('hex');
   }
 
-  return async function accountBucketPreHandler(
+  let lastSweep = now();
+
+  // Drop expired buckets (CF7/CS7-A): without this the Map grows unboundedly —
+  // an unauthenticated caller varying tenantSlug:email creates a permanent
+  // entry per key, a memory-DoS. Sweeping is amortized to at most once per
+  // window so the walk cost stays negligible under load.
+  function sweep(t: number): void {
+    if (t - lastSweep < WINDOW_MS) {
+      return;
+    }
+    lastSweep = t;
+    for (const [k, bucket] of buckets) {
+      if (bucket.resetAt <= t) {
+        buckets.delete(k);
+      }
+    }
+  }
+
+  const preHandler = (async function accountBucketPreHandler(
     req: FastifyRequest,
     reply: FastifyReply,
   ): Promise<void> {
     const t = now();
+    sweep(t);
     const k = key(req);
     const existing = buckets.get(k);
 
@@ -50,5 +73,9 @@ export function createAccountBucketLimiter(now: () => number = () => Date.now())
     if (existing.count > MAX) {
       await reply.code(429).send({ error: 'too_many_requests' });
     }
-  };
+  } as AccountBucketPreHandler);
+
+  // Exposed for the eviction test (CF7); not used by production callers.
+  preHandler.trackedKeyCount = (): number => buckets.size;
+  return preHandler;
 }

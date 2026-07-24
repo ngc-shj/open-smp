@@ -6,3 +6,6 @@ dist/
 .env.*
 !.env.example
 coverage/
+
+# Claude Code local config — never commit (session-scoped permission grants leak here)
+.claude/

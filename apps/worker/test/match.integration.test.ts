@@ -116,7 +116,8 @@ describe('C5 runMatch acceptance', () => {
         saas_account_id: string;
         identity_id: string | null;
         status: string;
-      }>('SELECT saas_account_id, identity_id, status FROM account_links');
+        evidence: { candidates?: { identityId: string; displayName: string }[] } | null;
+      }>('SELECT saas_account_id, identity_id, status, evidence FROM account_links');
       return rows;
     });
 
@@ -133,6 +134,18 @@ describe('C5 runMatch acceptance', () => {
 
     expect(byAccount.get(ambiguousAccountId)?.status).toBe('ambiguous');
     expect(byAccount.get(ambiguousAccountId)?.identity_id).toBeNull();
+
+    // CT14 / CF3: the ambiguous link's persisted evidence.candidates survives
+    // the round-trip as {identityId, displayName} objects (not bare UUIDs),
+    // carrying both tied identities so a human reviewer can adjudicate.
+    const ambiguousCandidates = byAccount.get(ambiguousAccountId)?.evidence?.candidates ?? [];
+    expect(ambiguousCandidates).toHaveLength(2);
+    const candidateIds = ambiguousCandidates.map((c) => c.identityId).sort();
+    expect(candidateIds).toEqual([ambiguousIdentityId1, ambiguousIdentityId2].sort());
+    for (const candidate of ambiguousCandidates) {
+      expect(typeof candidate.displayName).toBe('string');
+      expect(candidate.displayName.length).toBeGreaterThan(0);
+    }
 
     const events = await withTenant(appPool, tenantId, async (tx) => {
       const { rows } = await tx.query(

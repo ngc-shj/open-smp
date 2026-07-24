@@ -64,4 +64,21 @@ describe('S12 account-bucket limiter', () => {
     now += 60 * 60 * 1000 + 1; // advance past the 1-hour window
     expect(await run(limiter, r)).toBeNull();
   });
+
+  it('evicts expired buckets so the tracked-key count does not grow unboundedly (CF7)', async () => {
+    let now = 1_000_000;
+    const limiter = createAccountBucketLimiter(() => now);
+
+    // 100 distinct one-shot keys create 100 entries in one window.
+    for (let i = 0; i < 100; i += 1) {
+      await run(limiter, req('acme', `probe-${i}@example.com`));
+    }
+    expect(limiter.trackedKeyCount()).toBe(100);
+
+    // Advance past the window; the next call triggers a sweep that drops all
+    // 100 expired entries, leaving only the one key seen after the sweep.
+    now += 60 * 60 * 1000 + 1;
+    await run(limiter, req('acme', 'fresh@example.com'));
+    expect(limiter.trackedKeyCount()).toBe(1);
+  });
 });
