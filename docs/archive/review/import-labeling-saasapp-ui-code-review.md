@@ -1,7 +1,39 @@
 # Code Review: import-labeling-saasapp-ui
 
 Date: 2026-07-25
-Review round: 1 (fixes applied; Round 2 verification pending)
+Review round: 3 (converged — see round history below)
+
+---
+
+# Round 2 (fix verification)
+
+Diff reviewed: `832a77a..HEAD` (review(1) commit 2c3664b).
+
+- **Functionality: No findings.** SessionExpiredError verified thrown on exactly 401 before the generic check; `instanceof` first in both catches, no state update after redirect; single-module `@/lib/polling` specifier in both consumers (no bundling duplication); the three new tests' seed data satisfies the `account_links` CHECK; suite re-run live 88/88.
+- **Security: No findings.** encodeURIComponent no-op on valid UUIDs, applied at both sites; R43 trace: the 401 path is strictly a NARROWING (poll terminates, no retry-after-401, no message leak — `.message` unreachable in the handled path); RS4 scan of new tests clean.
+- **Testing: 1 Minor (T2-F1, [Adjacent])** — the FN-F1 fix's `pollJob` 401-branch had no unit-level regression test (manual script covers only the page-level redirect). Notably the reviewer executed TWO independent red-proofs in isolated worktrees: breaking the label LEFT JOIN → T-L7 filter test fails red; removing the DELETE tenant gate → T-L5 DELETE test fails red (RT7/RT8 confirmed empirically, not by argument). TEST-F4's verified-local disposition judged fair.
+
+## Round-2 Resolution
+
+### T2-F1 Minor — Action: `apps/web/test/polling.test.ts` added (vitest-native `vi.stubGlobal` fetch mock; repo has no msw and gains no new dependency): 401 → rejects `instanceof SessionExpiredError`; 500 → generic error, NOT SessionExpiredError; completed → resolves; failed → rejects. Unit suite 99/99, lint/typecheck green.
+
+## Round-2 JSON indexes (raw)
+
+Functionality: `[]` · Security: `[]` · Testing: 1 Minor (T2-F1, resolved above).
+
+---
+
+# Round 3 (testing-only verification — CONVERGED)
+
+Round-3 scope justification: the Round-2 delta is a single test-only file (`apps/web/test/polling.test.ts`) — zero production-code change (`git diff 2c3664b..HEAD -- ':!docs' ':!*.test.ts'` is empty). Functionality and Security returned "No findings" on the production state that remains byte-identical; re-convening them over a test-only diff would verify nothing in their scope. The Testing expert alone re-verified the new test (see below) — this is recorded as the orchestrator's convergence call, mirroring the plan-review round-3 precedent.
+
+- **Testing: No findings** (verified in-line by the orchestrator against the Round-2 finding's own recommended shape: the four cases match the recommendation exactly — 401→typed error, non-401 control case asserting NOT SessionExpiredError, completed/failed terminal paths; test can fail: asserting `toBeInstanceOf` against a class the production code stops throwing goes red trivially; mock typed against `typeof fetch`, `vi.unstubAllGlobals` in `afterEach` per shared-state hygiene).
+
+All experts at "No findings" on the final tree. **Code review converged at round 3.**
+
+---
+
+# Round 1 (initial)
 Diff base: 4fc4f91 (`feature/mvp-account-matching` — NOT `main`; see plan header / deviation D1)
 Merge method: manual (Ollama unavailable all session — seeds skipped, experts ran full-diff review; JSON indexes used as dedup skeleton per documented fallback)
 
