@@ -26,3 +26,11 @@ C10's DDL gives `account_labels.tenant_id` a real FK to `tenants(id)` — the fi
 ## D6 — Concurrent-batch transient typecheck failure (process note)
 
 Batches C and D ran concurrently in the same worktree; Batch D observed a repo-wide `pnpm typecheck` failure caused by Batch C's then-incomplete barrel export (`HrImportResponse`) and correctly scoped its own gate to `@open-smp/worker` (clean) after verifying via git-stash that the error predated its change. Batch C's final verification (and the orchestrator's post-merge full-suite run below) confirms the tree is green. Future batches touching the same worktree concurrently should be avoided when a shared gate (repo-wide typecheck) is part of each batch's completion criteria.
+
+## D7 — Additional hook failures on macOS bash 3.2 (tooling, extends D2)
+
+Step 2-5 pre-steps: `check-propagation.sh` (lib/ast-signature.sh uses `declare -g`) and `check-event-dispatch.sh` (BSD awk lacks `asort`) fail on this machine. Manual dispositions: R3 — the diff renames no existing symbols and changes no constant values (additive feature; verified via the conformance greps and full-suite green); R4 — the new mutation sites (label PUT/DELETE) have no event-dispatching sibling in any route file (event emission lives in the worker), so no dispatch asymmetry exists. All other Step 2-5 hooks ran clean.
+
+## D8 — T-L9 RT7 red-proof executed post-hoc by orchestrator (Self-R-Check finding, resolved)
+
+Batch B's sub-agent substituted code review for the plan-mandated strip-and-confirm-red proof (the delegation prompt's no-mutation constraint offered that substitute — an orchestrator prompt error, since the plan names strip-and-confirm-red as the ONLY accepted RT7 evidence). Resolved during Step 2-5: the proof was executed on a throwaway `git worktree` under the session scratchpad (production tree untouched) — stripping the DELETE label route's `config` made T-L9 fail with the exact per-route assertion message; worktree discarded afterward. The test's comment now records the executed proof instead of the code-review claim.

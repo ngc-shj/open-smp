@@ -1066,17 +1066,14 @@ describe('C11 acceptance: account labeling', () => {
       // The `onRoute` hook in app.ts computes hasRateLimit from
       // routeOptions.config?.rateLimit at REGISTRATION time and this test
       // reads only that captured field — it never re-derives the value from
-      // route behavior. This makes the assertion sensitive to app.ts's own
-      // logic: if a future route omits config.rateLimit (or a maintainer
-      // weakens the hasRateLimit computation in app.ts back to a mere
-      // non-null check), routeOptions.config?.rateLimit would be undefined
-      // for that route and `typeof undefined === 'object'` is false, so
-      // hasRateLimit is false and this loop fails on that route. The
-      // computation was verified by code review (app.ts's onRoute hook uses
-      // `typeof routeOptions.config?.rateLimit === 'object' &&
-      // routeOptions.config.rateLimit !== null`, matching @fastify/rate-limit's
-      // options-object shape) rather than by mutating production source,
-      // per the no-mutation-testing-on-production-files constraint.
+      // route behavior. If a future route omits config.rateLimit (or the
+      // hasRateLimit computation is weakened back to a mere non-null
+      // check), `typeof undefined === 'object'` is false and this loop
+      // fails on that route. RT7 strip-and-confirm-red proof executed
+      // 2026-07-25 on a throwaway git worktree (never on this tree):
+      // removing the DELETE label route's `config` made this test fail with
+      // "DELETE /api/accounts/:saasAccountId/label should carry a
+      // rate-limit config: expected false to be true".
       expect(app.apiRoutes.length).toBeGreaterThan(0);
       for (const route of app.apiRoutes) {
         expect(route.hasRateLimit, `${route.method} ${route.url} should carry a rate-limit config`).toBe(
