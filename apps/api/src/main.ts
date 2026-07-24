@@ -17,7 +17,7 @@ const hasher: Hasher = {
 };
 
 async function main(): Promise<void> {
-  await runMigrations(env.DATABASE_URL);
+  await runMigrations(env.ADMIN_DATABASE_URL);
 
   const pool = createPool(env.DATABASE_URL);
   const connection = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });

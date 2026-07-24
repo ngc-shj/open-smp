@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Single workflow, no duplicated config (plan R33): checks -> integration and
+# checks -> compose-smoke both build on the same lint/typecheck/unit gate.
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:unit
+
+  integration:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Testcontainers pulls its own postgres:16 / redis:7 images (pinned
+      # inside the integration tests themselves, matching this workflow's
+      # pinning — plan Testing Strategy T4); GitHub-hosted runners ship
+      # Docker, so no extra service containers are declared here.
+      - run: pnpm test:integration
+
+  compose-smoke:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Wait for API health endpoint
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 120))
+          until curl -sf -o /dev/null http://localhost:3001/healthz; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "api /healthz did not return 200 within 120s" >&2
+              docker compose logs api || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Wait for seed job to complete
+        # `docker compose wait` blocks until the service's container stops
+        # and exits with that container's own exit code — the gate here is
+        # judged by this step's own exit status (R44), not by grepping logs.
+        timeout-minutes: 2
+        run: docker compose wait seed
+
+      - name: Log in as the seeded demo admin
+        run: |
+          set -euo pipefail
+          http_status="$(curl -sS -o /tmp/login-response.json -w '%{http_code}' \
+            -c /tmp/cookies.txt \
+            -H 'Content-Type: application/json' \
+            -H 'Origin: http://localhost:3000' \
+            -d '{"tenantSlug":"demo","email":"admin@demo.example","password":"demo-admin-password"}' \
+            http://localhost:3001/api/auth/login)"
+          echo "login http status: $http_status"
+          cat /tmp/login-response.json
+          if [ "$http_status" != "200" ]; then
+            echo "login did not return 200" >&2
+            exit 1
+          fi
+
+      - name: Assert seeded demo shows >=1 orphan account
+        run: |
+          set -euo pipefail
+          http_status="$(curl -sS -o /tmp/orphan-response.json -w '%{http_code}' \
+            -b /tmp/cookies.txt \
+            'http://localhost:3001/api/accounts?status=orphan')"
+          echo "orphan http status: $http_status"
+          cat /tmp/orphan-response.json
+          if [ "$http_status" != "200" ]; then
+            echo "GET /api/accounts?status=orphan did not return 200" >&2
+            exit 1
+          fi
+          count="$(jq '.items | length' /tmp/orphan-response.json)"
+          echo "orphan count: $count"
+          if [ "$count" -lt 1 ]; then
+            echo "expected >=1 orphan account, got $count" >&2
+            exit 1
+          fi
+
+      - name: Assert seeded demo shows >=1 ghost account
+        run: |
+          set -euo pipefail
+          http_status="$(curl -sS -o /tmp/ghost-response.json -w '%{http_code}' \
+            -b /tmp/cookies.txt \
+            'http://localhost:3001/api/accounts?status=ghost')"
+          echo "ghost http status: $http_status"
+          cat /tmp/ghost-response.json
+          if [ "$http_status" != "200" ]; then
+            echo "GET /api/accounts?status=ghost did not return 200" >&2
+            exit 1
+          fi
+          count="$(jq '.items | length' /tmp/ghost-response.json)"
+          echo "ghost count: $count"
+          if [ "$count" -lt 1 ]; then
+            echo "expected >=1 ghost account, got $count" >&2
+            exit 1
+          fi
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down the stack
+        if: always()
+        run: docker compose down -v

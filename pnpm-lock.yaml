@@ -38,6 +38,9 @@ importers:
       '@open-smp/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@open-smp/matcher':
+        specifier: workspace:*
+        version: link:../../packages/matcher
       '@open-smp/queues':
         specifier: workspace:*
         version: link:../../packages/queues

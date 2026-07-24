@@ -9,8 +9,23 @@ orphan & ghost account detection. See `docs/archive/review/mvp-account-matching-
 ## Quick start
 
 ```bash
-docker compose up   # Postgres + Redis + API + worker + web, seeded demo data
+docker compose up --build
 ```
+
+This boots Postgres, Redis, the API, the worker, and the web UI, then runs a
+one-shot seed job that creates a demo tenant with sample accounts (including
+at least one orphan and one ghost account).
+
+1. Open <http://localhost:3000>
+2. Log in with tenant slug `demo`, email `admin@demo.example`, password
+   `demo-admin-password`
+3. Browse `/accounts` (defaults to the orphan filter) and `/events`
+
+The seeded Google Workspace connector uses fake credentials, so sync will
+fail against the real Admin SDK. To connect a real Workspace tenant, replace
+the seeded `saas_apps` credentials via `POST /api/saas-apps` with your own
+service-account JSON — see `docs/manual-tests/google-workspace-sync.md` for
+the full setup and verification procedure.
 
 ## Layout
 

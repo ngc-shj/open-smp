@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 const envSchema = z.object({
+  // App-pool URL — MUST be the RLS-constrained opensmp_app role. A superuser
+  // here silently bypasses every RLS policy (superusers ignore RLS), which is
+  // why migrations get their own privileged URL below.
   DATABASE_URL: z.string().min(1),
+  // Privileged URL used ONLY for runMigrations at boot (DDL, role creation).
+  ADMIN_DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   APP_ORIGIN: z.string().min(1),
   ENCRYPTION_KEYS: z.string().min(1),

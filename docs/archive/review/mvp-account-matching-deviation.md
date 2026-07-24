@@ -17,3 +17,7 @@
 - Plan (C1/C7): sessions table had no explicit token-hash column; C7 requires 32-byte tokens stored as SHA-256. `sessions.id uuid` cannot hold a 64-hex digest, so migration 0002 adds `token_hash text UNIQUE NOT NULL` (additive; id stays the PK).
 - Also: sessions/users are RLS-protected, but requireSession must pick a tenant GUC BEFORE any lookup can run (chicken-and-egg). Cookie value is `${tenantId}.${token}` — the embedded tenantId is untrusted and only selects which withTenant GUC to open; the actual authorization is the token_hash lookup under that tenant's RLS. Forged tenantId → zero rows → 401 (fail-closed, same shape as an unset GUC).
 - Contract impact: none of C7's invariants change (lookup is by hash, timing shape preserved); C1 gains one additive column via migration 0002.
+
+## D5 — ADMIN_DATABASE_URL / DATABASE_URL split
+- Plan: C1/C6 name a single DATABASE_URL. Implemented: api boot runs runMigrations(ADMIN_DATABASE_URL) (privileged, DDL) while the app pool uses DATABASE_URL (opensmp_app, RLS-constrained).
+- Reason: a single URL forces the app pool onto the superuser, and superusers bypass RLS entirely — the composed deployment would silently lose tenant isolation while every RLS test stays green (tests connect as opensmp_app explicitly). Fail-safe requires the split.
