@@ -52,7 +52,14 @@ describe('buildAccountsCsv wiring', () => {
       evidence: {
         rule: 'name-domain',
         matchedValue: '@SUM(1+1)',
-        candidates: ['=cmd1', '+cmd2', '-cmd3', '@cmd4', '\tcmd5', '\rcmd6'],
+        candidates: [
+          { identityId: 'id-1', displayName: '=cmd1' },
+          { identityId: 'id-2', displayName: '+cmd2' },
+          { identityId: 'id-3', displayName: '-cmd3' },
+          { identityId: 'id-4', displayName: '@cmd4' },
+          { identityId: 'id-5', displayName: '\tcmd5' },
+          { identityId: 'id-6', displayName: '\rcmd6' },
+        ],
       },
     },
   };

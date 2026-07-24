@@ -83,9 +83,14 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
   const runStartedAt = new Date();
 
   let decrypted: Buffer | null = null;
+  // Resolved once the app row is loaded, so the failure-path audit event
+  // (CF2) can record which source failed even when the main transaction
+  // rolls back.
+  let appKey: string | null = null;
   try {
     const upserted = await withTenant(deps.pool, job.tenantId, async (tx) => {
       const app = await loadSaasApp(tx, job.saasAppId);
+      appKey = app.key;
 
       if (!app.credentials_enc) {
         throw new Error(`saas_apps row ${job.saasAppId} has no stored credentials`);
@@ -159,6 +164,31 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
     });
 
     return { upserted, runId };
+  } catch (error) {
+    // CF2: the sync transaction is all-or-nothing (a mid-stream connector
+    // failure rolls back every upsert — accepted, since re-running is
+    // idempotent per NFR3). Without this, a failed run left NO audit trail.
+    // Record the failure in its own committed transaction so the run is
+    // visible in discovery_events / the events UI. The error message is the
+    // connector's own (ConnectorError kind), never credential material.
+    if (appKey !== null) {
+      try {
+        await withTenant(deps.pool, job.tenantId, async (tx) => {
+          await tx.query(
+            `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+             VALUES ($1, $2, 'sync_failed', $3::jsonb)`,
+            [
+              job.tenantId,
+              appKey,
+              JSON.stringify({ runId, error: error instanceof Error ? error.message : 'unknown' }),
+            ],
+          );
+        });
+      } catch (auditError) {
+        deps.logger.error('failed to record sync_failed event', { runId, auditError: String(auditError) });
+      }
+    }
+    throw error;
   } finally {
     // S11: zero the decrypted credential buffer once the run completes or
     // fails. The parsed JS strings derived from it (e.g. the PEM key) are

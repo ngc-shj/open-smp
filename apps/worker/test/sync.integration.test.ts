@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { encryptCredentials } from '@open-smp/crypto';
 import type { ConnectorContext, RawAccount, SaaSConnector } from '@open-smp/connectors-core';
-import type { ConnectorRegistry } from '../src/connectors.js';
 import { runSync } from '../src/sync.js';
 
 // C5 acceptance: (a) re-running the same sync twice yields identical row
@@ -44,7 +43,9 @@ class FakeConnector implements SaaSConnector {
   }
 }
 
-const fakeRegistry: ConnectorRegistry = new Map([['fake-app', () => new FakeConnector()]]);
+// Mutable Map (not the ReadonlyMap ConnectorRegistry alias) so seedTenantWithApp
+// can register a per-seed unique key; runSync accepts it structurally.
+const fakeRegistry = new Map<string, () => SaaSConnector>([['fake-app', () => new FakeConnector()]]);
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -158,6 +159,35 @@ describe('C5 runSync acceptance', () => {
       expect(secondSyncedAt[i]!.getTime()).toBeGreaterThanOrEqual(firstSyncedAt[i]!.getTime());
     }
 
+    // CT4-A: >= alone is satisfied by a runSync that never touches
+    // last_synced_at at all (a no-op UPDATE), so it does not actually prove
+    // the field is rewritten. Force every row to a fixed past timestamp,
+    // re-run sync, and assert every row's last_synced_at is strictly greater
+    // than that fixed point — deterministic, no wall-clock sleep race.
+    const pastTimestamp = new Date('2020-01-01T00:00:00.000Z');
+    await withTenant(appPool, tenantA, async (tx) => {
+      await tx.query('UPDATE saas_accounts SET last_synced_at = $1 WHERE saas_app_id = $2', [
+        pastTimestamp.toISOString(),
+        saasAppId,
+      ]);
+    });
+
+    const third = await runSync(deps, { tenantId: tenantA, saasAppId });
+    expect(third.upserted).toBe(FAKE_ACCOUNTS.length);
+
+    const thirdSyncedAt = await withTenant(appPool, tenantA, async (tx) => {
+      const { rows } = await tx.query<{ last_synced_at: Date }>(
+        'SELECT last_synced_at FROM saas_accounts WHERE saas_app_id = $1 ORDER BY external_id',
+        [saasAppId],
+      );
+      return rows.map((row) => row.last_synced_at);
+    });
+
+    expect(thirdSyncedAt.length).toBe(FAKE_ACCOUNTS.length);
+    for (const syncedAt of thirdSyncedAt) {
+      expect(syncedAt.getTime()).toBeGreaterThan(pastTimestamp.getTime());
+    }
+
     const events = await withTenant(appPool, tenantA, async (tx) => {
       const { rows } = await tx.query(
         "SELECT * FROM discovery_events WHERE tenant_id = $1 AND kind = 'sync_completed'",
@@ -165,7 +195,8 @@ describe('C5 runSync acceptance', () => {
       );
       return rows;
     });
-    expect(events).toHaveLength(2);
+    // 3 runSync calls in this test (first, second, and the CT4-A third run).
+    expect(events).toHaveLength(3);
   });
 
   it('a sync job for tenant A writes zero rows visible under tenant B GUC', async () => {

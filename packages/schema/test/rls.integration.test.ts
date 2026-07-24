@@ -282,6 +282,40 @@ describe('C1 acceptance: fail-closed with no GUC set', () => {
   });
 });
 
+describe('C1/D7 acceptance: an empty-string (defined but empty) GUC is fail-closed, not a cast error', () => {
+  it('SELECT under a pooled client with app.tenant_id set to the empty string reads zero rows and does not throw', async () => {
+    const client = await appPool.connect();
+    try {
+      // First exercise one complete, normal withTenant-shaped transaction on
+      // this same pooled client, so the GUC has definitely been set to a real
+      // value at least once on this connection before we probe the empty-GUC
+      // path — this is the pooled-connection reuse scenario D7 addresses,
+      // distinct from the "GUC never set on this connection" case covered by
+      // the no-GUC test above.
+      await client.query('BEGIN');
+      await client.query('SELECT set_config($1, $2, true)', ['app.tenant_id', tenantA]);
+      const { rows: warmupRows } = await client.query('SELECT * FROM identities WHERE tenant_id = $1', [
+        tenantA,
+      ]);
+      expect(warmupRows.length).toBeGreaterThan(0);
+      await client.query('COMMIT');
+
+      // Now, on the SAME client/connection, open a fresh transaction and set
+      // the GUC to the empty string — defined but empty, not unset. Without
+      // the D7 NULLIF fix, `''::uuid` throws a cast error inside the RLS
+      // predicate instead of yielding zero rows.
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.tenant_id', '', true)");
+
+      await expect(client.query('SELECT * FROM identities')).resolves.toMatchObject({ rows: [] });
+
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+});
+
 describe('C1 acceptance: WITH CHECK rejects a foreign tenant_id on INSERT', () => {
   it.each(MEMBER_TABLES)(
     '%s: INSERT with tenant_id = tenant B under tenant A GUC is rejected',

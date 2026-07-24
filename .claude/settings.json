@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp /private/tmp/claude-501/-Users-noguchi-ghq-github-com-ngc-shj-open-smp/7dc38e06-dad2-44bb-92e1-186124f077ee/scratchpad/verify.mjs /Users/noguchi/ghq/github.com/ngc-shj/open-smp/apps/api/verify-tmp.mjs)"
+    ]
+  }
+}

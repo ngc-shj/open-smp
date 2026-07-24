@@ -43,7 +43,10 @@ function matchAccount(
     }
 
     if (hits.length >= 2) {
-      const candidates = hits.map((hit) => hit.identity.id);
+      const candidates = hits.map((hit) => ({
+        identityId: hit.identity.id,
+        displayName: hit.identity.displayName,
+      }));
       return {
         saasAccountId: account.id,
         identityId: null,

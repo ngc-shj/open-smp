@@ -11,7 +11,11 @@ export type AccountLink = {
   ruleId: string | null;
   identityId: string | null;
   identityName: string | null;
-  evidence: { rule: string; matchedValue: string; candidates?: string[] } | null;
+  evidence: {
+    rule: string;
+    matchedValue: string;
+    candidates?: { identityId: string; displayName: string }[];
+  } | null;
 };
 
 export type AccountListItem = {

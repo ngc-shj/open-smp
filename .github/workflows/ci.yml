@@ -40,7 +40,7 @@ jobs:
       - run: pnpm test:integration
 
   compose-smoke:
-    needs: checks
+    needs: [checks, integration]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

@@ -46,7 +46,8 @@ export function buildAccountsCsv(items: AccountListItem[]): string {
   const rows = [CSV_HEADER.map(csvField).join(',')];
 
   for (const item of items) {
-    const candidates = item.link?.evidence?.candidates?.join('; ') ?? '';
+    const candidates =
+      item.link?.evidence?.candidates?.map((c) => neutralizeCell(c.displayName)).join('; ') ?? '';
     const fields = [
       item.appName,
       item.email ?? '',

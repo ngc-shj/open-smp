@@ -34,6 +34,9 @@ COPY . .
 FROM source AS api
 WORKDIR /repo/apps/api
 ENV NODE_ENV=production
+# Run as the built-in non-root `node` user (CS3-A); /repo is root-owned from
+# the build, so the runtime user only needs read/exec, which it has.
+USER node
 EXPOSE 3001
 CMD ["pnpm", "start"]
 
@@ -41,6 +44,7 @@ CMD ["pnpm", "start"]
 FROM source AS worker
 WORKDIR /repo/apps/worker
 ENV NODE_ENV=production
+USER node
 CMD ["pnpm", "start"]
 
 # --- web: build stage produces the Next.js production build. ---
@@ -55,5 +59,9 @@ RUN pnpm --filter @open-smp/web build
 FROM web-build AS web
 WORKDIR /repo/apps/web
 ENV NODE_ENV=production
+# .next is produced by the build stage as root; the node user needs to read
+# it (and Next writes nothing at runtime in `next start`), so read access
+# from the world-readable default suffices.
+USER node
 EXPOSE 3000
 CMD ["pnpm", "start"]

@@ -144,12 +144,18 @@ export function getSessionCookieName(): string {
   return SESSION_COOKIE_NAME;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Cookie value is `${tenantId}.${token}`: sessions is RLS-protected, so the
 // tenant id is needed up front to open the withTenant GUC before the
 // token-hash lookup can run at all. The embedded tenantId is untrusted input
 // used only to pick which GUC to open — it grants nothing by itself: RLS
 // scopes the token_hash lookup to that tenant, so a forged/mismatched
 // tenantId simply yields zero rows (fail-closed, same as an unset GUC).
+// It MUST be validated as a UUID here: an unvalidated non-UUID reaches
+// `set_config` and then the RLS predicate's `::uuid` cast, which throws a
+// pg error that is not an UnauthorizedError — surfacing as a 500 with raw
+// DB error text instead of the documented fail-closed 401 (CS1).
 function parseSessionCookie(cookie: string): { tenantId: string; token: string } | null {
   const separatorIndex = cookie.indexOf('.');
   if (separatorIndex === -1) {
@@ -157,7 +163,7 @@ function parseSessionCookie(cookie: string): { tenantId: string; token: string }
   }
   const tenantId = cookie.slice(0, separatorIndex);
   const token = cookie.slice(separatorIndex + 1);
-  if (!tenantId || !token) {
+  if (!UUID_RE.test(tenantId) || !token) {
     return null;
   }
   return { tenantId, token };

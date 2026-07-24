@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
@@ -70,6 +70,14 @@ async function loginAndGetCookie(
   }
   const setCookie = res.cookies.find((c) => c.name === 'session');
   return setCookie ? `session=${setCookie.value}` : null;
+}
+
+// Cookie value is `session=${tenantId}.${token}` (auth.ts parseSessionCookie);
+// requireSession looks the row up by SHA-256(token) in sessions.token_hash.
+function tokenHashFromCookie(cookie: string): string {
+  const raw = cookie.slice('session='.length);
+  const token = raw.slice(raw.indexOf('.') + 1);
+  return createHash('sha256').update(token).digest('hex');
 }
 
 beforeAll(async () => {
@@ -154,6 +162,7 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
 
   it('non-GET request with mismatched Origin returns 403 on every mutation route, no exemptions', async () => {
     const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET' && route.method !== 'HEAD');
+    expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
       const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
@@ -392,6 +401,156 @@ describe('C6/S5 acceptance: events payload projection', () => {
     expect(JSON.stringify(body)).not.toContain('rawAccounts');
     expect(JSON.stringify(body)).not.toContain('ssn');
     expect(body.items[0].payload).toEqual({ counts: { upserted: 3 }, runId: 'run-1' });
+  });
+});
+
+describe('C6/S12 acceptance: login account-bucket rate limit fires (CT2)', () => {
+  it('returns 429 at/after the 21st failed attempt against one account bucket', async () => {
+    // LOGIN_ACCOUNT_BUCKET_RATE_LIMIT is max 20 / 1 hour, keyed on the raw
+    // `tenantSlug:email` string (S12) — independent of client IP. remoteAddress
+    // is varied per attempt (as in the bucket-independence test above) so the
+    // 5/min/IP limiter never trips first; if it did, this test would 429 far
+    // before the 21st attempt for the wrong reason. If the account-bucket
+    // preHandler were removed, only the IP limiter would remain, and varying
+    // the IP on every request means it would never 429 at all — so this
+    // assertion is unsatisfiable without the account-bucket limiter.
+    const payload = { tenantSlug: 'slugCT2', email: 'ct2@example.com', password: 'wrong' };
+    let statusAt21: number | null = null;
+
+    for (let i = 1; i <= 21; i += 1) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress: `10.1.0.${i}`,
+        headers: { origin: APP_ORIGIN },
+        payload,
+      });
+      if (i <= 20) {
+        expect(res.statusCode, `attempt ${i} should not be rate-limited yet`).not.toBe(429);
+      } else {
+        statusAt21 = res.statusCode;
+      }
+    }
+
+    expect(statusAt21).toBe(429);
+  });
+});
+
+describe('C6/S13 acceptance: no HTTP route exposes the rotation sweep (CT11, cross-check)', () => {
+  it('apiRoutes contains no route whose url references rotation', () => {
+    // Static source-level assertion lives in apps/api/test/no-rotation-route.test.ts;
+    // this is a cheap runtime cross-check over the actually-registered routes.
+    for (const route of app.apiRoutes) {
+      expect(route.url.toLowerCase()).not.toMatch(/rotat/);
+    }
+  });
+});
+
+describe('C7 acceptance: expired or deleted session returns 401 (CT6)', () => {
+  async function loggedInSessionCookie(): Promise<{ cookie: string; tenantId: string }> {
+    const tenantId = await seedTenant(`tenant-sess-${randomUUID()}`, 'Session Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    return { cookie, tenantId };
+  }
+
+  it('(a) backdating sessions.expires_at to the past causes the next request to 401', async () => {
+    const { cookie, tenantId } = await loggedInSessionCookie();
+
+    const sanity = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie } });
+    expect(sanity.statusCode).toBe(200);
+
+    const tokenHash = tokenHashFromCookie(cookie);
+    await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query(
+        `UPDATE sessions SET expires_at = now() - interval '1 hour' WHERE token_hash = $1`,
+        [tokenHash],
+      );
+      expect(result.rowCount).toBe(1);
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie } });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('(b) deleting the sessions row causes the next request to 401', async () => {
+    const { cookie, tenantId } = await loggedInSessionCookie();
+
+    const sanity = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie } });
+    expect(sanity.statusCode).toBe(200);
+
+    const tokenHash = tokenHashFromCookie(cookie);
+    await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash]);
+      expect(result.rowCount).toBe(1);
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie } });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+describe('C6 acceptance: sliding session TTL refreshes on authenticated request (CT7)', () => {
+  it('sessions.expires_at advances after an authenticated request through requireSession', async () => {
+    const tenantId = await seedTenant(`tenant-ttl-${randomUUID()}`, 'TTL Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+
+    const tokenHash = tokenHashFromCookie(cookie);
+
+    // Force expires_at to a known-nearer value first, so the post-request
+    // value is unambiguously later regardless of wall-clock resolution.
+    const nearExpiry = await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ expires_at: Date }>(
+        `UPDATE sessions SET expires_at = now() + interval '1 minute'
+         WHERE token_hash = $1 RETURNING expires_at`,
+        [tokenHash],
+      );
+      return result.rows[0]!.expires_at;
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+
+    const refreshed = await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ expires_at: Date }>(
+        'SELECT expires_at FROM sessions WHERE token_hash = $1',
+        [tokenHash],
+      );
+      return result.rows[0]!.expires_at;
+    });
+
+    expect(refreshed.getTime()).toBeGreaterThan(nearExpiry.getTime());
+  });
+});
+
+describe('C6/S7 acceptance: no route schema declares a client-supplied tenantId (CT3)', () => {
+  it('no route module declares a tenantId field in its body/query zod schema', async () => {
+    // app.apiRoutes exposes only { method, url } (see apps/api/src/app.ts) —
+    // the zod schemas are module-local to each route file, not attached to
+    // Fastify's schema introspection, so runtime introspection cannot reach
+    // them. Falling back to the documented pragmatic equivalent: read every
+    // route module and grep for a `tenantId` key inside its schema object
+    // literal. tenantId must come exclusively from SessionContext (S7); a
+    // route that added `tenantId: z...` to its body/query schema would make
+    // this test fail.
+    const { readdir, readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const routesDir = path.join(import.meta.dirname, '..', 'src', 'routes');
+    const files = (await readdir(routesDir)).filter((f) => f.endsWith('.ts'));
+    expect(files.length).toBeGreaterThan(0);
+
+    for (const file of files) {
+      const source = await readFile(path.join(routesDir, file), 'utf8');
+      // Match a tenantId key as used in a zod object shape, e.g. `tenantId:`.
+      expect(source, `${file} schema must not declare a tenantId field`).not.toMatch(
+        /\btenantId\s*:\s*z\./,
+      );
+    }
   });
 });
 

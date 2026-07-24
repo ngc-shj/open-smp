@@ -5,14 +5,19 @@ import { cookies } from 'next/headers';
 // exists for the browser) since server components run outside the browser
 // and have no same-origin cookie jar of their own.
 const apiUrl = process.env.API_URL ?? 'http://localhost:3001';
+const SESSION_COOKIE = 'session';
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const cookieStore = await cookies();
-  const cookieHeader = cookieStore.toString();
+  // Forward ONLY the session cookie by name, not the whole cookie jar
+  // (CS4-A): over-forwarding would leak any future first-party cookie to the
+  // API host, becoming a credential-forwarding hazard if API_URL ever points
+  // at a less-trusted host.
+  const session = cookieStore.get(SESSION_COOKIE)?.value;
 
   const headers = new Headers(init?.headers);
-  if (cookieHeader) {
-    headers.set('Cookie', cookieHeader);
+  if (session) {
+    headers.set('Cookie', `${SESSION_COOKIE}=${session}`);
   }
 
   return fetch(`${apiUrl}${path}`, {

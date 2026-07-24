@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../deps.js';
 import { verifyLogin, getSessionCookieName } from '../auth.js';
-import { LOGIN_IP_RATE_LIMIT, LOGIN_ACCOUNT_BUCKET_RATE_LIMIT } from '../rate-limits.js';
+import { LOGIN_IP_RATE_LIMIT } from '../rate-limits.js';
+import { createAccountBucketLimiter } from '../account-bucket.js';
 
 const loginBodySchema = z
   .object({
@@ -13,31 +13,21 @@ const loginBodySchema = z
   })
   .strict();
 
-// S12: the login account bucket is keyed on a hash of the RAW submitted
-// `tenantSlug + ':' + email` string, never on resolved tenant/user ids, so
-// bucket accrual is identical whether or not the slug or email exists.
-function accountBucketKey(req: FastifyRequest): string {
-  const body = req.body as { tenantSlug?: unknown; email?: unknown } | undefined;
-  const tenantSlug = typeof body?.tenantSlug === 'string' ? body.tenantSlug : '';
-  const email = typeof body?.email === 'string' ? body.email : '';
-  return createHash('sha256').update(`${tenantSlug}:${email}`).digest('hex');
-}
-
 export function registerLoginRoute(app: FastifyInstance, deps: AppDeps): void {
+  // Two independent limits (RS2): 5/min/IP via @fastify/rate-limit, AND
+  // 20/hour per raw-input account bucket (S12) via a standalone limiter.
+  // They CANNOT both be @fastify/rate-limit instances on the same route:
+  // the plugin's per-request `rateLimitRan` guard lets only the first fire,
+  // silently disabling the second — so the account bucket is its own limiter.
+  const accountBucketPreHandler = createAccountBucketLimiter();
+
   app.post(
     '/auth/login',
     {
       config: {
-        // Two independent limits (RS2): 5/min/IP (default IP keying) AND
-        // 20/hour per raw-input account bucket (S12). @fastify/rate-limit
-        // applies one config per route, so the account-bucket limit is
-        // additionally enforced via the manual preHandler below.
         rateLimit: LOGIN_IP_RATE_LIMIT,
       },
-      preHandler: app.rateLimit({
-        ...LOGIN_ACCOUNT_BUCKET_RATE_LIMIT,
-        keyGenerator: accountBucketKey,
-      }),
+      preHandler: accountBucketPreHandler,
     },
     async (req, reply) => {
       const parsed = loginBodySchema.safeParse(req.body);
@@ -53,7 +43,12 @@ export function registerLoginRoute(app: FastifyInstance, deps: AppDeps): void {
 
       reply.setCookie(getSessionCookieName(), session.id, {
         httpOnly: true,
-        secure: true,
+        // Secure is derived from APP_ORIGIN's scheme (CF1/CS5-A): a browser
+        // drops a Secure cookie received over plain HTTP, which would break
+        // the http://localhost docker-compose demo. Production sets an https
+        // APP_ORIGIN and gets Secure=true; the demo gets Secure=false. The
+        // Origin gate (D7) is the CSRF control, not this flag.
+        secure: new URL(deps.appOrigin).protocol === 'https:',
         sameSite: 'lax',
         path: '/',
         expires: new Date(session.expiresAt),

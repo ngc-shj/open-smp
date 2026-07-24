@@ -6,6 +6,7 @@ import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_ERRORS = 100;
+const MAX_ROWS = 20_000;
 const EMAIL_MAX_LENGTH = 320;
 const NAME_MAX_LENGTH = 200;
 
@@ -126,6 +127,15 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
         records = parse(text, { columns: true, skip_empty_lines: true, trim: false });
       } catch {
         return reply.code(400).send({ error: 'malformed CSV' });
+      }
+
+      // Row-count cap (CS2): the 10 MB byte cap does not bound row count —
+      // minimal rows can pack ~150-250k rows into 10 MB, and the synchronous
+      // one-INSERT-per-row transaction below would hold a shared-pool
+      // connection for minutes, starving other tenants. A realistic HR export
+      // is well under this bound.
+      if (records.length > MAX_ROWS) {
+        return reply.code(400).send({ error: `too many rows (max ${MAX_ROWS})` });
       }
 
       const validRows: ValidRow[] = [];

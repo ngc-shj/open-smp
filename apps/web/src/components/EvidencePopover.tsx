@@ -26,7 +26,10 @@ export function EvidencePopover({ link }: { link: AccountLink | null }) {
               <dd>
                 <ul className="list-inside list-disc text-neutral-600">
                   {(evidence.candidates ?? []).map((candidate) => (
-                    <li key={candidate}>{candidate}</li>
+                    <li key={candidate.identityId}>
+                      {candidate.displayName}{' '}
+                      <span className="text-neutral-400">({candidate.identityId})</span>
+                    </li>
                   ))}
                 </ul>
               </dd>

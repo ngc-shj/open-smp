@@ -25,5 +25,9 @@ export type LinkResult = {
   status: 'matched' | 'orphan' | 'ghost' | 'ambiguous';
   confidence: number; // 0 when orphan
   ruleId: string | null;
-  evidence: { rule: string; matchedValue: string; candidates?: string[] } | null;
+  evidence: {
+    rule: string;
+    matchedValue: string;
+    candidates?: { identityId: string; displayName: string }[];
+  } | null;
 };
