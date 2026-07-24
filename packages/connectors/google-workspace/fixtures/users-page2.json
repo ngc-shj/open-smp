@@ -1,0 +1,32 @@
+{
+  "kind": "admin#directory#users",
+  "nextPageToken": "page3token",
+  "users": [
+    {
+      "kind": "admin#directory#user",
+      "id": "100000000000000000003",
+      "primaryEmail": "kenji.tanaka@corp.example",
+      "name": { "givenName": "Kenji", "familyName": "Tanaka", "fullName": "Kenji Tanaka" },
+      "isAdmin": false,
+      "isDelegatedAdmin": true,
+      "suspended": true,
+      "archived": false,
+      "lastLoginTime": "2025-12-20T03:42:11.000Z",
+      "creationTime": "2019-02-10T00:00:00.000Z",
+      "customerId": "C00example"
+    },
+    {
+      "kind": "admin#directory#user",
+      "id": "100000000000000000004",
+      "primaryEmail": "yuki.sato@corp.example",
+      "name": { "givenName": "Yuki", "familyName": "Sato", "fullName": "Yuki Sato" },
+      "isAdmin": false,
+      "isDelegatedAdmin": false,
+      "suspended": false,
+      "archived": true,
+      "lastLoginTime": "2024-03-05T11:00:00.000Z",
+      "creationTime": "2018-09-01T00:00:00.000Z",
+      "customerId": "C00example"
+    }
+  ]
+}

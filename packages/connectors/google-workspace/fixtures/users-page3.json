@@ -1,0 +1,18 @@
+{
+  "kind": "admin#directory#users",
+  "users": [
+    {
+      "kind": "admin#directory#user",
+      "id": "100000000000000000005",
+      "primaryEmail": "mika.ito@corp.example",
+      "name": { "givenName": "Mika", "familyName": "Ito", "fullName": "Mika Ito" },
+      "isAdmin": false,
+      "isDelegatedAdmin": false,
+      "suspended": false,
+      "archived": false,
+      "lastLoginTime": "2026-07-20T18:30:00.000Z",
+      "creationTime": "2022-11-11T00:00:00.000Z",
+      "customerId": "C00example"
+    }
+  ]
+}

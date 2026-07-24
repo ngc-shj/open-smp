@@ -808,3 +808,27 @@ function decryptCredentials(blob: Uint8Array, keyVersion: number, ctx: { tenantI
 8. **Same email in two tenants**: `admin@corp.example` exists in tenants A and
    B with different passwords — each logs in deterministically via their tenant
    slug; neither credential works against the other slug (S8).
+
+## Implementation Checklist (Phase 2, Step 2-1)
+
+Environment: Node v26.5.0, pnpm 10.34.5 (installed via npm -g), Docker 27.3.1
+(daemon not running at analysis time — must be started for integration tests /
+compose smoke at Step 2-4). Greenfield repo: shared-utils inventory and
+codebase fingerprint are empty; no existing CI config (CI is authored by this
+plan — parity gap N/A at start; extract-ci-checks.sh re-run at Step 2-4 against
+the authored workflow).
+
+Batches (dependency order):
+- B0 foundation (inline): pnpm workspace, tsconfig base, eslint, vitest, .gitignore, LICENSE (AGPL-3.0), README stub
+- B1 packages/schema (C1): Drizzle tables, enums, CHECKs, RLS migration (USING + WITH CHECK), withTenant(), RLS integration tests (Testcontainers)
+- B2 packages/matcher (C4): normalizeEmail, rule pipeline, golden corpus (≥40, known-gap ≤25%), precision gate ≥0.95, property tests
+- B3 packages/connectors (C2+C3): core interface + zod RawAccount, google-workspace connector (googleapis), 3-page + 429 fixture tests
+- B4 packages/crypto (C9): AES-256-GCM encrypt/decrypt, AAD, ENCRYPTION_KEYS versioning, unit tests (distinct ciphertext / tamper / AAD mismatch / rotation)
+- B5 apps/api (C6+C7): Fastify, two scope-root gates (Origin 0-exempt / session-auth 1-exempt), hr-import, rate limits with raw-input bucket, routes, integration tests
+- B6 apps/worker (C5 + C9 sweep CLI): BullMQ runSync/runMatch, rotate-credentials CLI (per-tenant loop, ROTATE_CONFIRM), integration tests
+- B7 apps/web (C8): Next.js login/accounts/events, CSV export neutralization + wiring test
+- B8 integration: docker-compose (Redis AUTH), seed script, GitHub Actions CI (lint→typecheck→unit→integration→compose smoke), README
+
+Shared assets each batch MUST reuse (single-source obligations): normalizeEmail (packages/matcher), withTenant (packages/schema), encryptCredentials/decryptCredentials (packages/crypto), zod schemas per boundary. Forbidden patterns: per plan Contracts sections — conformance grep at Step 2-4.
+
+Deviation (recorded in deviation log): C9 module lives in `packages/crypto`, not `apps/api/src/crypto` — both apps/api (saas-apps route) and apps/worker (runSync decrypt + rotation sweep) consume it; a cross-app import from worker into api source is worse than a package. Contract content unchanged.

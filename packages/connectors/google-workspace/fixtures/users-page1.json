@@ -1,0 +1,32 @@
+{
+  "kind": "admin#directory#users",
+  "nextPageToken": "page2token",
+  "users": [
+    {
+      "kind": "admin#directory#user",
+      "id": "100000000000000000001",
+      "primaryEmail": "taro.yamada@corp.example",
+      "name": { "givenName": "Taro", "familyName": "Yamada", "fullName": "Taro Yamada" },
+      "isAdmin": true,
+      "isDelegatedAdmin": false,
+      "suspended": false,
+      "archived": false,
+      "lastLoginTime": "2026-07-01T09:15:00.000Z",
+      "creationTime": "2020-04-01T00:00:00.000Z",
+      "customerId": "C00example"
+    },
+    {
+      "kind": "admin#directory#user",
+      "id": "100000000000000000002",
+      "primaryEmail": "hanako.suzuki@corp.example",
+      "name": { "givenName": "Hanako", "familyName": "Suzuki", "fullName": "Hanako Suzuki" },
+      "isAdmin": false,
+      "isDelegatedAdmin": false,
+      "suspended": false,
+      "archived": false,
+      "lastLoginTime": "1970-01-01T00:00:00.000Z",
+      "creationTime": "2021-06-15T00:00:00.000Z",
+      "customerId": "C00example"
+    }
+  ]
+}

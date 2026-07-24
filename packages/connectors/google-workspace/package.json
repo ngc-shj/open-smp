@@ -1,0 +1,19 @@
+{
+  "name": "@open-smp/connector-google-workspace",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@open-smp/connectors-core": "workspace:*",
+    "googleapis": "^161.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "vitest": "^4.1.10"
+  }
+}
