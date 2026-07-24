@@ -58,6 +58,8 @@ const encryptionKeys = new Map<number, Buffer>([[1, Buffer.alloc(32, 7)]]);
 
 async function seedTenantWithApp(tenantId: string): Promise<string> {
   const saasAppId = randomUUID();
+  // Register the per-seed unique key so runSync's registry lookup resolves it.
+  fakeRegistry.set(`fake-app-${saasAppId.slice(0, 8)}`, () => new FakeConnector());
 
   const credentials = JSON.stringify({ apiKey: 'fake-key' });
   const { blob, keyVersion } = encryptCredentials(
@@ -71,10 +73,13 @@ async function seedTenantWithApp(tenantId: string): Promise<string> {
       `INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant') ON CONFLICT DO NOTHING`,
       [tenantId, `tenant-${tenantId}`],
     );
+    // Unique key per seed call: UNIQUE (tenant_id, key) would collide when a
+    // test seeds the same tenant twice, and the ciphertext AAD is bound to
+    // this call's saasAppId, so reusing an existing row is not an option.
     await tx.query(
       `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_enc, credentials_key_version)
-       VALUES ($1, $2, 'fake-app', 'Fake App', $3, $4)`,
-      [saasAppId, tenantId, Buffer.from(blob), keyVersion],
+       VALUES ($1, $2, $5, 'Fake App', $3, $4)`,
+      [saasAppId, tenantId, Buffer.from(blob), keyVersion, `fake-app-${saasAppId.slice(0, 8)}`],
     );
   });
 

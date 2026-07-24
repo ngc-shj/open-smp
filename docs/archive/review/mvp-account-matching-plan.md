@@ -442,8 +442,10 @@ type DiscoveryEventListItem = {
 
 - **Two independent scope-root gates (S2/S9)** — deliberately NOT one fused
   preHandler, because they have different member sets:
-  - **Origin gate**: every non-GET request under `/api` — ZERO route
-    exemptions, `/api/auth/login` included — is rejected with 403 when the
+  - **Origin gate**: every unsafe-method request under `/api` (non-GET/HEAD;
+    HEAD is a safe method per RFC 9110 §9.3.2 and Fastify auto-registers a
+    HEAD route for every GET — deviation D7) — ZERO route exemptions,
+    `/api/auth/login` included — is rejected with 403 when the
     `Origin` header is absent or does not exactly match the configured
     `APP_ORIGIN`. Login-CSRF (a cross-site form POST that logs the victim into
     an attacker session, so later uploads land in the attacker's tenant) is in

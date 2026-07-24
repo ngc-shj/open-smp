@@ -142,7 +142,7 @@ describe('C6 acceptance: 401 sweep over every non-login route', () => {
 
 describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
   it('non-GET request with missing Origin returns 403 on every mutation route, no exemptions', async () => {
-    const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET');
+    const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET' && route.method !== 'HEAD');
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
@@ -153,7 +153,7 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
   });
 
   it('non-GET request with mismatched Origin returns 403 on every mutation route, no exemptions', async () => {
-    const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET');
+    const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET' && route.method !== 'HEAD');
 
     for (const route of nonGetRoutes) {
       const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
@@ -205,11 +205,15 @@ describe('C6 acceptance: login rate limit', () => {
 
 describe('C6/S12 acceptance: login account-bucket independence', () => {
   it('5 failures on slugX:userX do not 429 the first attempt on slugX:userY', async () => {
+    // remoteAddress (not x-forwarded-for): trustProxy is off, so req.ip only
+    // varies via the injected socket address — this isolates the account
+    // bucket from the 5/min/IP limit, which has its own test above.
     for (let i = 0; i < 5; i += 1) {
       await app.inject({
         method: 'POST',
         url: '/api/auth/login',
-        headers: { origin: APP_ORIGIN, 'x-forwarded-for': `10.0.0.${i + 1}` },
+        remoteAddress: `10.0.0.${i + 1}`,
+        headers: { origin: APP_ORIGIN },
         payload: { tenantSlug: 'slugX', email: 'userX@example.com', password: 'wrong' },
       });
     }
@@ -217,7 +221,8 @@ describe('C6/S12 acceptance: login account-bucket independence', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/auth/login',
-      headers: { origin: APP_ORIGIN, 'x-forwarded-for': '10.0.0.99' },
+      remoteAddress: '10.0.0.99',
+      headers: { origin: APP_ORIGIN },
       payload: { tenantSlug: 'slugX', email: 'userY@example.com', password: 'wrong' },
     });
 

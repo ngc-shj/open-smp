@@ -78,15 +78,18 @@ beforeAll(async () => {
       [orphanAccountId, tenantId, saasAppId],
     );
 
-    // ambiguous: two identities tie on name-domain (same display name + domain, no email hit).
+    // ambiguous: two identities tie on exact-email (duplicate HR rows sharing
+    // one address — C1 has no uniqueness on primary_email). Per C4, a ≥2-way
+    // tie on the first hitting rule → ambiguous; note name-domain ties do NOT
+    // produce ambiguity (unique-candidate requirement → falls through to orphan).
     await tx.query(
       `INSERT INTO identities (id, tenant_id, employee_id, primary_email, display_name, status, left_at)
-       VALUES ($1, $2, 'emp-amb-1', 'amb-one@other.example', 'Shared Name', 'active', NULL)`,
+       VALUES ($1, $2, 'emp-amb-1', 'shared@example.com', 'Amb One', 'active', NULL)`,
       [ambiguousIdentityId1, tenantId],
     );
     await tx.query(
       `INSERT INTO identities (id, tenant_id, employee_id, primary_email, display_name, status, left_at)
-       VALUES ($1, $2, 'emp-amb-2', 'amb-two@other.example', 'Shared Name', 'active', NULL)`,
+       VALUES ($1, $2, 'emp-amb-2', 'shared@example.com', 'Amb Two', 'active', NULL)`,
       [ambiguousIdentityId2, tenantId],
     );
     await tx.query(
@@ -94,15 +97,6 @@ beforeAll(async () => {
        VALUES ($1, $2, $3, 'ext-ambiguous', 'shared@example.com', 'Shared Name', 'active', false)`,
       [ambiguousAccountId, tenantId, saasAppId],
     );
-    // give both ambiguous identities the same email domain as the account
-    // via a secondary path: name-domain rule needs matching domain too, so
-    // align primary_email domains to the account's domain.
-    await tx.query(`UPDATE identities SET primary_email = 'amb-one@example.com' WHERE id = $1`, [
-      ambiguousIdentityId1,
-    ]);
-    await tx.query(`UPDATE identities SET primary_email = 'amb-two@example.com' WHERE id = $1`, [
-      ambiguousIdentityId2,
-    ]);
   });
 }, 180_000);
 

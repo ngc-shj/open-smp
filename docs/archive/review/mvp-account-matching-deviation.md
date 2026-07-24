@@ -33,3 +33,7 @@
 - check-orphaned-checks "eslint.config.mjs uninvoked": false positive — invoked implicitly by `pnpm lint` (eslint auto-discovers flat config); wired via package.json gate surface.
 - check-new-code-untested (schema table consts): covered by packages/schema tests (enum sets, member set) and every integration test; no action.
 - check-propagation: hook itself failed on this machine (bash 3.2 lacks `declare -g`); greenfield diff has no rename-propagation surface — N/A.
+
+## D7 — Origin gate scope: "non-GET" → "non-GET/HEAD" + RLS NULLIF hardening
+- Plan (C6/S9): Origin verification on "every non-GET request". Fastify auto-registers a HEAD route for every GET; HEAD is a safe method (RFC 9110 §9.3.2, no state change) and browsers cannot issue cross-site HEAD form posts, so gating it adds friction without CSRF value. Implemented: gate covers non-GET/HEAD; the 403 sweep enumerates unsafe methods only. Plan text amended in place.
+- Also (C1): integration testing surfaced the documented Postgres behavior that a transaction-scoped set_config leaves the custom GUC DEFINED with an empty-string session value after commit on a pooled connection — `''::uuid` then ERRORS instead of returning zero rows (still fail-closed: no data exposure, but not the contracted "zero rows"). Policies hardened to `NULLIF(current_setting('app.tenant_id', true), '')::uuid`, restoring the zero-rows contract on both fresh and reused connections. Found only by running against real Postgres — the class of gap the real-environment test obligation exists for.

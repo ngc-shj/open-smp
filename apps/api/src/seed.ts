@@ -9,7 +9,7 @@ import argon2 from 'argon2';
 import { createPool, withTenant } from '@open-smp/schema';
 import { encryptCredentials, parseEncryptionKeys } from '@open-smp/crypto';
 import { defaultRules, matchAccounts, type AccountView, type IdentityView } from '@open-smp/matcher';
-import { parseEnv } from './env.js';
+import { z } from 'zod';
 import { ARGON2ID_OPTIONS } from './auth.js';
 
 // Demo credentials are duplicated as a raw curl payload in
@@ -353,8 +353,15 @@ async function computeAndPersistLinks(
   };
 }
 
+// The seed needs only DB access + encryption keys — not the API's full env
+// (REDIS_URL, APP_ORIGIN, ...), so it parses its own minimal schema.
+const seedEnvSchema = z.object({
+  DATABASE_URL: z.string().min(1),
+  ENCRYPTION_KEYS: z.string().min(1),
+});
+
 async function main(): Promise<void> {
-  const env = parseEnv(process.env);
+  const env = seedEnvSchema.parse(process.env);
   const encryptionKeys = parseEncryptionKeys(env.ENCRYPTION_KEYS);
   const pool = createPool(env.DATABASE_URL);
 
