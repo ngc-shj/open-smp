@@ -125,3 +125,44 @@ All 22 round-1 findings fixed and verified. Round-2 incremental review of the fi
 ### Functionality: R43 checked (no widening); RS2 re-verified enforced; R33/R39/R42/R44 clean in diff.
 ### Security: RS2 both limits now genuinely independent+enforced; RS1/RS3-RS6 not implicated; R43 full review done (CF1 acceptable); R2 constants centralized.
 ### Testing: RT8 recurred (CT13) → fixed; RT9 clean (no new twin); RT1-RT7 no recurrence (real Testcontainers, own-tenant isolation, falsifiable assertions).
+
+---
+
+# Code Review: mvp-account-matching — Round 3 (verification)
+Date: 2026-07-24
+
+## Changes from Previous Round
+Round-2 fixes (CF6, CF7/CS7-A, CF8, CT13, CT14, config removal) reviewed incrementally.
+
+## Result
+All three experts returned **No findings**. Review loop converged at round 3 of 10.
+
+Key verifications:
+- CF7 sweep: deletion predicate (resetAt <= t) is identical to the handler's own expiry check → cannot evict an active bucket → no rate-limit-evasion bypass introduced (security).
+- CT13: red-provable halt-proof (correct password on 21st → 429 + no cookie + 0 sessions rows) (testing).
+- CF6/CF8/CT14: functionally consistent, no field drift, round-1 fixes intact (functionality).
+- R43: no boundary widening across any round-2 fix.
+
+## Environment Verification Report
+| Path | Classification | Evidence |
+|------|----------------|----------|
+| V1a — GWS fixture connector tests | verified-local + verified-CI | packages/connectors/google-workspace/test/list-users.test.ts; run in CI `checks` job |
+| V1b — GWS live-tenant | blocked-deferred | docs/manual-tests/google-workspace-sync.md (run-log empty); links Phase-1 V1 + its Anti-Deferral cost-justification (paid sandbox not justified pre-release) |
+| V2 — Postgres RLS cross-tenant | verified-local + verified-CI | packages/schema/test/rls.integration.test.ts, Testcontainers postgres:16; CI `integration` job; ran locally 63/63 green |
+| V3 — BullMQ/Redis | verified-local + verified-CI | apps/worker/test/*.integration.test.ts, redis:7; same CI job |
+| V4 — Next.js UI E2E | blocked-deferred | no E2E infra (SC8); docs/manual-tests/ui-orphan-list.md (run-log empty); links Phase-1 V4 + SC8 |
+| T6 — compose smoke (NFR1/C8 seeded demo) | verified-local + verified-CI | ran live locally: seed exit 0, per-status counts 1/1/1/1, login 200, login-CSRF 403; CI `compose-smoke` job (now gated on integration per CT-CI1) |
+| M1 — real-tenant precision ≥0.90, 0 Critical mislinks | blocked-deferred | bar locked in plan; execution post-implementation by design (does not gate); links Phase-1 M1 |
+
+No blocked-deferred path lacks a Phase-1 constraint link (no process failure).
+
+## Total findings across Phase 3
+- Round 1: 22 (CS1/CF1/CT2/CT6/CT11 Critical; CF2/CF3/CS2/CT1/CT3/CT7/CT-CI1 Major; rest Minor). CT2 surfaced a real production bug (S12 account bucket never fired).
+- Round 2: 8 (CF6/CT13 Major; CF7/CS7-A/CF8/CT14 Minor; CF1-widening assessed acceptable; leaked config removed).
+- Round 3: 0 — converged.
+All findings resolved; zero Skipped/Accepted/Deferred (Anti-Deferral log empty).
+
+---
+
+# Post-Round-3 live fix: D9 (numeric confidence coercion)
+Manual compose smoke (user) hit a 500 on /accounts: numeric(3,2) confidence returned by pg as a string broke the UI's toFixed(). Fixed in apps/api/src/routes/accounts.ts (Number() coercion + corrected row type) with a typeof-number regression test. This is an R40/RT1 cross-boundary-shape defect that presence-only integration assertions and hand-built unit fixtures could not catch — surfaced only by a real-DB round-trip through the real consumer. Does not reopen review (single localized fix + regression test, verified live); recorded as deviation D9.

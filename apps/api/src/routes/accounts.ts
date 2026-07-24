@@ -28,7 +28,11 @@ type AccountRow = {
   last_activity_at: string | null;
   last_synced_at: string;
   link_status: string | null;
-  link_confidence: number | null;
+  // Postgres returns numeric(3,2) as a STRING (the pg driver avoids float
+  // precision loss), so this is a string at runtime, not a number — it MUST be
+  // coerced with Number() before reaching the API shape, or the UI's
+  // confidence.toFixed() throws.
+  link_confidence: string | null;
   link_rule_id: string | null;
   link_identity_id: string | null;
   link_identity_name: string | null;
@@ -52,7 +56,7 @@ function toListItem(row: AccountRow): AccountListItem {
         ? null
         : {
             status: row.link_status,
-            confidence: row.link_confidence ?? 0,
+            confidence: row.link_confidence === null ? 0 : Number(row.link_confidence),
             ruleId: row.link_rule_id,
             identityId: row.link_identity_id,
             // NULL whenever identity_id IS NULL (orphan/ambiguous), via the

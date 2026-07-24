@@ -239,6 +239,58 @@ describe('C6/S12 acceptance: login account-bucket independence', () => {
   });
 });
 
+describe('C6 acceptance: GET /api/accounts response shape', () => {
+  it('link.confidence is a JS number, not the pg numeric string (regression)', async () => {
+    // numeric(3,2) comes back from pg as a string; if the serializer does not
+    // coerce it, the web UI's confidence.toFixed() throws a server-side 500.
+    const slug = `tenant-conf-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Confidence Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    expect(cookie).not.toBeNull();
+
+    // Seed one matched account+identity+link with a fractional confidence.
+    await withTenant(appPool, tenantId, async (tx) => {
+      const appId = randomUUID();
+      const accountId = randomUUID();
+      const identityId = randomUUID();
+      await tx.query(
+        `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_key_version)
+         VALUES ($1, $2, 'google-workspace', 'GWS', 1)`,
+        [appId, tenantId],
+      );
+      await tx.query(
+        `INSERT INTO saas_accounts (id, tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, $3, 'ext-c', 'c@example.com', 'C', 'active', false)`,
+        [accountId, tenantId, appId],
+      );
+      await tx.query(
+        `INSERT INTO identities (id, tenant_id, employee_id, primary_email, display_name, status)
+         VALUES ($1, $2, 'emp-c', 'c@example.com', 'C', 'active')`,
+        [identityId, tenantId],
+      );
+      await tx.query(
+        `INSERT INTO account_links (id, tenant_id, saas_account_id, identity_id, status, confidence, rule_id, computed_at)
+         VALUES ($1, $2, $3, $4, 'matched', 0.90, 'alias-normalized', now())`,
+        [randomUUID(), tenantId, accountId, identityId],
+      );
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/accounts?status=matched',
+      headers: { cookie: cookie! },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { items: { link: { confidence: unknown } | null }[] };
+    expect(body.items.length).toBeGreaterThan(0);
+    const link = body.items[0]!.link;
+    expect(link).not.toBeNull();
+    expect(typeof link!.confidence).toBe('number');
+    expect(link!.confidence).toBeCloseTo(0.9);
+  });
+});
+
 describe('C6 acceptance: saas-apps credentials never leak', () => {
   it('GET /api/saas-apps response contains no credentials key', async () => {
     const tenantId = await seedTenant(`tenant-saas-${randomUUID()}`, 'SaaS Tenant');
