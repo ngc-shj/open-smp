@@ -12,6 +12,9 @@ import { defaultRules, matchAccounts, type AccountView, type IdentityView } from
 import { parseEnv } from './env.js';
 import { ARGON2ID_OPTIONS } from './auth.js';
 
+// Demo credentials are duplicated as a raw curl payload in
+// .github/workflows/ci.yml (compose-smoke) — YAML cannot import these
+// constants, so keep both sites in sync when changing any of them.
 const TENANT_SLUG = 'demo';
 const TENANT_NAME = 'Demo Corp';
 const ADMIN_EMAIL = 'admin@demo.example';

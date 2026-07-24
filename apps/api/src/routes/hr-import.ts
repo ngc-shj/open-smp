@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { parse } from 'csv-parse/sync';
 import { withTenant } from '@open-smp/schema';
 import type { AppDeps } from '../deps.js';
+import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_ERRORS = 100;
@@ -103,7 +104,7 @@ function decodeUtf8Strict(buffer: Buffer): string | null {
 export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void {
   app.post(
     '/hr-import',
-    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    { config: { rateLimit: MUTATION_RATE_LIMIT } },
     async (req, reply) => {
       const file = await req.file({ limits: { fileSize: MAX_UPLOAD_BYTES } });
       if (!file) {

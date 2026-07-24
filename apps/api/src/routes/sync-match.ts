@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { syncJobId, matchJobId } from '@open-smp/queues';
 import type { AppDeps } from '../deps.js';
+import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 
 const saasAppIdParamsSchema = z.object({ saasAppId: z.string().uuid() }).strict();
 const jobIdParamsSchema = z.object({ jobId: z.string().min(1) }).strict();
@@ -9,7 +10,7 @@ const jobIdParamsSchema = z.object({ jobId: z.string().min(1) }).strict();
 export function registerSyncMatchRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.post(
     '/sync/:saasAppId',
-    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    { config: { rateLimit: MUTATION_RATE_LIMIT } },
     async (req, reply) => {
       const parsedParams = saasAppIdParamsSchema.safeParse(req.params);
       if (!parsedParams.success) {
@@ -29,7 +30,7 @@ export function registerSyncMatchRoutes(app: FastifyInstance, deps: AppDeps): vo
 
   app.post(
     '/match',
-    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    { config: { rateLimit: MUTATION_RATE_LIMIT } },
     async (req, reply) => {
       const { tenantId } = req.sessionContext;
 
@@ -42,7 +43,7 @@ export function registerSyncMatchRoutes(app: FastifyInstance, deps: AppDeps): vo
 
   app.get(
     '/jobs/:jobId',
-    { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } },
+    { config: { rateLimit: LIST_RATE_LIMIT } },
     async (req, reply) => {
       const parsedParams = jobIdParamsSchema.safeParse(req.params);
       if (!parsedParams.success) {

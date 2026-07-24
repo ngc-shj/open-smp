@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppDeps } from '../deps.js';
 import { destroySession, getSessionCookieName } from '../auth.js';
+import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 
 export function registerLogoutRoute(app: FastifyInstance, deps: AppDeps): void {
   app.post(
     '/auth/logout',
-    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    { config: { rateLimit: MUTATION_RATE_LIMIT } },
     async (req, reply) => {
       const cookieValue = req.cookies[getSessionCookieName()];
       if (cookieValue) {

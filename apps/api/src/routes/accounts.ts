@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
+import type { AccountListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
+import { LIST_RATE_LIMIT } from '../rate-limits.js';
 
 const LINK_STATUSES = ['matched', 'orphan', 'ghost', 'ambiguous'] as const;
 
@@ -33,26 +35,6 @@ type AccountRow = {
   link_evidence: unknown;
 };
 
-type AccountListItem = {
-  accountId: string;
-  appKey: string;
-  appName: string;
-  email: string | null;
-  displayName: string | null;
-  accountStatus: string;
-  isAdmin: boolean;
-  lastActivityAt: string | null;
-  lastSyncedAt: string;
-  link: {
-    status: string;
-    confidence: number;
-    ruleId: string | null;
-    identityId: string | null;
-    identityName: string | null;
-    evidence: object | null;
-  } | null;
-};
-
 function toListItem(row: AccountRow): AccountListItem {
   return {
     accountId: row.account_id,
@@ -76,7 +58,7 @@ function toListItem(row: AccountRow): AccountListItem {
             // NULL whenever identity_id IS NULL (orphan/ambiguous), via the
             // LEFT JOIN to identities.display_name — C1 consumer-flow walkthrough.
             identityName: row.link_identity_name,
-            evidence: (row.link_evidence as object | null) ?? null,
+            evidence: (row.link_evidence as NonNullable<AccountListItem['link']>['evidence']) ?? null,
           },
   };
 }
@@ -84,7 +66,7 @@ function toListItem(row: AccountRow): AccountListItem {
 export function registerAccountsRoute(app: FastifyInstance, deps: AppDeps): void {
   app.get(
     '/accounts',
-    { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } },
+    { config: { rateLimit: LIST_RATE_LIMIT } },
     async (req, reply) => {
       const parsedQuery = accountsQuerySchema.safeParse(req.query);
       if (!parsedQuery.success) {

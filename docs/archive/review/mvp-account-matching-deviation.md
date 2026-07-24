@@ -21,3 +21,15 @@
 ## D5 — ADMIN_DATABASE_URL / DATABASE_URL split
 - Plan: C1/C6 name a single DATABASE_URL. Implemented: api boot runs runMigrations(ADMIN_DATABASE_URL) (privileged, DDL) while the app pool uses DATABASE_URL (opensmp_app, RLS-constrained).
 - Reason: a single URL forces the app pool onto the superuser, and superusers bypass RLS entirely — the composed deployment would silently lose tenant isolation while every RLS test stays green (tests connect as opensmp_app explicitly). Fail-safe requires the split.
+
+## D6 — packages/api-types (type-only wire-shape package)
+- Plan: C6 declares wire shapes in prose; implementation initially twinned them (api routes local types vs apps/web/src/lib/api-types.ts hand-copy). Phase-2 self-R-check flagged RT9 Major: twin drift was test-invisible.
+- Implemented: `@open-smp/api-types` (zero runtime, `export type` only) is the single declaration site; api serializers carry explicit return-type annotations pinning the produced shape; web re-exports the same types. C8's "API is the only data path" invariant untouched (types are erased at build).
+
+## Self-R-check disposition (Step 2-5)
+- R2 Major (demo credentials duplicated seed.ts ↔ ci.yml): YAML cannot import TS — sync comment anchor added in seed.ts (comment in the ci.yml shell block would corrupt the line-continued curl, so the anchor lives on the TS side only). Accepted residual: worst case = compose-smoke job fails loudly on credential rotation (no silent behavior), likelihood low, cost of stronger coupling (generated YAML) not justified.
+- R2 Minor (rate-limit literals): extracted to apps/api/src/rate-limits.ts; no literals remain in route files.
+- RT9 Major (wire-type twins): fixed via D6.
+- check-orphaned-checks "eslint.config.mjs uninvoked": false positive — invoked implicitly by `pnpm lint` (eslint auto-discovers flat config); wired via package.json gate surface.
+- check-new-code-untested (schema table consts): covered by packages/schema tests (enum sets, member set) and every integration test; no action.
+- check-propagation: hook itself failed on this machine (bash 3.2 lacks `declare -g`); greenfield diff has no rename-propagation surface — N/A.

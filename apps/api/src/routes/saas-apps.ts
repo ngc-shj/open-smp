@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { encryptCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import type { AppDeps } from '../deps.js';
+import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 
 const saasAppBodySchema = z
   .object({
@@ -19,7 +20,7 @@ type SaasAppListItem = { id: string; key: string; displayName: string };
 export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void {
   app.post(
     '/saas-apps',
-    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    { config: { rateLimit: MUTATION_RATE_LIMIT } },
     async (req, reply) => {
       const parsed = saasAppBodySchema.safeParse(req.body);
       if (!parsed.success) {
@@ -62,7 +63,7 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
 
   app.get(
     '/saas-apps',
-    { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } },
+    { config: { rateLimit: LIST_RATE_LIMIT } },
     async (req, reply) => {
       const { tenantId } = req.sessionContext;
 

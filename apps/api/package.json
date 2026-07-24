@@ -14,6 +14,7 @@
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^10.1.0",
     "@fastify/rate-limit": "^11.1.0",
+    "@open-smp/api-types": "workspace:*",
     "@open-smp/crypto": "workspace:*",
     "@open-smp/matcher": "workspace:*",
     "@open-smp/queues": "workspace:*",

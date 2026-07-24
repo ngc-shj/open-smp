@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../deps.js';
 import { verifyLogin, getSessionCookieName } from '../auth.js';
+import { LOGIN_IP_RATE_LIMIT, LOGIN_ACCOUNT_BUCKET_RATE_LIMIT } from '../rate-limits.js';
 
 const loginBodySchema = z
   .object({
@@ -27,18 +28,14 @@ export function registerLoginRoute(app: FastifyInstance, deps: AppDeps): void {
     '/auth/login',
     {
       config: {
-        rateLimit: {
-          // Two independent limits (RS2): 5/min/IP (default IP keying) AND
-          // 20/hour per raw-input account bucket (S12). @fastify/rate-limit
-          // applies one config per route, so the account-bucket limit is
-          // additionally enforced via the manual preHandler below.
-          max: 5,
-          timeWindow: '1 minute',
-        },
+        // Two independent limits (RS2): 5/min/IP (default IP keying) AND
+        // 20/hour per raw-input account bucket (S12). @fastify/rate-limit
+        // applies one config per route, so the account-bucket limit is
+        // additionally enforced via the manual preHandler below.
+        rateLimit: LOGIN_IP_RATE_LIMIT,
       },
       preHandler: app.rateLimit({
-        max: 20,
-        timeWindow: '1 hour',
+        ...LOGIN_ACCOUNT_BUCKET_RATE_LIMIT,
         keyGenerator: accountBucketKey,
       }),
     },

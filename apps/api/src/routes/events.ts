@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
+import type { DiscoveryEventListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
+import { LIST_RATE_LIMIT } from '../rate-limits.js';
 
 const eventsQuerySchema = z.object({ cursor: z.string().uuid().optional() }).strict();
 
@@ -13,14 +15,6 @@ type EventRow = {
   kind: string;
   payload: unknown;
   created_at: string;
-};
-
-type DiscoveryEventListItem = {
-  id: string;
-  source: string;
-  kind: string;
-  payload: { counts?: object; runId?: string };
-  createdAt: string;
 };
 
 // S5: payload is projected to {counts, runId} server-side regardless of
@@ -55,7 +49,7 @@ function toListItem(row: EventRow): DiscoveryEventListItem {
 export function registerEventsRoute(app: FastifyInstance, deps: AppDeps): void {
   app.get(
     '/events',
-    { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } },
+    { config: { rateLimit: LIST_RATE_LIMIT } },
     async (req, reply) => {
       const parsedQuery = eventsQuerySchema.safeParse(req.query);
       if (!parsedQuery.success) {
