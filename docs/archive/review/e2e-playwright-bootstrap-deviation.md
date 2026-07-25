@@ -15,3 +15,11 @@ T-E2's twice-consecutive requirement failed on first attempt: back-to-back runs 
 ## D6 — Interrupted implementation agent; orchestrator completed by hand (process)
 
 The Phase-2 implementation agent initially delegated to an unauthorized background child (producing nothing but a race artifact — a duplicated workspace line — and a spurious "orchestrator has taken over" stop message to its parent), and its corrected run was cut off by a session restart. The orchestrator finished the remaining ~15% directly: nested `e2e/e2e/.auth/` live-cookie file from a cwd-relative STORAGE_STATE_PATH (fixed to module-absolute resolution — the nested copy escaped the anchored .gitignore pattern), leftover `zz-debug.spec.ts` removed, playwright-report/test-results gitignored, plus all D3–D5 fixes and every verification gate.
+
+## D7 — Round-1 testing reviewer cancelled; perspective covered in two passes (process)
+
+The delegated round-1 testing agent was cancelled mid-run (user-side stop, not a crash). The orchestrator performed that perspective directly against the agent's seven assigned focus items and applied two fixes (TEST-F1 CSV assertion strength, TEST-F2 events race). Round 2's testing agent was then briefed to deliver BOTH fix-verification and the independent scrutiny the cancelled agent owed — it did, and found that the orchestrator's own TEST-F2 fix was structurally vacuous (unconditional `<thead>` meant the `.or()` never falsified the empty-state branch). That finding was fixed with a red-proof. Lesson recorded: an orchestrator self-performed review perspective is weaker than an independent one and should be re-delegated at the next opportunity rather than treated as closed — doing so here caught a real defect in the orchestrator's own patch.
+
+## D8 — SC-CR1 carried to labeling-v2: newline escaping in CSV export
+
+`quoteCsvCell` escapes `"` but not embedded newlines; a label note containing one would span lines in the export. Not reachable through the UI today (single-line `<input>`) but permitted by the API's zod schema. Deferred with a full Anti-Deferral entry in the code-review doc (SC-CR1) and a grep-able TODO marker; belongs with labeling-v2, which owns note semantics.

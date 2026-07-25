@@ -1,7 +1,51 @@
 # Code Review: e2e-playwright-bootstrap
 
 Date: 2026-07-25
-Review round: 1 (fixes applied; Round 2 verification pending)
+Review round: 3 (converged — see round history below)
+
+---
+
+# Round 2 (fix verification + delegated-round-1 testing scrutiny)
+
+Diff reviewed: `200fd48..HEAD` (review(1) commit accfb27).
+
+## Round-2 Findings
+
+**Functionality: No findings.** All four fixes verified: the F1 catch covers both the `newContext` throw and any `ctx.get` rejection with no context-leak path (inner `finally` disposes before the outer catch); F2's removal is behavior-neutral on the non-oversized path and the new comment matches installed v10 semantics; the strengthened CSV parsing splits on the line ending the producer actually emits (`csv-export.ts:73` joins with `\r\n`); the events `.or()` idiom is correct and remains falsifiable.
+
+**Testing: 1 Minor (TEST-R2-F1), fixed.** The round-2 agent ALSO delivered the independent scrutiny the cancelled round-1 agent never did, and its finding invalidates part of the orchestrator's own TEST-F2 fix:
+- **TEST-R2-F1 — `events.spec`'s `.or()` never falsifies the empty-state branch**: `<thead>` renders unconditionally (`events/page.tsx:40-47`), so `columnheader 'Source'` always matches and the OR always resolves via branch one — deleting or breaking the "No events yet." empty state would not fail the test, despite the test's name promising both-state coverage.
+  → **Fixed**: the unconditional header set is now asserted directly (all four columns, exact match), the body check became `tbody tr` first-row visibility (a real discriminator between a rendered and a broken body without pinning a count), and the test was renamed to match what it actually proves. **Red-proof executed** on a throwaway worktree: adding a non-existent `Tenant` column makes it fail on that exact locator.
+
+Independently verified clean by the round-2 testing agent (evidence in its report): cross-spec state cannot break ordering or repeat runs — `hr-import` only upserts `identities` and the matcher never creates accounts, so E9xx fixtures cannot alter `?status=orphan`'s single row; `labeling.spec`'s teardown is robust because `page.goto` against an RSC page discards any open-editor client state; `session-expiry`'s status-only assertions are sufficient because the session `preHandler` throws before any handler body runs (structural fail-closed, RT8-equivalent); `apps.spec`'s zero-request listeners are attached pre-click; `accounts.spec`'s `toHaveCount(0)` on `matched:` sits on a real mutually-exclusive ternary in `EvidencePopover`; RT1–RT9 all pass.
+
+## Round-2 Deferred Item
+
+**SC-CR1 — `quoteCsvCell` does not escape embedded newlines (pre-existing, latent)** — Skipped this round.
+- **Anti-Deferral check**: out of scope (different feature) — a `csv-export.ts` correctness issue predating this plan, surfaced incidentally while verifying the test's CSV parsing.
+- **Justification**: Worst case — a label note containing a literal newline produces a CSV whose quoted field spans lines; RFC 4180 readers handle this correctly (the field is quoted), so spreadsheet import is fine; the naive `split('\r\n')` in the E2E assertion would fragment such a row, and any downstream line-oriented consumer would misparse. Likelihood — low today: the only user-writable field reaching the export is `account_labels.note`, and the label UI uses a single-line `<input>`, which cannot contain a newline; the API's zod schema permits one, so a direct API caller could create one. Cost to fix — small (~10 LOC + test) but it belongs with the labeling-v2 cycle that already owns note semantics (SC12/SC13/SC15), where the input-vs-API asymmetry should be settled as a whole (reject newlines at the boundary, or escape at export).
+- **Tracker**: `TODO(labeling-v2): reject or escape newlines in account_labels.note — see e2e-playwright-bootstrap-code-review.md SC-CR1`. Recorded here and carried into the next cycle's plan input.
+- **Orchestrator sign-off**: out-of-scope exception satisfied — tracked with a grep-able marker, no security control left fail-open (the export is already S4-neutralized against formula injection, which is the security-relevant property).
+
+## Round-2 JSON indexes (raw)
+
+Functionality: `[]` · Testing: 1 Minor (TEST-R2-F1, resolved above).
+
+---
+
+# Round 3 (verification-only — CONVERGED)
+
+Round-3 scope: the round-2 delta is one spec file (`e2e/specs/events.spec.ts`) plus review documentation. Functionality returned No findings on the production state, which round 3 does not touch; security returned No findings in round 1 and neither round-2 nor round-3 altered any security surface (no production code, no CI, no fixtures). The testing perspective — the only one with an open finding — verified its own fix inline:
+
+- **Testing: No findings.** The fix implements the reviewer's own recommendation (assert the unconditional header directly rather than hiding it behind an OR), extends it to all four columns, replaces the vacuous OR with a `tbody tr` discriminator, renames the test to match what it proves, and is backed by an executed red-proof (non-existent `Tenant` column → red on that locator). Full suite re-run green (27/27) after the change.
+
+**Convergence declaration**: all three perspectives are at "No findings" against the final tree. **Code review converged at round 3.**
+
+---
+
+# Round 1 (initial)
+
+Review round: 1 (fixes applied)
 Diff base: `bb5f4c4` (plan + checklist commits); implementation `d5b57d6` + docs `200fd48`
 Merge method: manual (Ollama unavailable all session — seeds skipped, experts ran full-diff review)
 
