@@ -1120,3 +1120,87 @@ Three things are worth carrying into Phase 2 rather than leaving in this table:
 3. **Two claims marked "measured" in the first draft were not measured**, and a third bound was derived twice from sampled inputs. Where this plan now says "measured", the measurement is either quoted inline or reproducible from the stated command.
 
 Phase 2 may begin.
+
+---
+
+## Implementation Checklist (Phase 2 Step 2-1)
+
+Derived mechanically before writing code. Batches are ordered so each one's gates can run before the next begins.
+
+### Batch A — audit foundation (C19 + C21 + C27)
+
+| File | Change |
+|---|---|
+| `packages/schema/migrations/0005_discovery_events_append_only.sql` | **new** — `REVOKE UPDATE, DELETE ON discovery_events FROM opensmp_app` |
+| `apps/api/src/audit.ts` | **new** — `AUDIT_SOURCE`, `LabelAuditKind`, `LabelAuditPayload`, `recordLabelAudit(tx, …)` |
+| `apps/api/src/routes/account-labels.ts` | PUT reads prior row in-txn; DELETE gains `RETURNING`, skips emission on `rowCount === 0`; both emit audit |
+| `apps/api/src/routes/events.ts` | `projectPayload(kind, payload)` kind-aware allowlist |
+| `packages/api-types/src/index.ts` | `DiscoveryEventPayload`; widen `DiscoveryEventListItem.payload` |
+| `apps/web/src/lib/api-types.ts` | re-export `DiscoveryEventPayload` (explicit list, not `export *`) |
+| `packages/schema/test/rls.integration.test.ts` | **required by C27** — split `MEMBER_TABLES` so `discovery_events` is an expected-denial member for UPDATE/DELETE |
+| `apps/api/test/audit-append-only.test.ts` | **new** — source grep, `no-rotation-route.test.ts` shape |
+| `apps/api/test/api.integration.test.ts` | C19/C21/C27 cases |
+
+### Batch B — identity detail (C18 + C25 partial + C26 partial)
+
+| File | Change |
+|---|---|
+| `apps/api/src/routes/identities.ts` | **new** — `GET /api/identities/:identityId`, `LIST_RATE_LIMIT` |
+| `apps/api/src/app.ts` | register inside the authenticated scope |
+| `packages/api-types/src/index.ts` | `IdentityDetailResponse`, `IdentityAccountItem` |
+| `apps/web/src/lib/api-types.ts` | re-export both |
+| `apps/web/src/app/identities/[identityId]/page.tsx` | **new** |
+| `apps/web/src/app/accounts/page.tsx` | identity deep link (only when `link.identityId` non-null) |
+| `e2e/specs/identity.spec.ts` | **new** |
+
+### Batch C — app management (C22 + C25 partial)
+
+| File | Change |
+|---|---|
+| `apps/api/src/routes/saas-apps.ts` | PATCH + DELETE; **must not contain `rotate`** (existing test enforces) |
+| `apps/web/src/components/SaasAppManager.tsx` | **new** — classify-never-read-`.message` idiom |
+| `apps/web/src/app/apps/page.tsx` | manager rows |
+| `e2e/specs/apps.spec.ts` | rename + restore in `afterEach`; 409 assertion |
+
+### Batch D — labeling v2 (C20 + C23 + C24 + C25 remainder)
+
+| File | Change |
+|---|---|
+| `apps/api/src/routes/events.ts` | composite cursor, `?source=`, `(created_at, id) < ($n,$m)`, exported `buildEventsWhere` |
+| `packages/schema/migrations/0004_discovery_events_created_at_idx.sql` | **new** |
+| `apps/api/src/routes/accounts.ts` | `?label=` filter |
+| `apps/api/src/routes/account-labels-bulk.ts` | **new** — set-based SQL, per-account audit |
+| `apps/web/src/lib/csv-export.ts` | `csvField` newline strip (C24/I24.2) |
+| `apps/web/src/components/{BulkLabelBar,LabelFilter}.tsx` | **new** |
+| `apps/web/src/app/{accounts,events}/page.tsx` | filters + Load-more href preservation |
+| `apps/web/test/csv-export.test.ts` | strip criteria + four-case pin |
+| `e2e/specs/labeling.spec.ts` | filter + bulk + API-driven teardown |
+| `e2e/scripts/assert-seed-preserved.sh` | labels ×4 + seeded app `displayName` |
+
+### Shared utilities that MUST be reused (R1 — no reimplementation)
+
+| Location | What |
+|---|---|
+| `packages/schema/src/db.ts:18` | `withTenant` — every tenant-scoped query |
+| `apps/api/src/rate-limits.ts:5,7` | `MUTATION_RATE_LIMIT` / `LIST_RATE_LIMIT` — never inline the values |
+| `packages/crypto/src/index.ts:80,100` | `encryptCredentials` / `decryptCredentials` |
+| `apps/web/src/lib/api-server.ts:10` | `apiFetch` — server components only |
+| `apps/web/src/lib/csv-export.ts:8` | `neutralizeCell` — the strip composes with it, does not replace it |
+| `apps/web/src/components/LabelControl.tsx:9` | `LABEL_KIND_NAMES` — single source for label display strings (R2) |
+| `e2e/fixtures/seed-facts.ts` | `SEEDED_ACCOUNTS`, `SAAS_APP_DISPLAY_NAME` — no fifth copy (RT3) |
+
+### Member sets (R42, re-derived at Phase 2 start)
+
+- **R42-A (rate limits)** — 8 route files today, all carrying `config.rateLimit`; `T-L9` (`api.integration.test.ts:1150`) asserts it for every registered route, so the 4 new routes are gated automatically. Expect the sweep's route count to grow by 4.
+- **R42-B (page↔spec)** — glob **must** be `apps/web/src/app/**/page.tsx` (single-star misses `identities/[identityId]/`). 6 page files today (incl. root `page.tsx`), 8 specs; adding the identity page makes 7 ↔ 9.
+- **R42-C (note-accepting endpoints)** — 2 members: `account-labels.ts` and the new `account-labels-bulk.ts`. C24's forbidden pattern is scoped `apps/api/src/routes/**`, covering both.
+
+### R19 — all test trees referencing symbols this plan changes
+
+`packages/schema/test/rls.integration.test.ts` · `apps/web/test/csv-export.test.ts` · `apps/api/test/api.integration.test.ts` · `apps/worker/test/match.integration.test.ts`
+
+The first is the one C27 breaks and must be updated in the same batch (round-2 FN-F2). The last references `discovery_events` for `match_completed` assertions — verify C21's projection change does not alter what it asserts.
+
+### CI gate parity
+
+CI runs 5 gates: `pnpm lint`, `pnpm typecheck`, `pnpm test:unit`, `pnpm test:integration`, `pnpm test:e2e` + `bash e2e/scripts/assert-seed-preserved.sh`. **No local pre-PR aggregate script exists** (`scripts/` absent), so every gate is run individually by the orchestrator. **No parity gap** — all five are runnable locally, and VE5 (no git remote) means CI has never executed, so local execution is the only evidence available either way.

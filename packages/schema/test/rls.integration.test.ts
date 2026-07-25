@@ -20,7 +20,20 @@ const MEMBER_TABLES = [
   'account_labels',
 ] as const;
 
+// C27 splits the tenant-scoped set by what the app role may do to a row it can
+// see. Every member is still covered by the SELECT and INSERT matrices; only
+// the UPDATE/DELETE expectation differs, because migration 0005 revokes those
+// privileges on the audit trail. Keeping both lists derived from MEMBER_TABLES
+// means a table added later lands in exactly one of them by construction.
 type MemberTable = (typeof MEMBER_TABLES)[number];
+
+const APPEND_ONLY_TABLES = ['discovery_events'] as const;
+type AppendOnlyTable = (typeof APPEND_ONLY_TABLES)[number];
+
+const MUTABLE_TABLES = MEMBER_TABLES.filter(
+  (table): table is Exclude<MemberTable, AppendOnlyTable> =>
+    !(APPEND_ONLY_TABLES as readonly string[]).includes(table),
+);
 
 let container: StartedPostgreSqlContainer;
 let adminPool: Pool;
@@ -247,7 +260,7 @@ describe('C1 acceptance: cross-tenant SELECT and UPDATE/DELETE are no-ops', () =
     });
   });
 
-  it.each(MEMBER_TABLES)(
+  it.each(MUTABLE_TABLES)(
     '%s: UPDATE targeting a tenant-B row under tenant A GUC affects zero rows',
     async (table) => {
       const bIds = seeds.get(tenantB)!;
@@ -276,7 +289,7 @@ describe('C1 acceptance: cross-tenant SELECT and UPDATE/DELETE are no-ops', () =
     },
   );
 
-  it.each(MEMBER_TABLES)(
+  it.each(MUTABLE_TABLES)(
     '%s: DELETE targeting a tenant-B row under tenant A GUC affects zero rows',
     async (table) => {
       const bIds = seeds.get(tenantB)!;
@@ -295,6 +308,68 @@ describe('C1 acceptance: cross-tenant SELECT and UPDATE/DELETE are no-ops', () =
       });
     },
   );
+
+  // C27: discovery_events leaves the two matrices above because migration 0005
+  // revokes UPDATE/DELETE from opensmp_app — and Postgres checks table
+  // privilege BEFORE row-level security, so those statements now raise 42501
+  // instead of returning rowCount 0. Asserting the denial here keeps the table
+  // covered rather than dropping it from the suite, which would silently stop
+  // testing an append-only invariant that is stronger than the RLS one.
+  it.each(APPEND_ONLY_TABLES)(
+    '%s: UPDATE is denied outright for the app role (42501), not merely filtered by RLS',
+    async (table) => {
+      const bIds = seeds.get(tenantB)!;
+      const rowId = tableRowId(table, bIds);
+
+      await expect(
+        withTenant(appPool, tenantA, async (tx) =>
+          tx.query(`UPDATE ${table} SET tenant_id = tenant_id WHERE id = $1`, [rowId]),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+
+      // The row survives, read back under its owning tenant.
+      await withTenant(appPool, tenantB, async (tx) => {
+        const { rows } = await tx.query(`SELECT * FROM ${table} WHERE id = $1`, [rowId]);
+        expect(rows).toHaveLength(1);
+      });
+    },
+  );
+
+  it.each(APPEND_ONLY_TABLES)(
+    '%s: DELETE is denied outright for the app role (42501)',
+    async (table) => {
+      const bIds = seeds.get(tenantB)!;
+      const rowId = tableRowId(table, bIds);
+
+      await expect(
+        withTenant(appPool, tenantA, async (tx) =>
+          tx.query(`DELETE FROM ${table} WHERE id = $1`, [rowId]),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+
+      await withTenant(appPool, tenantB, async (tx) => {
+        const { rows } = await tx.query(`SELECT * FROM ${table} WHERE id = $1`, [rowId]);
+        expect(rows).toHaveLength(1);
+      });
+    },
+  );
+
+  // The revoke must not have been written too broadly: the writers this audit
+  // trail depends on still have to work.
+  it.each(APPEND_ONLY_TABLES)('%s: INSERT and SELECT still work for the app role', async (table) => {
+    await withTenant(appPool, tenantA, async (tx) => {
+      const inserted = await tx.query(
+        `INSERT INTO ${table} (tenant_id, source, kind, payload)
+         VALUES ($1, 'c27-probe', 'c27_probe', '{}'::jsonb)
+         RETURNING id`,
+        [tenantA],
+      );
+      expect(inserted.rows).toHaveLength(1);
+
+      const read = await tx.query(`SELECT id FROM ${table} WHERE tenant_id = $1`, [tenantA]);
+      expect(read.rows.length).toBeGreaterThan(0);
+    });
+  });
 });
 
 describe('C1 acceptance: fail-closed with no GUC set', () => {

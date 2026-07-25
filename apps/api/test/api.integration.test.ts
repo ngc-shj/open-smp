@@ -469,6 +469,100 @@ describe('C6/S5 acceptance: events payload projection', () => {
     expect(JSON.stringify(body)).not.toContain('ssn');
     expect(body.items[0].payload).toEqual({ counts: { upserted: 3 }, runId: 'run-1' });
   });
+
+  // C21 makes the projection kind-aware, which turns the `kind` value into a
+  // load-bearing input the test above does not vary — it inserts
+  // 'sync_completed'. sync_raw is the kind that actually carries provider PII
+  // (sole writer: apps/worker/src/sync.ts), so it needs its own case, using
+  // the payload shape that writer really emits: { runId, accounts }.
+  it('sync_raw serves only {counts, runId} — the provider blob never reaches the wire', async () => {
+    const tenantId = await seedTenant(`tenant-rawproj-${randomUUID()}`, 'Raw Projection Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'google-workspace', 'sync_raw', $2::jsonb)`,
+        [
+          tenantId,
+          JSON.stringify({
+            runId: 'run-raw-1',
+            accounts: [
+              { email: 'leaked@example.com', phone: '090-0000-0000', orgUnit: '/engineering' },
+            ],
+          }),
+        ],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/events', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('leaked@example.com');
+    expect(serialized).not.toContain('090-0000-0000');
+    expect(serialized).not.toContain('/engineering');
+    expect(serialized).not.toContain('accounts');
+    expect(body.items[0].payload).toEqual({ runId: 'run-raw-1' });
+  });
+
+  it('an unknown kind falls through to the restrictive default, not passthrough', async () => {
+    const tenantId = await seedTenant(`tenant-unkproj-${randomUUID()}`, 'Unknown Kind Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'future-source', 'some_future_kind', $2::jsonb)`,
+        [tenantId, JSON.stringify({ secret: 'do-not-serialize', counts: { n: 1 } })],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/events', headers: { cookie } });
+    const body = res.json();
+    expect(JSON.stringify(body)).not.toContain('do-not-serialize');
+    expect(body.items[0].payload).toEqual({ counts: { n: 1 } });
+  });
+
+  it('label audit events serve their own four fields', async () => {
+    const tenantId = await seedTenant(`tenant-auditproj-${randomUUID()}`, 'Audit Projection Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    const actorUserId = randomUUID();
+    const saasAccountId = randomUUID();
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'label', 'label_set', $2::jsonb)`,
+        [
+          tenantId,
+          JSON.stringify({
+            actorUserId,
+            saasAccountId,
+            before: null,
+            after: { kind: 'known_shared', note: 'why' },
+          }),
+        ],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/events', headers: { cookie } });
+    expect(res.json().items[0].payload).toEqual({
+      actorUserId,
+      saasAccountId,
+      before: null,
+      after: { kind: 'known_shared', note: 'why' },
+    });
+  });
 });
 
 describe('C6/S12 acceptance: login account-bucket rate limit fires (CT2)', () => {
@@ -1145,6 +1239,205 @@ describe('C11 acceptance: account labeling', () => {
 
       const rows = await labelRow(tenantId, accountId);
       expect(rows).toHaveLength(0);
+    });
+  });
+
+  // ---- C19: label audit trail ----
+
+  async function auditRows(
+    tenantId: string,
+  ): Promise<{ kind: string; source: string; payload: Record<string, unknown> }[]> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query(
+        `SELECT kind, source, payload FROM discovery_events
+         WHERE tenant_id = $1 AND source = 'label'
+         ORDER BY created_at, id`,
+        [tenantId],
+      );
+      return result.rows;
+    });
+  }
+
+  async function eventCount(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ n: string }>(
+        'SELECT count(*) AS n FROM discovery_events WHERE tenant_id = $1',
+        [tenantId],
+      );
+      return Number(result.rows[0]!.n);
+    });
+  }
+
+  describe('T-A1: PUT on an unlabeled account emits label_set with before:null', () => {
+    it('writes exactly one audit row naming the actor and the new label', async () => {
+      const { tenantId, slug, userId, accountId } = await seedTenantWithAccount('a1');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'shared mailbox' },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const events = await auditRows(tenantId);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.kind).toBe('label_set');
+      expect(events[0]!.source).toBe('label');
+      expect(events[0]!.payload).toEqual({
+        actorUserId: userId,
+        saasAccountId: accountId,
+        before: null,
+        after: { kind: 'known_shared', note: 'shared mailbox' },
+      });
+    });
+  });
+
+  describe('T-A2: re-labelling captures the prior state as `before`', () => {
+    it('second PUT emits before = the previous {kind, note}', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('a2');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const headers = { origin: APP_ORIGIN, cookie: cookie! };
+
+      await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+        payload: { kind: 'known_shared', note: 'first' },
+      });
+      await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+        payload: { kind: 'service_account' },
+      });
+
+      const events = await auditRows(tenantId);
+      expect(events).toHaveLength(2);
+      expect(events[1]!.payload).toMatchObject({
+        before: { kind: 'known_shared', note: 'first' },
+        after: { kind: 'service_account', note: null },
+      });
+    });
+  });
+
+  describe('T-A3: DELETE emits label_cleared carrying the removed label', () => {
+    it('before deep-equals the label that was removed, after is null', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('a3');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const headers = { origin: APP_ORIGIN, cookie: cookie! };
+
+      await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+        payload: { kind: 'external_collaborator', note: 'contractor' },
+      });
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+      });
+      expect(res.statusCode).toBe(204);
+
+      const events = await auditRows(tenantId);
+      expect(events).toHaveLength(2);
+      expect(events[1]!.kind).toBe('label_cleared');
+      expect(events[1]!.payload).toMatchObject({
+        before: { kind: 'external_collaborator', note: 'contractor' },
+        after: null,
+      });
+    });
+  });
+
+  describe('T-A4: DELETE on an unlabeled account writes no audit row', () => {
+    it('returns 204 and the event count is unchanged', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('a4');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const before = await eventCount(tenantId);
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+      });
+
+      expect(res.statusCode).toBe(204);
+      expect(await eventCount(tenantId)).toBe(before);
+    });
+  });
+
+  describe('T-A5: a failed PUT writes no audit row', () => {
+    it('404 on an unknown account leaves discovery_events unchanged', async () => {
+      const { tenantId, slug } = await seedTenantWithAccount('a5');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const before = await eventCount(tenantId);
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${randomUUID()}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(await eventCount(tenantId)).toBe(before);
+    });
+  });
+
+  // ---- C24/I24.1: note newline rejection ----
+
+  describe('T-N1: notes containing line breaks are rejected at the boundary', () => {
+    it.each(['a\r\nb', 'a\nb', 'a\rb'])('rejects note %j with 400 and writes no label', async (note) => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('n1');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(await labelRow(tenantId, accountId)).toHaveLength(0);
+      expect(await eventCount(tenantId)).toBe(0);
+    });
+  });
+
+  describe('T-N2: ordinary notes and absent notes both still succeed', () => {
+    it('accepts a note containing a plain space', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('n2a');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'a b' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((await labelRow(tenantId, accountId))[0]!.note).toBe('a b');
+    });
+
+    // Guards the regression where adding .regex(...) drops .optional() and
+    // makes `note` required on a shipped endpoint — every other criterion in
+    // this file supplies a note, so nothing else would catch it.
+    it('accepts a body with no note at all', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('n2b');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((await labelRow(tenantId, accountId))[0]!.note).toBeNull();
     });
   });
 

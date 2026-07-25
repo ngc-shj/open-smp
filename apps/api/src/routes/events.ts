@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
-import type { DiscoveryEventListItem } from '@open-smp/api-types';
+import type { DiscoveryEventListItem, DiscoveryEventPayload } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 
@@ -17,16 +17,19 @@ type EventRow = {
   created_at: string;
 };
 
-// S5: payload is projected to {counts, runId} server-side regardless of
-// DISCOVERY_STORE_RAW — raw per-account blobs are never serialized to any
-// API response, even when they were persisted to the DB (forbidden pattern:
-// passing `payload` unprojected to the serializer).
-function projectPayload(payload: unknown): { counts?: object; runId?: string } {
-  if (typeof payload !== 'object' || payload === null) {
-    return {};
-  }
-  const record = payload as Record<string, unknown>;
-  const projected: { counts?: object; runId?: string } = {};
+// S5: payload is projected server-side regardless of DISCOVERY_STORE_RAW —
+// raw per-account blobs are never serialized to any API response, even when
+// they were persisted to the DB (forbidden pattern: passing `payload`
+// unprojected to the serializer).
+//
+// C21 makes the projection kind-aware so audit events can carry their own
+// fields, WITHOUT widening what sync kinds may emit. The default is the
+// restrictive sync shape, so an unknown kind — including a future one nobody
+// added here — leaks nothing. Fail-closed by construction.
+const AUDIT_KINDS = new Set(['label_set', 'label_cleared']);
+
+function projectSyncPayload(record: Record<string, unknown>): DiscoveryEventPayload {
+  const projected: DiscoveryEventPayload = {};
   if (typeof record.counts === 'object' && record.counts !== null) {
     projected.counts = record.counts as object;
   }
@@ -36,12 +39,45 @@ function projectPayload(payload: unknown): { counts?: object; runId?: string } {
   return projected;
 }
 
+function projectAuditPayload(record: Record<string, unknown>): DiscoveryEventPayload {
+  const projected: DiscoveryEventPayload = {};
+  if (typeof record.actorUserId === 'string') {
+    projected.actorUserId = record.actorUserId;
+  }
+  if (typeof record.saasAccountId === 'string') {
+    projected.saasAccountId = record.saasAccountId;
+  }
+  for (const field of ['before', 'after'] as const) {
+    const value = record[field];
+    if (value === null) {
+      projected[field] = null;
+    } else if (typeof value === 'object') {
+      const snapshot = value as Record<string, unknown>;
+      if (typeof snapshot.kind === 'string') {
+        projected[field] = {
+          kind: snapshot.kind as NonNullable<DiscoveryEventPayload['before']>['kind'],
+          note: typeof snapshot.note === 'string' ? snapshot.note : null,
+        };
+      }
+    }
+  }
+  return projected;
+}
+
+function projectPayload(kind: string, payload: unknown): DiscoveryEventPayload {
+  if (typeof payload !== 'object' || payload === null) {
+    return {};
+  }
+  const record = payload as Record<string, unknown>;
+  return AUDIT_KINDS.has(kind) ? projectAuditPayload(record) : projectSyncPayload(record);
+}
+
 function toListItem(row: EventRow): DiscoveryEventListItem {
   return {
     id: row.id,
     source: row.source,
     kind: row.kind,
-    payload: projectPayload(row.payload),
+    payload: projectPayload(row.kind, row.payload),
     createdAt: row.created_at,
   };
 }

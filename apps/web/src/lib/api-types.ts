@@ -11,6 +11,7 @@ export type {
   AccountLabelResponse,
   AccountListItem,
   AccountListResponse,
+  DiscoveryEventPayload,
   DiscoveryEventListItem,
   DiscoveryEventListResponse,
   JobState,

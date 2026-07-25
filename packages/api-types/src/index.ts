@@ -43,11 +43,26 @@ export type AccountListResponse = {
   nextCursor: string | null;
 };
 
+// One open shape with every field optional, rather than a union discriminated
+// on `kind`. Two reasons: `kind` is a plain string (narrowing it would make the
+// four raw-SQL worker emitters members of a closed class nothing links them to),
+// and a union payload would stop `event.payload.counts` compiling on the events
+// page. The type is not the guard — projectPayload's per-kind allowlist is, and
+// it is tested per kind (C21).
+export type DiscoveryEventPayload = {
+  counts?: object;
+  runId?: string;
+  actorUserId?: string;
+  saasAccountId?: string;
+  before?: { kind: AccountLabelKind; note: string | null } | null;
+  after?: { kind: AccountLabelKind; note: string | null } | null;
+};
+
 export type DiscoveryEventListItem = {
   id: string;
   source: string;
   kind: string;
-  payload: { counts?: object; runId?: string };
+  payload: DiscoveryEventPayload;
   createdAt: string;
 };
 
