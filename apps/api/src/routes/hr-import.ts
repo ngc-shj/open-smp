@@ -115,9 +115,10 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
       }
 
       // @fastify/multipart v10 REJECTS toBuffer() with FST_REQ_FILE_TOO_LARGE
-      // when the fileSize limit is hit; the truncated flag below only covers
-      // older non-throwing behavior. Unhandled, the rejection surfaced as a
-      // 500 "Premature close" through the web proxy (found by e2e).
+      // when the fileSize limit is hit (throwFileSizeLimit defaults to true),
+      // so a truncated-flag check after a successful toBuffer() would be
+      // unreachable. Unhandled, the rejection surfaced as a 500 "Premature
+      // close" through the web proxy (found by e2e).
       let buffer: Buffer;
       try {
         buffer = await file.toBuffer();
@@ -128,9 +129,6 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
           return reply.code(400).send({ error: 'file exceeds 10MB limit' });
         }
         throw err;
-      }
-      if (file.file.truncated) {
-        return reply.code(400).send({ error: 'file exceeds 10MB limit' });
       }
 
       const text = decodeUtf8Strict(buffer);

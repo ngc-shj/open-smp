@@ -60,12 +60,19 @@ async function performLogin(baseURL: string): Promise<void> {
 // setup. The 24 h sliding session TTL makes reuse safe.
 async function hasValidSavedSession(): Promise<boolean> {
   if (!existsSync(STORAGE_STATE_PATH)) return false;
-  const ctx = await request.newContext({ baseURL: API_URL, storageState: STORAGE_STATE_PATH });
+  // request.newContext THROWS synchronously on a corrupt state file (half-
+  // written by a killed run, disk-full, manual edit) — any failure here means
+  // "no usable session", never "abort the suite": fall back to a fresh login.
   try {
-    const res = await ctx.get('/api/accounts');
-    return res.ok();
-  } finally {
-    await ctx.dispose();
+    const ctx = await request.newContext({ baseURL: API_URL, storageState: STORAGE_STATE_PATH });
+    try {
+      const res = await ctx.get('/api/accounts');
+      return res.ok();
+    } finally {
+      await ctx.dispose();
+    }
+  } catch {
+    return false;
   }
 }
 

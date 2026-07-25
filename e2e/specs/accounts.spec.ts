@@ -85,11 +85,19 @@ test.describe('accounts', () => {
         chunks.push(chunk as Buffer);
       }
       const csv = Buffer.concat(chunks).toString('utf-8');
+      const [headerLine, ...dataLines] = csv.split('\r\n');
 
-      expect(csv).toContain('label');
-      expect(csv).toContain('labelNote');
-      expect(csv).toContain(account.email);
-      expect(csv).toContain(status);
+      // Exact header cells: `toContain('label')` would also match 'labelNote',
+      // so a dropped `label` column could pass unnoticed.
+      expect(headerLine).toContain('"label"');
+      expect(headerLine).toContain('"labelNote"');
+
+      // The account's own row must carry its link status — asserting the
+      // status appears somewhere in the file would also match the header or
+      // an unrelated row.
+      const accountRow = dataLines.find((line) => line.includes(account.email));
+      expect(accountRow, `${account.email} row missing from the ${status} export`).toBeDefined();
+      expect(accountRow).toContain(`"${status}"`);
     }
   });
 });
