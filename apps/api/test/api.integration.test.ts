@@ -358,6 +358,21 @@ describe('C6 acceptance: hr-import', () => {
     return cookie;
   }
 
+  it('rejects an over-limit (~11MB) upload with 400, not a stream error', async () => {
+    // Regression for the 500 "Premature close" the e2e tier surfaced:
+    // @fastify/multipart v10 rejects toBuffer() with FST_REQ_FILE_TOO_LARGE
+    // at the fileSize limit; the route must map it to the documented 400.
+    const cookie = await loggedInCookie();
+    const header = 'employee_id,email,name,status,left_at\n';
+    const row = 'E999,oversize@example.com,Oversize Row,active,\n';
+    const csv = header + row.repeat(Math.ceil((11 * 1024 * 1024) / row.length));
+
+    const res = await importCsv(cookie, csv);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'file exceeds 10MB limit' });
+  });
+
   it('(a) duplicate employee_id rows: second upserts over first, warning present', async () => {
     const cookie = await loggedInCookie();
     const csv =

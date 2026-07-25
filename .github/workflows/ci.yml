@@ -7,6 +7,8 @@ on:
 
 # Single workflow, no duplicated config (plan R33): checks -> integration and
 # checks -> compose-smoke both build on the same lint/typecheck/unit gate.
+# compose-smoke is "compose-smoke + e2e": existing curl gates remain fast-fail
+# preludes (R44), then the Playwright suite runs against the same stack boot.
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -42,8 +44,20 @@ jobs:
   compose-smoke:
     needs: [checks, integration]
     runs-on: ubuntu-latest
+    env:
+      # Single literal site in this job (SEC-E1): the curl login step below
+      # and the Playwright e2e step both consume these same two values.
+      E2E_DEMO_EMAIL: admin@demo.example
+      E2E_DEMO_PASSWORD: demo-admin-password
     steps:
       - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
 
       - name: Build and start the stack
         run: docker compose up -d --build
@@ -75,7 +89,7 @@ jobs:
             -c /tmp/cookies.txt \
             -H 'Content-Type: application/json' \
             -H 'Origin: http://localhost:3000' \
-            -d '{"tenantSlug":"demo","email":"admin@demo.example","password":"demo-admin-password"}' \
+            -d "{\"tenantSlug\":\"demo\",\"email\":\"${E2E_DEMO_EMAIL}\",\"password\":\"${E2E_DEMO_PASSWORD}\"}" \
             http://localhost:3001/api/auth/login)"
           echo "login http status: $http_status"
           cat /tmp/login-response.json
@@ -121,6 +135,23 @@ jobs:
             echo "expected >=1 ghost account, got $count" >&2
             exit 1
           fi
+
+      - name: Install Playwright chromium browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run the e2e suite
+        run: pnpm test:e2e
+
+      - name: Assert seed acceptance bar survived the e2e suite
+        run: bash e2e/scripts/assert-seed-preserved.sh
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 7
 
       - name: Dump service logs on failure
         if: failure()
