@@ -99,7 +99,7 @@ export function LabelControl({ accountId, label }: { accountId: string; label: A
         value={kind}
         disabled={busy}
         onChange={(e) => setKind(e.target.value as AccountLabelKind)}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none"
+        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
       >
         {LABEL_KINDS.map((k) => (
           <option key={k} value={k}>
@@ -115,7 +115,7 @@ export function LabelControl({ accountId, label }: { accountId: string; label: A
         disabled={busy}
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none"
+        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
       />
 
       {error && <p className="text-red-700">{error}</p>}

@@ -5,6 +5,11 @@ import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redi
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { Pool } from 'pg';
+// The sweeps now cover PATCH and DELETE too, so the cast cannot stay
+// 'GET' | 'POST' — that asserted something false about its own input. This
+// is the narrow literal union app.inject accepts (fastify's HTTPMethods is
+// widened with string and does not resolve inject's overload).
+type SweepMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
@@ -138,9 +143,9 @@ describe('C6 acceptance: 401 sweep over every non-login route', () => {
     expect(nonLoginRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonLoginRoutes) {
-      const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
+      const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({
-        method: route.method as 'GET' | 'POST',
+        method: route.method as SweepMethod,
         url,
         headers: route.method === 'GET' ? {} : { origin: APP_ORIGIN },
       });
@@ -155,7 +160,7 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
-      const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
+      const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({ method: route.method as 'POST', url });
       expect(res.statusCode, `${route.method} ${route.url} should 403 with missing Origin`).toBe(403);
     }
@@ -166,7 +171,7 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
-      const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
+      const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({
         method: route.method as 'POST',
         url,
@@ -1455,7 +1460,35 @@ describe('C11 acceptance: account labeling', () => {
       // removing the DELETE label route's `config` made this test fail with
       // "DELETE /api/accounts/:saasAccountId/label should carry a
       // rate-limit config: expected false to be true".
-      expect(app.apiRoutes.length).toBeGreaterThan(0);
+      // An exact count, not a floor: every sweep in this file iterates whatever
+      // registered, so a route dropped from app.ts leaves all of them green and
+      // surfaces later as a confusing 404 in an unrelated test. The number is
+      // the assertion that names the cause.
+      expect(app.apiRoutes.map((route) => `${route.method} ${route.url}`).sort()).toEqual([
+        'DELETE /api/accounts/:saasAccountId/label',
+        'DELETE /api/saas-apps/:saasAppId',
+        'GET /api/accounts',
+        'GET /api/events',
+        'GET /api/identities/:identityId',
+        'GET /api/jobs/:jobId',
+        'GET /api/saas-apps',
+        // Fastify registers a HEAD companion for every GET; they are listed so
+        // the count stays exact rather than approximately right.
+        'HEAD /api/accounts',
+        'HEAD /api/events',
+        'HEAD /api/identities/:identityId',
+        'HEAD /api/jobs/:jobId',
+        'HEAD /api/saas-apps',
+        'PATCH /api/saas-apps/:saasAppId',
+        'POST /api/accounts/labels/bulk',
+        'POST /api/auth/login',
+        'POST /api/auth/logout',
+        'POST /api/hr-import',
+        'POST /api/match',
+        'POST /api/saas-apps',
+        'POST /api/sync/:saasAppId',
+        'PUT /api/accounts/:saasAccountId/label',
+      ]);
       for (const route of app.apiRoutes) {
         expect(route.hasRateLimit, `${route.method} ${route.url} should carry a rate-limit config`).toBe(
           true,
@@ -2315,7 +2348,7 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
   async function listEvents(
     cookie: string,
     query = '',
-  ): Promise<{ items: { id: string }[]; nextCursor: string | null }> {
+  ): Promise<{ items: { id: string; createdAt: string }[]; nextCursor: string | null }> {
     const res = await app.inject({
       method: 'GET',
       url: `/api/events${query ? `?${query}` : ''}`,
@@ -2381,6 +2414,53 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
     // count would pass against either.
     expect(all).toHaveLength(51);
     expect(new Set(all).size).toBe(51);
+
+    // Set equality cannot see an inverted tie-break that preserves the row set:
+    // the tied members would come back in the wrong relative order with every id
+    // still present. Ordering across the seam is what this case is named for, so
+    // it is asserted directly (C20, round-2 TEST-F5).
+    const ordered = [...page1.items, ...page2.items];
+    for (let i = 1; i < ordered.length; i += 1) {
+      const prev = ordered[i - 1]!;
+      const cur = ordered[i]!;
+      const prevKey = `${prev.createdAt}|${prev.id}`;
+      const curKey = `${cur.createdAt}|${cur.id}`;
+      expect(prevKey >= curKey).toBe(true);
+    }
+  });
+
+  it('resumes at microsecond precision, not the millisecond a JS Date can hold', async () => {
+    const { tenantId, cookie } = await setup('c20b2');
+    // timestamptz stores microseconds; a JS Date holds milliseconds. Encoding
+    // the cursor from the driver's Date truncates, which moves the keyset
+    // boundary EARLIER and drops every row in the gap — silently, with no error
+    // and no duplicate. The other boundary fixtures all land on exact
+    // milliseconds, so this defect is invisible to them by construction.
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         SELECT $1, 'matcher', 'sync_completed', '{}'::jsonb,
+                timestamptz '2026-07-09T00:00:00.000Z' + (g || ' seconds')::interval
+         FROM generate_series(1, 49) AS g`,
+        [tenantId],
+      );
+      // Row 50 (the page-1 boundary) carries .500900; row 51 sits at .500400 —
+      // inside the same millisecond, so a truncated .500 cursor excludes it.
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         VALUES ($1, 'matcher', 'sync_completed', '{}'::jsonb, timestamptz '2026-07-09T00:00:00.500900Z'),
+                ($1, 'matcher', 'sync_completed', '{}'::jsonb, timestamptz '2026-07-09T00:00:00.500400Z')`,
+        [tenantId],
+      );
+    });
+
+    const page1 = await listEvents(cookie);
+    expect(page1.items).toHaveLength(50);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await listEvents(cookie, `cursor=${encodeURIComponent(page1.nextCursor!)}`);
+    const all = [...page1.items, ...page2.items].map((item) => item.id);
+    expect(new Set(all).size).toBe(51);
   });
 
   it('filters by source, and an unknown source is an empty page rather than an error', async () => {
@@ -2439,6 +2519,11 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
       Buffer.from(
         JSON.stringify({ t: '2026-07-01T00:00:00.000Z', id: randomUUID(), s: null, extra: 1 }),
       ).toString('base64url'),
+      // Date.parse accepts '0'; timestamptz does not. Before the format check
+      // this reached the query and came back as a 500 quoting the driver's
+      // "date/time field value out of range" — a 500 where the decoder promises
+      // a 400, with database internals in the body.
+      Buffer.from(JSON.stringify({ t: '0', id: randomUUID(), s: null })).toString('base64url'),
     ];
     for (const cursor of malformed) {
       const res = await app.inject({
@@ -2447,6 +2532,11 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
         headers: { cookie },
       });
       expect(res.statusCode, cursor).toBe(400);
+      // The status alone would not catch a rejection that answers correctly
+      // while quoting the driver: assert the body is the flat error shape and
+      // carries no database text.
+      expect(res.json()).toEqual({ error: 'invalid_query' });
+      expect(res.body).not.toMatch(/date\/time|timestamptz|out of range/i);
     }
 
     const empty = await app.inject({ method: 'GET', url: '/api/events?cursor=', headers: { cookie } });

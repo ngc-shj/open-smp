@@ -40,7 +40,7 @@ function validateServiceAccountJson(raw: string): ManagerError {
 
 export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   const router = useRouter();
-  const [mode, setMode] = useState<'idle' | 'rename' | 'credentials'>('idle');
+  const [mode, setMode] = useState<'idle' | 'rename' | 'credentials' | 'confirmDelete'>('idle');
   const [displayName, setDisplayName] = useState(app.displayName);
   const [serviceAccountJson, setServiceAccountJson] = useState('');
   const [impersonateAdminEmail, setImpersonateAdminEmail] = useState('');
@@ -162,12 +162,42 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
         <button
           type="button"
           disabled={busy}
-          onClick={handleDelete}
+          onClick={() => setMode(mode === 'confirmDelete' ? 'idle' : 'confirmDelete')}
           className="rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
         >
           Delete
         </button>
       </div>
+
+      {/* Deleting an app is irreversible — re-registering means pasting the
+          service-account credentials again — and this button sits one position
+          from Rename. Its two siblings both open a panel before acting, so a
+          single click here was the one destructive path with no confirmation. */}
+      {mode === 'confirmDelete' && (
+        <div className="flex flex-col gap-1.5 rounded-md border border-red-200 bg-white p-2 text-xs">
+          <p className="text-neutral-700">
+            Delete <span className="font-medium">{app.displayName}</span>? This cannot be undone.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={handleDelete}
+              className="rounded-md bg-red-700 px-2 py-1 font-medium text-white hover:bg-red-800 disabled:opacity-50"
+            >
+              {busy ? 'Deleting…' : 'Delete'}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={close}
+              className="px-2 py-1 text-neutral-500 hover:text-neutral-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {mode === 'rename' && (
         <div className="flex flex-col gap-1.5 rounded-md border border-neutral-200 bg-white p-2 text-xs">

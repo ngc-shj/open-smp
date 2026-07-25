@@ -11,7 +11,20 @@ import { describe, expect, it } from 'vitest';
 // Scope: statements naming the table literally, anywhere under apps/api/src.
 // A dynamically-built table name would evade it; the database privilege is
 // what backstops that case.
-const MUTATION_PATTERN = /(UPDATE|DELETE)[\s\S]{0,40}discovery_events/i;
+//
+// The source is normalised before matching — comments stripped, whitespace
+// collapsed — so the window measures SQL distance rather than source
+// formatting. A fixed character window against raw text is defeated by an
+// ordinary multi-line statement or an interposed comment, which is a guard
+// that reads as protection while providing none.
+const MUTATION_PATTERN = /(UPDATE|DELETE)(?:(?!;)[\s\S]){0,200}?discovery_events/i;
+
+function normalizeSource(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/\s+/g, ' ');
+}
 
 async function collectSourceFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -34,10 +47,34 @@ describe('C19/I19.4 acceptance: no apps/api source mutates discovery_events', ()
     expect(files.length).toBeGreaterThan(0);
 
     for (const file of files) {
-      const source = await readFile(file, 'utf8');
+      const source = normalizeSource(await readFile(file, 'utf8'));
       expect(source, `${path.relative(srcDir, file)} must not mutate discovery_events`).not.toMatch(
         MUTATION_PATTERN,
       );
     }
+  });
+
+  // The detector must be shown able to fire, and on the shapes a real edit
+  // would take — not only the one-line form. A guard that passes its own
+  // happy path while missing the realistic spelling is the failure mode this
+  // review has hit repeatedly.
+  it.each([
+    ['single line', `await tx.query('UPDATE discovery_events SET kind = $1', [k]);`],
+    [
+      'multi-line with an interposed comment',
+      `await tx.query(\`DELETE
+         /* drop audit rows past the retention horizon */
+         FROM discovery_events WHERE created_at < now()\`);`,
+    ],
+  ])('detects a mutation written as %s', (_label, snippet) => {
+    expect(normalizeSource(snippet)).toMatch(MUTATION_PATTERN);
+  });
+
+  it('does not fire on the INSERT and SELECT paths the audit trail depends on', () => {
+    const insert = `await tx.query(\`INSERT INTO discovery_events (tenant_id, source, kind, payload)
+       VALUES ($1, $2, $3, $4::jsonb)\`);`;
+    const select = `await tx.query('SELECT id, kind FROM discovery_events WHERE tenant_id = $1');`;
+    expect(normalizeSource(insert)).not.toMatch(MUTATION_PATTERN);
+    expect(normalizeSource(select)).not.toMatch(MUTATION_PATTERN);
   });
 });

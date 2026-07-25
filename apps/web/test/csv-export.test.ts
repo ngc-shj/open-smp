@@ -240,4 +240,13 @@ describe('C24: newline stripping keeps one record per line', () => {
 
     expect(csv).toContain(`"' =cmd|calc"`);
   });
+
+  // The \n twin. The strip alone already prevents the formula from firing (the
+  // newline becomes a leading space), so this pins that neutralization does not
+  // depend on the strip: both defences must hold on their own.
+  it('a \\n-led formula is neutralized the same way as its \\r twin', () => {
+    const csv = buildAccountsCsv([itemWith({ displayName: '\n=cmd|calc' })]);
+
+    expect(csv).toContain(`"' =cmd|calc"`);
+  });
 });

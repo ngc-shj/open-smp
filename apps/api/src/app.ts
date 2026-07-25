@@ -91,11 +91,27 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     { prefix: '/api' },
   );
 
-  app.setErrorHandler((error, _req, reply) => {
+  app.setErrorHandler((error, req, reply) => {
     if (error instanceof UnauthorizedError) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    throw error;
+
+    // Fastify's default serializer puts `message` in the body, so rethrowing
+    // here shipped driver text to the client — a bad cursor answered with
+    // `date/time field value out of range`, naming the column type and the
+    // failing value. Client errors keep their own shape (they carry no
+    // internals and callers depend on them); anything else is logged in full
+    // and answered opaquely.
+    const details = error as { statusCode?: unknown; code?: unknown };
+    const declared = typeof details.statusCode === 'number' ? details.statusCode : 500;
+    const status = reply.statusCode >= 400 ? reply.statusCode : declared;
+    if (status < 500) {
+      const code = typeof details.code === 'string' ? details.code : 'bad_request';
+      return reply.code(status).send({ error: code });
+    }
+
+    req.log.error({ err: error }, 'unhandled error');
+    return reply.code(500).send({ error: 'internal_error' });
   });
 
   return app;

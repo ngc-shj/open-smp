@@ -5,20 +5,13 @@ import type { AccountListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
+import { LABEL_FILTERS } from '../label-kinds.js';
 
 const LINK_STATUSES = ['matched', 'orphan', 'ghost', 'ambiguous'] as const;
 
-// 'none' and 'any' sit alongside the kinds so an operator can ask "what have I
-// not triaged yet" without a second endpoint. Both are expressed as predicates
-// on the account_labels LEFT JOIN that the query already performs.
-const LABEL_FILTERS = [
-  'known_shared',
-  'service_account',
-  'external_collaborator',
-  'none',
-  'any',
-] as const;
-
+// 'none' and 'any' let an operator ask "what have I not triaged yet" without a
+// second endpoint; both are predicates on the account_labels LEFT JOIN the
+// query already performs, so neither costs an extra round trip.
 const accountsQuerySchema = z
   .object({
     status: z.enum(LINK_STATUSES).optional(),

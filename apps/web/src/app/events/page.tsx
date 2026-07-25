@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { apiFetch } from '@/lib/api-server';
 import type { DiscoveryEventListResponse, DiscoveryEventPayload } from '@/lib/api-types';
 import { NavBar } from '@/components/NavBar';
+import { SourceFilter } from '@/components/SourceFilter';
 import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
 
 async function fetchEvents(
@@ -26,8 +27,6 @@ async function fetchEvents(
   return (await res.json()) as DiscoveryEventListResponse;
 }
 
-const AUDIT_KINDS = new Set(['label_set', 'label_cleared']);
-
 function labelSnapshot(snapshot: DiscoveryEventPayload['before']): string {
   if (!snapshot) return 'none';
   return snapshot.note
@@ -39,11 +38,24 @@ function labelSnapshot(snapshot: DiscoveryEventPayload['before']): string {
  * The audit column answers "what changed", which for a label is the transition
  * rather than either end of it: a `label_set` on an already-labelled account is
  * a different act from one on an unlabelled account, and only the pair shows it.
+ *
+ * Keyed on the projected payload rather than on a copy of the kind list: the
+ * API's allowlist is what decides whether these fields are served at all, so a
+ * future audit kind renders here the moment the server projects it. A second
+ * kind list on this side would silently render '—' for a real audit event until
+ * someone remembered to update it.
  */
-function auditTransition(kind: string, payload: DiscoveryEventPayload): string {
-  if (!AUDIT_KINDS.has(kind)) return '—';
+function auditTransition(payload: DiscoveryEventPayload): string {
+  if (payload.before === undefined && payload.after === undefined) return '—';
   return `${labelSnapshot(payload.before ?? null)} → ${labelSnapshot(payload.after ?? null)}`;
 }
+
+// The API constrains `source` to a slug and 400s anything else, and a non-ok
+// response here throws — so an unvalidated param turns a hand-typed URL into a
+// rendered error page. The accounts page allowlists its filters and falls back
+// to a default; this matches that, since a bogus filter is a URL typo rather
+// than a condition worth an error screen.
+const SOURCE_RE = /^[a-z0-9_-]{1,64}$/;
 
 export default async function EventsPage({
   searchParams,
@@ -51,7 +63,7 @@ export default async function EventsPage({
   searchParams: Promise<{ source?: string; cursor?: string }>;
 }) {
   const params = await searchParams;
-  const source = params.source;
+  const source = params.source && SOURCE_RE.test(params.source) ? params.source : undefined;
   const { items, nextCursor } = await fetchEvents(source, params.cursor);
 
   return (
@@ -59,6 +71,8 @@ export default async function EventsPage({
       <NavBar />
       <main className="mx-auto max-w-6xl px-4 py-6">
         <h1 className="mb-6 text-lg font-semibold text-neutral-900">Discovery events</h1>
+
+        <SourceFilter active={source} />
 
         <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
           <table className="min-w-full divide-y divide-neutral-200 text-sm">
@@ -81,7 +95,7 @@ export default async function EventsPage({
                     {event.payload.counts ? JSON.stringify(event.payload.counts) : '—'}
                   </td>
                   <td className="px-3 py-2 text-neutral-700">
-                    {auditTransition(event.kind, event.payload)}
+                    {auditTransition(event.payload)}
                   </td>
                   {/* saasAccountId is rendered as text, not a link: there is no
                       per-account page to navigate to yet (SC25). */}

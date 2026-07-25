@@ -15,6 +15,18 @@ export const CURSOR_MAX_LENGTH = 512;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// The timestamp is pinned to the shape encodeCursor emits, NOT merely to what
+// Date.parse tolerates. Date.parse accepts values Postgres rejects as
+// timestamptz — `'0'` is the cheapest example, and it reaches the query as a
+// bind value and raises 22008, i.e. a 500 carrying a database error message,
+// which is precisely the totality this module promises not to break. Validating
+// against the producer's own format keeps the accepted domain a subset of what
+// the database will take, rather than a sample of it.
+// Fractional digits are optional so a cursor minted before the microsecond fix
+// (or by any ISO-8601 producer) still decodes; the year is capped at four
+// digits, which is what keeps the value inside timestamptz's range.
+const CURSOR_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+
 export function encodeCursor(cursor: EventCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
 }
@@ -48,7 +60,7 @@ export function decodeCursor(raw: string): EventCursor | null {
   }
 
   const { t, id, s } = record;
-  if (typeof t !== 'string' || Number.isNaN(Date.parse(t))) {
+  if (typeof t !== 'string' || !CURSOR_TIMESTAMP_RE.test(t) || Number.isNaN(Date.parse(t))) {
     return null;
   }
   if (typeof id !== 'string' || !UUID_RE.test(id)) {

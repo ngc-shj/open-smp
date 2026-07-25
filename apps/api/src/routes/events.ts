@@ -5,6 +5,7 @@ import type { DiscoveryEventListItem, DiscoveryEventPayload } from '@open-smp/ap
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
+import { LABEL_AUDIT_KINDS } from '../audit.js';
 import {
   CURSOR_MAX_LENGTH,
   decodeCursor,
@@ -67,9 +68,16 @@ type EventRow = {
   payload: unknown;
   // timestamptz arrives from the pg driver as a Date, not a string. It has
   // always serialised correctly on the way out (JSON.stringify calls
-  // toISOString), which is why the previous `string` annotation went unnoticed
-  // — but the cursor reads this value directly, so the type has to be honest.
+  // toISOString), which is why the previous `string` annotation went unnoticed.
   created_at: Date;
+  // The cursor must NOT be derived from the Date above: timestamptz holds
+  // microseconds and a JS Date holds milliseconds, so toISOString() truncates.
+  // A truncated cursor moves the keyset boundary earlier in time, and every row
+  // between the true position and the truncated one is skipped on the next page
+  // — silently, with no error and no duplicate, which is the worst failure shape
+  // for an audit trail. Postgres formats this one to microseconds and the
+  // comparison happens in the database, so no precision is lost in transit.
+  cursor_t: string;
 };
 
 function toIsoTimestamp(value: Date): string {
@@ -85,7 +93,7 @@ function toIsoTimestamp(value: Date): string {
 // fields, WITHOUT widening what sync kinds may emit. The default is the
 // restrictive sync shape, so an unknown kind — including a future one nobody
 // added here — leaks nothing. Fail-closed by construction.
-const AUDIT_KINDS = new Set(['label_set', 'label_cleared']);
+const AUDIT_KINDS: ReadonlySet<string> = new Set(LABEL_AUDIT_KINDS);
 
 function projectSyncPayload(record: Record<string, unknown>): DiscoveryEventPayload {
   const projected: DiscoveryEventPayload = {};
@@ -178,7 +186,8 @@ export function registerEventsRoute(app: FastifyInstance, deps: AppDeps): void {
 
       const rows = await withTenant(deps.pool, tenantId, async (tx) => {
         const result = await tx.query<EventRow>(
-          `SELECT id, source, kind, payload, created_at
+          `SELECT id, source, kind, payload, created_at,
+                  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_t
            FROM discovery_events
            WHERE ${clause}
            ORDER BY created_at DESC, id DESC
@@ -191,12 +200,13 @@ export function registerEventsRoute(app: FastifyInstance, deps: AppDeps): void {
       const hasMore = rows.length > PAGE_SIZE;
       const pageRows = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
       const lastRow = pageRows.at(-1);
-      // The pg driver hands back timestamptz as a Date, not a string, so the
-      // cursor timestamp is normalised explicitly. Interpolating the Date's
-      // default string form would round-trip through Date.parse at microsecond
-      // loss and could place the resumed scan on the wrong side of a tie.
+      // cursor_t, not created_at: the boundary timestamp comes from Postgres at
+      // microsecond precision. Deriving it from the driver's Date would truncate
+      // to milliseconds, moving the keyset boundary earlier and silently
+      // skipping every row in between (measured: 64 of 65 rows on the dev stack
+      // carry sub-millisecond precision).
       const nextCursor =
-        hasMore && lastRow ? encodeCursor({ t: toIsoTimestamp(lastRow.created_at), id: lastRow.id, s: source ?? null }) : null;
+        hasMore && lastRow ? encodeCursor({ t: lastRow.cursor_t, id: lastRow.id, s: source ?? null }) : null;
 
       return reply.code(200).send({
         items: pageRows.map(toListItem),

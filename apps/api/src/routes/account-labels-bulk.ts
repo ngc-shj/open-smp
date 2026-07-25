@@ -4,9 +4,9 @@ import { withTenant } from '@open-smp/schema';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 import { noteSchema } from '../label-note.js';
+import { LABEL_KINDS } from '../label-kinds.js';
 import { AUDIT_SOURCE } from '../audit.js';
 
-const LABEL_KINDS = ['known_shared', 'service_account', 'external_collaborator'] as const;
 
 // 100 bounds the work per request; uniqueness at the schema level means the
 // reported `updated` count can never disagree with the input length.

@@ -12,6 +12,14 @@ describe('C20 events cursor', () => {
     expect(decodeCursor(encodeCursor(VALID))).toEqual(VALID);
   });
 
+  // The route mints `t` at microsecond precision (timestamptz holds
+  // microseconds; a JS Date does not), so the decoder must accept that form or
+  // every second page 400s.
+  it('round-trips a microsecond-precision timestamp', () => {
+    const micro = { ...VALID, t: '2026-07-25T12:00:00.500900Z' };
+    expect(decodeCursor(encodeCursor(micro))).toEqual(micro);
+  });
+
   it('round-trips a cursor carrying a source filter', () => {
     const withSource = { ...VALID, s: 'label' };
     expect(decodeCursor(encodeCursor(withSource))).toEqual(withSource);
@@ -31,6 +39,14 @@ describe('C20 events cursor', () => {
       ['an extra key beyond {t,id,s}', b64({ ...VALID, extra: 'x' })],
       ['id that is not a uuid', b64({ ...VALID, id: 'nope' })],
       ['t that is not a date', b64({ ...VALID, t: 'not-a-date' })],
+      // Date.parse accepts all four of these; Postgres rejects them as
+      // timestamptz. Without a format check they reach the query as bind values
+      // and surface as a 500 carrying a database error, breaking the totality
+      // this decoder exists to provide (I20.2).
+      ['t that Date.parse accepts but timestamptz rejects', b64({ ...VALID, t: '0' })],
+      ['t as a bare year-ish number', b64({ ...VALID, t: '1' })],
+      ['t in RFC-1123 form', b64({ ...VALID, t: 'Sat, 01 Jan 2000 00:00:00 GMT' })],
+      ['t with an out-of-range expanded year', b64({ ...VALID, t: '+275760-09-13T00:00:00.000Z' })],
       ['s that is not a string or null', b64({ ...VALID, s: 42 })],
       ['s longer than the slug cap', b64({ ...VALID, s: 'a'.repeat(65) })],
     ])('%s', (_label, raw) => {

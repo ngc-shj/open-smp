@@ -8,7 +8,12 @@ import type { AccountLabelKind } from '@open-smp/api-types';
 // correct when a future audit kind is added.
 export const AUDIT_SOURCE = 'label';
 
-export type LabelAuditKind = 'label_set' | 'label_cleared';
+// The kind list is the value; the type is derived from it rather than the other
+// way round, so the events projection allowlist and this module cannot disagree
+// about what counts as an audit event.
+export const LABEL_AUDIT_KINDS = ['label_set', 'label_cleared'] as const;
+
+export type LabelAuditKind = (typeof LABEL_AUDIT_KINDS)[number];
 
 export type LabelAuditSnapshot = { kind: AccountLabelKind; note: string | null };
 

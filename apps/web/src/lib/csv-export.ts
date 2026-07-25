@@ -3,7 +3,11 @@ import type { AccountListItem } from './api-types';
 // Cell values beginning with these characters are interpreted as formulas by
 // spreadsheet applications (CSV injection). Prefixing with a leading single
 // quote neutralizes them without altering the visible/parsed text value.
-const DANGEROUS_FIRST_CHARS = ['=', '+', '-', '@', '\t', '\r'];
+// '\n' belongs here alongside its '\r' twin. It is not reachable today — the
+// newline strip below turns a leading '\n' into a space before any spreadsheet
+// sees it — but that makes neutralization depend on the strip running, and the
+// two defences are meant to be independent.
+const DANGEROUS_FIRST_CHARS = ['=', '+', '-', '@', '\t', '\r', '\n'];
 
 export function neutralizeCell(value: string): string {
   if (DANGEROUS_FIRST_CHARS.includes(value[0] ?? '')) {

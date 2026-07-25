@@ -9,8 +9,8 @@ import { SAAS_APP_DISPLAY_NAME, SAAS_APP_KEY } from '../fixtures/seed-facts.js';
 test.describe('apps', () => {
   test('list shows the seeded Google Workspace app', async ({ page }) => {
     await page.goto('/apps');
-    await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME })).toBeVisible();
-    await expect(page.getByRole('cell', { name: 'google-workspace' })).toBeVisible();
+    await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME, exact: true })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'google-workspace', exact: true })).toBeVisible();
   });
 
   test('duplicate registration (seeded key) returns the 409 message', async ({ page }) => {
@@ -113,17 +113,24 @@ test.describe('apps management (C22)', () => {
   // assert-seed-preserved.sh — sees the wrong name. The seeder does NOT repair
   // it (ensureSaasApp returns early on an existing (tenant_id, key)), so a leak
   // here is permanent until someone edits the database by hand.
-  test.afterEach(async ({ page }) => {
-    await page.goto('/apps');
-    const current = page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME });
-    if ((await current.count()) === 0) {
-      const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
-      await row.getByRole('button', { name: 'Rename' }).click();
-      const field = row.getByLabel('Display name');
-      await field.fill(SAAS_APP_DISPLAY_NAME);
-      await row.getByRole('button', { name: 'Save' }).click();
-      await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME })).toBeVisible();
-    }
+  // API-driven, not UI-driven: a restore that navigates and clicks fails
+  // exactly when the page or session is already broken — which is the case
+  // where the leak actually happens. Origin is mandatory on non-GET /api
+  // requests, and Playwright's request context does not set it.
+  test.afterEach(async ({ request, baseURL }) => {
+    const res = await request.get(`${baseURL}/api/saas-apps`);
+    expect(res.status()).toBe(200);
+    const { items } = (await res.json()) as { items: { id: string; key: string; displayName: string }[] };
+
+    const app = items.find((item) => item.key === SAAS_APP_KEY);
+    expect(app, 'teardown could not resolve the seeded app').toBeTruthy();
+    if (app!.displayName === SAAS_APP_DISPLAY_NAME) return;
+
+    const restored = await request.patch(`${baseURL}/api/saas-apps/${app!.id}`, {
+      headers: { Origin: baseURL! },
+      data: { displayName: SAAS_APP_DISPLAY_NAME },
+    });
+    expect(restored.status()).toBe(200);
   });
 
   test('renaming the seeded app updates the listed name', async ({ page }) => {
@@ -141,7 +148,11 @@ test.describe('apps management (C22)', () => {
     await page.goto('/apps');
     const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
 
+    // Delete opens a confirmation panel rather than acting on the first click,
+    // matching its two sibling actions; the second click is the real request.
     await row.getByRole('button', { name: 'Delete' }).click();
+    await expect(row.getByText(/This cannot be undone/)).toBeVisible();
+    await row.getByRole('button', { name: 'Delete', exact: true }).last().click();
 
     // The seeded app carries the four demo accounts, so the refusal must name
     // how many — "cannot delete" alone does not tell the operator what to
@@ -150,7 +161,9 @@ test.describe('apps management (C22)', () => {
       page.getByRole('alert').filter({ hasText: /Cannot delete — 4 accounts still attributed/ }),
     ).toBeVisible();
 
-    // And the app must still be there.
-    await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME })).toBeVisible();
+    // And the app must still be there. `exact` because the actions cell's
+    // accessible name concatenates its button labels, which can otherwise
+    // contain the display name as a substring.
+    await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME, exact: true })).toBeVisible();
   });
 });

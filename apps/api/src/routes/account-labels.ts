@@ -5,9 +5,9 @@ import type { AccountLabelResponse } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 import { noteSchema } from '../label-note.js';
+import { LABEL_KINDS } from '../label-kinds.js';
 import { recordLabelAudit, type LabelAuditSnapshot } from '../audit.js';
 
-const LABEL_KINDS = ['known_shared', 'service_account', 'external_collaborator'] as const;
 
 const paramsSchema = z
   .object({
