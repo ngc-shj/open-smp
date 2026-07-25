@@ -3,6 +3,7 @@ import { apiFetch } from '@/lib/api-server';
 import type { SaasAppListResponse } from '@/lib/api-types';
 import { NavBar } from '@/components/NavBar';
 import { SaasAppForm } from '@/components/SaasAppForm';
+import { SaasAppManager } from '@/components/SaasAppManager';
 
 async function fetchSaasApps(): Promise<SaasAppListResponse> {
   const res = await apiFetch('/api/saas-apps');
@@ -32,6 +33,7 @@ export default async function AppsPage() {
               <tr>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Display name</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Key</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Manage</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
@@ -39,11 +41,14 @@ export default async function AppsPage() {
                 <tr key={item.id}>
                   <td className="px-3 py-2 text-neutral-700">{item.displayName}</td>
                   <td className="px-3 py-2 text-neutral-500">{item.key}</td>
+                  <td className="px-3 py-2">
+                    <SaasAppManager app={item} />
+                  </td>
                 </tr>
               ))}
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={2} className="px-3 py-6 text-center text-neutral-400">
+                  <td colSpan={3} className="px-3 py-6 text-center text-neutral-400">
                     No apps registered yet.
                   </td>
                 </tr>

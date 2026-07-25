@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
+import { decryptCredentials } from '@open-smp/crypto';
 import { SYNC_QUEUE, MATCH_QUEUE, type SyncJobData, type MatchJobData } from '@open-smp/queues';
 import { buildApp } from '../src/app.js';
 import { ARGON2ID_OPTIONS, type Hasher } from '../src/auth.js';
@@ -1767,5 +1768,250 @@ describe('C18 acceptance: identity detail', () => {
     // an implementation computing the flag from accounts.length > PAGE_SIZE
     // after slicing would report true here.
     expect(body.accountsTruncated).toBe(false);
+  });
+});
+
+describe('C22 acceptance: SaaS app management', () => {
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'App Mgmt Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    return { tenantId, cookie, headers: { origin: APP_ORIGIN, cookie } };
+  }
+
+  async function registerApp(headers: Record<string, string>): Promise<string> {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers,
+      payload: {
+        key: 'google-workspace',
+        displayName: 'GWS Original',
+        credentials: { serviceAccountJson: '{"client_email":"a@b.c"}', impersonateAdminEmail: 'a@b.c' },
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    return res.json().id as string;
+  }
+
+  async function readCredentials(
+    tenantId: string,
+    saasAppId: string,
+  ): Promise<{ blob: Buffer; keyVersion: number; displayName: string }> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{
+        credentials_enc: Buffer;
+        credentials_key_version: number;
+        display_name: string;
+      }>(
+        'SELECT credentials_enc, credentials_key_version, display_name FROM saas_apps WHERE id = $1',
+        [saasAppId],
+      );
+      const row = result.rows[0]!;
+      return {
+        blob: row.credentials_enc,
+        keyVersion: row.credentials_key_version,
+        displayName: row.display_name,
+      };
+    });
+  }
+
+  it('rename changes display_name and leaves the ciphertext byte-identical', async () => {
+    const { tenantId, headers } = await setup('c22a');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: { displayName: 'GWS Renamed' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ id: saasAppId, key: 'google-workspace', displayName: 'GWS Renamed' });
+
+    const after = await readCredentials(tenantId, saasAppId);
+    expect(after.displayName).toBe('GWS Renamed');
+    // A rename must not re-encrypt. Asserting only "the name changed" would
+    // pass against an implementation that rewrote the credential blob too.
+    expect(after.blob.equals(before.blob)).toBe(true);
+    expect(after.keyVersion).toBe(before.keyVersion);
+  });
+
+  it('credential replacement re-encrypts and decrypts back to the submitted plaintext', async () => {
+    const { tenantId, headers } = await setup('c22b');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+
+    const replacement = { serviceAccountJson: '{"client_email":"new@example.com"}', impersonateAdminEmail: 'new@example.com' };
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: { credentials: replacement },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(res.json())).not.toContain('client_email');
+
+    const after = await readCredentials(tenantId, saasAppId);
+    expect(after.blob.equals(before.blob)).toBe(false);
+
+    // Decrypt with the version READ BACK FROM THE ROW, not the one the test
+    // would have encrypted with: that is what proves credentials_key_version
+    // travelled with the ciphertext. Passing a locally-chosen version would
+    // pass against a row left on a stale version.
+    const plaintext = decryptCredentials(
+      after.blob,
+      after.keyVersion,
+      { tenantId, saasAppId },
+      deps.encryptionKeys,
+    );
+    expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual(replacement);
+  });
+
+  it('replacement under a two-version key map lands on the newer version and still decrypts', async () => {
+    const { tenantId, headers, cookie } = await setup('c22c');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+    expect(before.keyVersion).toBe(1);
+
+    // The shared app is built with a single-version key map, so "1 stays 1"
+    // would be unfalsifiable there. A second instance with versions 1 and 2
+    // is what makes the version-column assertion mean anything.
+    const twoVersionKeys = new Map([
+      [1, Buffer.alloc(32, 7)],
+      [2, Buffer.alloc(32, 9)],
+    ]);
+    const rolloutApp = buildApp({ ...deps, encryptionKeys: twoVersionKeys });
+    await rolloutApp.ready();
+    try {
+      const replacement = { serviceAccountJson: '{"client_email":"rolled@example.com"}' };
+      const res = await rolloutApp.inject({
+        method: 'PATCH',
+        url: `/api/saas-apps/${saasAppId}`,
+        headers: { origin: APP_ORIGIN, cookie },
+        payload: { credentials: replacement },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const after = await readCredentials(tenantId, saasAppId);
+      expect(after.keyVersion).toBe(2);
+      const plaintext = decryptCredentials(
+        after.blob,
+        after.keyVersion,
+        { tenantId, saasAppId },
+        twoVersionKeys,
+      );
+      expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual(replacement);
+    } finally {
+      await rolloutApp.close();
+    }
+  });
+
+  it('PATCH with an empty body returns 400 rather than a silent no-op 200', async () => {
+    const { headers } = await setup('c22d');
+    const saasAppId = await registerApp(headers);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('DELETE removes an app that has no accounts', async () => {
+    const { tenantId, headers } = await setup('c22e');
+    const saasAppId = await registerApp(headers);
+
+    const res = await app.inject({ method: 'DELETE', url: `/api/saas-apps/${saasAppId}`, headers });
+    expect(res.statusCode).toBe(204);
+
+    const remaining = await withTenant(appPool, tenantId, async (tx) =>
+      tx.query('SELECT id FROM saas_apps WHERE id = $1', [saasAppId]),
+    );
+    expect(remaining.rows).toHaveLength(0);
+  });
+
+  it('DELETE refuses an app with accounts and mutates nothing', async () => {
+    const { tenantId, headers } = await setup('c22f');
+    const saasAppId = await registerApp(headers);
+
+    const accountId = await withTenant(appPool, tenantId, async (tx) => {
+      const account = await tx.query<{ id: string }>(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, 'ext-1', 'held@example.com', 'Held', 'active', false)
+         RETURNING id`,
+        [tenantId, saasAppId],
+      );
+      const id = account.rows[0]!.id;
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence)
+         VALUES ($1, $2, NULL, 'orphan', 0.00)`,
+        [tenantId, id],
+      );
+      await tx.query(
+        `INSERT INTO account_labels (tenant_id, saas_account_id, kind) VALUES ($1, $2, 'known_shared')`,
+        [tenantId, id],
+      );
+      return id;
+    });
+
+    const res = await app.inject({ method: 'DELETE', url: `/api/saas-apps/${saasAppId}`, headers });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: 'app_has_accounts', accountCount: 1 });
+
+    // The refusal must leave every related table untouched — a partial cascade
+    // would destroy match evidence and label history that nothing reproduces.
+    await withTenant(appPool, tenantId, async (tx) => {
+      for (const [table, column, value] of [
+        ['saas_apps', 'id', saasAppId],
+        ['saas_accounts', 'id', accountId],
+        ['account_links', 'saas_account_id', accountId],
+        ['account_labels', 'saas_account_id', accountId],
+      ] as const) {
+        const rows = await tx.query(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [value]);
+        expect(rows.rows, `${table} must be unchanged`).toHaveLength(1);
+      }
+    });
+  });
+
+  it('PATCH and DELETE on another tenant\'s app return 404, not 403', async () => {
+    const { headers } = await setup('c22g');
+    const otherSlug = `tenant-c22other-${randomUUID()}`;
+    const otherTenantId = await seedTenant(otherSlug, 'Other Tenant');
+    const foreignAppId = await withTenant(appPool, otherTenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name) VALUES ($1, 'google-workspace', 'Theirs')
+         RETURNING id`,
+        [otherTenantId],
+      );
+      return result.rows[0]!.id;
+    });
+
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${foreignAppId}`,
+      headers,
+      payload: { displayName: 'Hijacked' },
+    });
+    expect(patched.statusCode).toBe(404);
+
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/saas-apps/${foreignAppId}`,
+      headers,
+    });
+    expect(deleted.statusCode).toBe(404);
+
+    const survived = await withTenant(appPool, otherTenantId, async (tx) =>
+      tx.query<{ display_name: string }>('SELECT display_name FROM saas_apps WHERE id = $1', [foreignAppId]),
+    );
+    expect(survived.rows[0]!.display_name).toBe('Theirs');
   });
 });

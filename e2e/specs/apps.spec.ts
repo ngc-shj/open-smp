@@ -4,7 +4,7 @@ import {
   FAKE_SERVICE_ACCOUNT_JSON_MISSING_PRIVATE_KEY,
   FAKE_SERVICE_ACCOUNT_CREDENTIALS,
 } from '../fixtures/fake-service-account.js';
-import { SAAS_APP_DISPLAY_NAME } from '../fixtures/seed-facts.js';
+import { SAAS_APP_DISPLAY_NAME, SAAS_APP_KEY } from '../fixtures/seed-facts.js';
 
 test.describe('apps', () => {
   test('list shows the seeded Google Workspace app', async ({ page }) => {
@@ -104,5 +104,53 @@ test.describe('apps', () => {
     for (const message of consoleMessages) {
       expect(message).not.toContain(privateKeyMarker);
     }
+  });
+});
+
+test.describe('apps management (C22)', () => {
+  // The seeded app is shared mutable state: this suite renames it and must put
+  // the name back even when a test fails mid-flight, or every later run — and
+  // assert-seed-preserved.sh — sees the wrong name. The seeder does NOT repair
+  // it (ensureSaasApp returns early on an existing (tenant_id, key)), so a leak
+  // here is permanent until someone edits the database by hand.
+  test.afterEach(async ({ page }) => {
+    await page.goto('/apps');
+    const current = page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME });
+    if ((await current.count()) === 0) {
+      const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
+      await row.getByRole('button', { name: 'Rename' }).click();
+      const field = row.getByLabel('Display name');
+      await field.fill(SAAS_APP_DISPLAY_NAME);
+      await row.getByRole('button', { name: 'Save' }).click();
+      await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME })).toBeVisible();
+    }
+  });
+
+  test('renaming the seeded app updates the listed name', async ({ page }) => {
+    await page.goto('/apps');
+    const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
+
+    await row.getByRole('button', { name: 'Rename' }).click();
+    await row.getByLabel('Display name').fill('E2E Renamed Workspace');
+    await row.getByRole('button', { name: 'Save' }).click();
+
+    await expect(page.getByRole('cell', { name: 'E2E Renamed Workspace' })).toBeVisible();
+  });
+
+  test('deleting an app that still has accounts is refused with its account count', async ({ page }) => {
+    await page.goto('/apps');
+    const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
+
+    await row.getByRole('button', { name: 'Delete' }).click();
+
+    // The seeded app carries the four demo accounts, so the refusal must name
+    // how many — "cannot delete" alone does not tell the operator what to
+    // clear first.
+    await expect(
+      page.getByRole('alert').filter({ hasText: /Cannot delete — 4 accounts still attributed/ }),
+    ).toBeVisible();
+
+    // And the app must still be there.
+    await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME })).toBeVisible();
   });
 });
