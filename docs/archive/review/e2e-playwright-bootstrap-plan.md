@@ -173,3 +173,13 @@ Gate before Phase 3: `pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test
 2. **CI on PR**: compose-smoke boots the stack once, curl gates fast-fail infra issues, then the browser suite validates the five pages' real flows; on failure the HTML report artifact pinpoints the step.
 3. **Next cycle (SC11/SC14/labeling-v2)**: each new page/flow ships with its spec added to `e2e/specs/` — the R42 page member-set check makes a missing spec a review finding.
 4. **Flake appears**: CI retry masks it once but the retry itself is the signal (report shows flaky); developer reproduces locally with `retries: 0` and fixes the root cause (no sleep-tuning — forbidden pattern blocks the lazy fix).
+
+## Implementation Checklist
+
+Step 2-1 (2026-07-25). CI parity: gates already enumerated (lint/typecheck/test:unit/test:integration/compose-smoke); this plan ADDS the e2e gate to compose-smoke — parity by construction (local flow = CI steps). Inventory: reuse `seed.ts` facts via a constants module in e2e/fixtures; no app-code changes AT ALL in this plan (forbidden: any diff under apps/ or packages/ except the comment-only seed.ts note; wiring files pnpm-workspace.yaml, package.json, .gitignore, ci.yml are expected).
+
+Files to create: `e2e/package.json`, `e2e/playwright.config.ts`, `e2e/global-setup.ts`, `e2e/fixtures/auth.ts`, `e2e/fixtures/fake-service-account.ts`, `e2e/fixtures/seed-facts.ts`, `e2e/fixtures/files/e2e-import.csv`, `e2e-import-bad.csv`, `e2e-import-sjis.csv`, `e2e/specs/{auth,accounts,labeling,import,apps,events,session-expiry,sync}.spec.ts`, `e2e/scripts/assert-seed-preserved.sh`, `e2e/tsconfig.json` (if needed for lint/typecheck coverage).
+
+Files to modify: `pnpm-workspace.yaml` (+e2e), root `package.json` (+test:e2e), `.gitignore` (+e2e/.auth/), `.github/workflows/ci.yml` (compose-smoke job: env vars, node/pnpm setup, playwright install, test:e2e, seed-preservation step, artifact upload retention 7), `apps/api/src/seed.ts` (comment-only: extend keep-in-sync note), `docs/manual-tests/ui-*.md` (header notes: automated vs manual-only), + `docs/manual-tests/e2e-howto.md`.
+
+Stack prerequisite: the currently-running compose stack carries a leftover manual label from an earlier session (orphan account labeled during a smoke test). Clean it with a targeted row delete (psql `DELETE FROM account_labels` for the demo tenant) or a full stack recreation per e2e-howto; the seed itself is idempotent, so `docker compose up -d --build` restores everything else. A full volume wipe (`docker compose down -v`) also works but is gated by a local destructive-op hook — the targeted delete is preferred.
