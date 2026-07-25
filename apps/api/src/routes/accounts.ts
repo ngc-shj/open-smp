@@ -8,10 +8,22 @@ import { PAGE_SIZE } from '../page-size.js';
 
 const LINK_STATUSES = ['matched', 'orphan', 'ghost', 'ambiguous'] as const;
 
+// 'none' and 'any' sit alongside the kinds so an operator can ask "what have I
+// not triaged yet" without a second endpoint. Both are expressed as predicates
+// on the account_labels LEFT JOIN that the query already performs.
+const LABEL_FILTERS = [
+  'known_shared',
+  'service_account',
+  'external_collaborator',
+  'none',
+  'any',
+] as const;
+
 const accountsQuerySchema = z
   .object({
     status: z.enum(LINK_STATUSES).optional(),
     app: z.string().min(1).optional(),
+    label: z.enum(LABEL_FILTERS).optional(),
     cursor: z.string().uuid().optional(),
   })
   .strict();
@@ -82,7 +94,7 @@ export function registerAccountsRoute(app: FastifyInstance, deps: AppDeps): void
       if (!parsedQuery.success) {
         return reply.code(400).send({ error: 'invalid_query' });
       }
-      const { status, app: appKey, cursor } = parsedQuery.data;
+      const { status, app: appKey, label, cursor } = parsedQuery.data;
       const { tenantId } = req.sessionContext;
 
       const conditions: string[] = ['sa.tenant_id = $1'];
@@ -95,6 +107,17 @@ export function registerAccountsRoute(app: FastifyInstance, deps: AppDeps): void
       if (appKey) {
         values.push(appKey);
         conditions.push(`sap.key = $${values.length}`);
+      }
+      // Predicates over the account_labels LEFT JOIN the query already
+      // performs, so filtering adds no round trip — and nextCursor is derived
+      // from the filtered row set by construction rather than by care.
+      if (label === 'none') {
+        conditions.push('lbl.kind IS NULL');
+      } else if (label === 'any') {
+        conditions.push('lbl.kind IS NOT NULL');
+      } else if (label !== undefined) {
+        values.push(label);
+        conditions.push(`lbl.kind = $${values.length}`);
       }
       if (cursor) {
         values.push(cursor);

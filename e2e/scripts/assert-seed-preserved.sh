@@ -51,12 +51,39 @@ assert_status 'bob.suzuki@demo.example' 'ghost'
 assert_status 'shared.mailbox@demo.example' 'ambiguous'
 assert_status 'unknown.contractor@demo.example' 'orphan'
 
-orphan_label="$(echo "$accounts_json" | jq -r \
-  '.items[] | select(.email == "unknown.contractor@demo.example") | .label')"
-if [ "$orphan_label" != "null" ]; then
-  echo "assert-seed-preserved: orphan account expected label=null, got '${orphan_label}'" >&2
+# Labels are checked on ALL FOUR seeded accounts, not just the orphan: a
+# bulk-labeling spec touches several of them, and a teardown that misses one
+# leaves the shared stack poisoned for every later run — silently, if the gate
+# only ever inspected the orphan.
+assert_label_null() {
+  local email="$1"
+  local actual
+  actual="$(echo "$accounts_json" | jq -r --arg email "$email" \
+    '.items[] | select(.email == $email) | .label')"
+  if [ "$actual" != "null" ]; then
+    echo "assert-seed-preserved: ${email} expected label=null, got '${actual}'" >&2
+    exit 1
+  fi
+  echo "assert-seed-preserved: ${email} label -> null (ok)"
+}
+
+assert_label_null 'alice.tanaka@demo.example'
+assert_label_null 'bob.suzuki@demo.example'
+assert_label_null 'shared.mailbox@demo.example'
+assert_label_null 'unknown.contractor@demo.example'
+
+# The seeded app's displayName. apps.spec.ts renames it and restores in
+# afterEach — which does not run when a spec crashes mid-test. This leak is
+# worse than a leaked label because the seeder never repairs it: seed.ts looks
+# up (tenant_id, key) and returns the existing id on a hit without re-applying
+# display_name, so a leaked rename survives every `docker compose up` forever.
+apps_json="$(curl -sS -b "$COOKIE_JAR" "${API_URL}/api/saas-apps")"
+app_display_name="$(echo "$apps_json" | jq -r \
+  '.items[] | select(.key == "google-workspace") | .displayName')"
+if [ "$app_display_name" != "Google Workspace" ]; then
+  echo "assert-seed-preserved: seeded app expected displayName='Google Workspace', got '${app_display_name}'" >&2
   exit 1
 fi
-echo "assert-seed-preserved: orphan label -> null (ok)"
+echo "assert-seed-preserved: seeded app displayName -> ${app_display_name} (ok)"
 
 echo "assert-seed-preserved: seed acceptance bar intact"

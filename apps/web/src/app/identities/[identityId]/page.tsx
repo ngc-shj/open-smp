@@ -3,7 +3,7 @@ import { apiFetch } from '@/lib/api-server';
 import type { IdentityDetailResponse } from '@/lib/api-types';
 import { NavBar } from '@/components/NavBar';
 import { StatusChip } from '@/components/StatusChip';
-import { LABEL_KIND_NAMES } from '@/components/LabelControl';
+import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
 
 async function fetchIdentity(identityId: string): Promise<IdentityDetailResponse | null> {
   const res = await apiFetch(`/api/identities/${encodeURIComponent(identityId)}`);

@@ -3,16 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AccountLabel, AccountLabelKind } from '@/lib/api-types';
-
-// Single source for label-kind display strings (R2) — used for both the
-// chip text and the select options.
-export const LABEL_KIND_NAMES: Record<AccountLabelKind, string> = {
-  known_shared: 'Known shared',
-  service_account: 'Service account',
-  external_collaborator: 'External collaborator',
-};
-
-const LABEL_KINDS = Object.keys(LABEL_KIND_NAMES) as AccountLabelKind[];
+import { LABEL_KIND_NAMES, LABEL_KINDS } from '@/lib/label-kinds';
 
 export function LabelControl({ accountId, label }: { accountId: string; label: AccountLabel | null }) {
   const router = useRouter();

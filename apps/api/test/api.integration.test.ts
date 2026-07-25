@@ -2015,3 +2015,462 @@ describe('C22 acceptance: SaaS app management', () => {
     expect(survived.rows[0]!.display_name).toBe('Theirs');
   });
 });
+
+describe('C23 acceptance: label filtering and bulk labeling', () => {
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Bulk Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+
+    const saasAppId = await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name)
+         VALUES ($1, 'google-workspace', 'Google Workspace') RETURNING id`,
+        [tenantId],
+      );
+      return result.rows[0]!.id;
+    });
+
+    return { tenantId, cookie, headers: { origin: APP_ORIGIN, cookie }, saasAppId };
+  }
+
+  async function seedAccounts(tenantId: string, saasAppId: string, count: number): Promise<string[]> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         SELECT $1, $2, 'bulk-' || g, 'bulk' || g || '@example.com', 'Bulk ' || g, 'active', false
+         FROM generate_series(1, $3) AS g
+         RETURNING id`,
+        [tenantId, saasAppId, count],
+      );
+      return result.rows.map((row) => row.id);
+    });
+  }
+
+  async function labelCount(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ n: string }>(
+        'SELECT count(*) AS n FROM account_labels WHERE tenant_id = $1',
+        [tenantId],
+      );
+      return Number(result.rows[0]!.n);
+    });
+  }
+
+  async function auditCount(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ n: string }>(
+        `SELECT count(*) AS n FROM discovery_events WHERE tenant_id = $1 AND source = 'label'`,
+        [tenantId],
+      );
+      return Number(result.rows[0]!.n);
+    });
+  }
+
+  it('labels every supplied account and emits one audit row per account', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23a');
+    const ids = await seedAccounts(tenantId, saasAppId, 3);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'service_account', note: 'batch' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ updated: 3 });
+    expect(await labelCount(tenantId)).toBe(3);
+    // Per-account, not per-request: a single "bulk" record would erase every
+    // account's individual before-state.
+    expect(await auditCount(tenantId)).toBe(3);
+  });
+
+  it('an unknown id fails the whole batch, writing no labels and no audit rows', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23b');
+    const ids = await seedAccounts(tenantId, saasAppId, 2);
+    const ghostId = randomUUID();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [...ids, ghostId], kind: 'known_shared' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: 'not_found', missing: [ghostId] });
+    expect(await labelCount(tenantId)).toBe(0);
+    expect(await auditCount(tenantId)).toBe(0);
+  });
+
+  it('another tenant\'s account is indistinguishable from an absent one', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23c');
+    const ids = await seedAccounts(tenantId, saasAppId, 1);
+
+    const otherTenantId = await seedTenant(`tenant-c23other-${randomUUID()}`, 'Other');
+    const otherAppId = await withTenant(appPool, otherTenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name)
+         VALUES ($1, 'google-workspace', 'Theirs') RETURNING id`,
+        [otherTenantId],
+      );
+      return result.rows[0]!.id;
+    });
+    const [foreignAccountId] = await seedAccounts(otherTenantId, otherAppId, 1);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [...ids, foreignAccountId!], kind: 'known_shared' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().missing).toEqual([foreignAccountId]);
+    expect(await labelCount(tenantId)).toBe(0);
+  });
+
+  it('re-labelling in bulk records each account\'s prior state', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23d');
+    const ids = await seedAccounts(tenantId, saasAppId, 2);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'known_shared', note: 'first' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'service_account' },
+    });
+
+    expect(await labelCount(tenantId)).toBe(2);
+    expect(await auditCount(tenantId)).toBe(4);
+
+    const second = await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM discovery_events
+         WHERE tenant_id = $1 AND source = 'label'
+         ORDER BY created_at DESC, id DESC LIMIT 2`,
+        [tenantId],
+      );
+      return result.rows;
+    });
+    for (const row of second) {
+      expect(row.payload).toMatchObject({
+        before: { kind: 'known_shared', note: 'first' },
+        after: { kind: 'service_account', note: null },
+      });
+    }
+  });
+
+  it('rejects an over-cap batch, a duplicated id, and a note containing a line break', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23e');
+    const ids = await seedAccounts(tenantId, saasAppId, 2);
+
+    const overCap = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: Array.from({ length: 101 }, () => randomUUID()), kind: 'known_shared' },
+    });
+    expect(overCap.statusCode).toBe(400);
+
+    const duplicated = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [ids[0]!, ids[0]!], kind: 'known_shared' },
+    });
+    expect(duplicated.statusCode).toBe(400);
+
+    // R42-C: the note guard covers BOTH endpoints that accept a note, not just
+    // the per-account one.
+    const newline = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'known_shared', note: 'a\r\nb' },
+    });
+    expect(newline.statusCode).toBe(400);
+
+    expect(await labelCount(tenantId)).toBe(0);
+    expect(await auditCount(tenantId)).toBe(0);
+  });
+
+  it('?label= filters the list and composes with the status tab', async () => {
+    const { tenantId, cookie, headers, saasAppId } = await setup('c23f');
+    const ids = await seedAccounts(tenantId, saasAppId, 4);
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence)
+         SELECT $1, account_id, NULL, 'orphan', 0.00 FROM unnest($2::uuid[]) AS account_id`,
+        [tenantId, ids],
+      );
+    });
+
+    const listWith = async (query: string) => {
+      const res = await app.inject({ method: 'GET', url: `/api/accounts?${query}`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      return res.json().items as { accountId: string }[];
+    };
+
+    expect(await listWith('label=none')).toHaveLength(4);
+    expect(await listWith('label=any')).toHaveLength(0);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [ids[0]!], kind: 'known_shared' },
+    });
+
+    expect(await listWith('label=none')).toHaveLength(3);
+    expect(await listWith('label=any')).toHaveLength(1);
+    expect(await listWith('label=known_shared')).toHaveLength(1);
+    expect(await listWith('label=service_account')).toHaveLength(0);
+    // The pre-existing status filter must keep working alongside it.
+    expect(await listWith('status=orphan&label=none')).toHaveLength(3);
+
+    const bogus = await app.inject({
+      method: 'GET',
+      url: '/api/accounts?label=bogus',
+      headers: { cookie },
+    });
+    expect(bogus.statusCode).toBe(400);
+  });
+
+  it('nextCursor is derived from the filtered set, not the unfiltered one', async () => {
+    const { tenantId, cookie, headers, saasAppId } = await setup('c23g');
+    const ids = await seedAccounts(tenantId, saasAppId, 70);
+
+    // Label the first 10 by id order, so an unfiltered cursor would skip past
+    // unlabeled rows when resuming. 60 unlabeled accounts remain, which is what
+    // makes hasMore true on the filtered page — with exactly PAGE_SIZE left the
+    // cursor is legitimately null and the test would prove nothing.
+    const sorted = [...ids].sort();
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: sorted.slice(0, 10), kind: 'known_shared' },
+    });
+
+    const page1 = await app.inject({
+      method: 'GET',
+      url: '/api/accounts?label=none',
+      headers: { cookie },
+    });
+    const body1 = page1.json();
+    expect(body1.items).toHaveLength(50);
+    expect(body1.nextCursor).not.toBeNull();
+
+    const page2 = await app.inject({
+      method: 'GET',
+      url: `/api/accounts?label=none&cursor=${encodeURIComponent(body1.nextCursor)}`,
+      headers: { cookie },
+    });
+    const body2 = page2.json();
+
+    const seen = [...body1.items, ...body2.items].map((item: { accountId: string }) => item.accountId);
+    const labeled = new Set(sorted.slice(0, 10));
+    // All 60 unlabeled accounts across the two pages, none missing and none
+    // repeated, and no labeled account leaking through — the clause that
+    // falsifies a cursor derived from the unfiltered ordering, which would skip
+    // ahead by the filtered-out rows and silently drop results.
+    expect(new Set(seen).size).toBe(60);
+    expect(seen.filter((id) => labeled.has(id))).toHaveLength(0);
+  });
+});
+
+describe('C20 acceptance: chronological events with a filter-bound cursor', () => {
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Events Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    return { tenantId, cookie };
+  }
+
+  async function insertEvent(tenantId: string, source: string, createdAt: string): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         VALUES ($1, $2, 'sync_completed', '{}'::jsonb, $3)
+         RETURNING id`,
+        [tenantId, source, createdAt],
+      );
+      return result.rows[0]!.id;
+    });
+  }
+
+  async function listEvents(
+    cookie: string,
+    query = '',
+  ): Promise<{ items: { id: string }[]; nextCursor: string | null }> {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/events${query ? `?${query}` : ''}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    return res.json();
+  }
+
+  it('returns newest first, asserted on the exact id sequence', async () => {
+    const { tenantId, cookie } = await setup('c20a');
+    const oldest = await insertEvent(tenantId, 'matcher', '2026-07-01T00:00:00.000Z');
+    const middle = await insertEvent(tenantId, 'matcher', '2026-07-02T00:00:00.000Z');
+    const newest = await insertEvent(tenantId, 'matcher', '2026-07-03T00:00:00.000Z');
+
+    const { items } = await listEvents(cookie);
+    expect(items.map((item) => item.id)).toEqual([newest, middle, oldest]);
+  });
+
+  it('breaks a created_at tie by id, descending', async () => {
+    const { tenantId, cookie } = await setup('c20b');
+    // now() is transaction-constant, so a tie must be written explicitly — it
+    // cannot simply be "seeded at the same moment".
+    const tie = '2026-07-04T00:00:00.000Z';
+    const ids = [
+      await insertEvent(tenantId, 'matcher', tie),
+      await insertEvent(tenantId, 'matcher', tie),
+      await insertEvent(tenantId, 'matcher', tie),
+    ];
+
+    const { items } = await listEvents(cookie);
+    expect(items.map((item) => item.id)).toEqual([...ids].sort().reverse());
+  });
+
+  it('pages across a tie at the boundary with no gap and no duplicate', async () => {
+    const { tenantId, cookie } = await setup('c20c');
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         SELECT $1, 'matcher', 'sync_completed', '{}'::jsonb,
+                timestamptz '2026-07-05T00:00:00.000Z' + (g || ' seconds')::interval
+         FROM generate_series(1, 49) AS g`,
+        [tenantId],
+      );
+      // Two rows sharing an exact timestamp, positioned to straddle the page
+      // boundary once the 49 above are ordered ahead of them.
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         SELECT $1, 'matcher', 'sync_completed', '{}'::jsonb, timestamptz '2026-07-05T00:00:00.000Z'
+         FROM generate_series(1, 2)`,
+        [tenantId],
+      );
+    });
+
+    const page1 = await listEvents(cookie);
+    expect(page1.items).toHaveLength(50);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await listEvents(cookie, `cursor=${encodeURIComponent(page1.nextCursor!)}`);
+    const all = [...page1.items, ...page2.items].map((item) => item.id);
+
+    // Set equality falsifies both a skipped row and a repeated one; a bare
+    // count would pass against either.
+    expect(all).toHaveLength(51);
+    expect(new Set(all).size).toBe(51);
+  });
+
+  it('filters by source, and an unknown source is an empty page rather than an error', async () => {
+    const { tenantId, cookie } = await setup('c20d');
+    await insertEvent(tenantId, 'label', '2026-07-06T00:00:00.000Z');
+    await insertEvent(tenantId, 'google-workspace', '2026-07-06T00:00:01.000Z');
+
+    expect((await listEvents(cookie, 'source=label')).items).toHaveLength(1);
+    // 400 here would leak which sources exist in this tenant.
+    expect((await listEvents(cookie, 'source=nonexistent')).items).toHaveLength(0);
+  });
+
+  it('rejects a cursor replayed under a dropped or changed filter', async () => {
+    const { tenantId, cookie } = await setup('c20e');
+    await withTenant(appPool, tenantId, async (tx) => {
+      for (const source of ['label', 'google-workspace']) {
+        await tx.query(
+          `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+           SELECT $1, $2, 'sync_completed', '{}'::jsonb,
+                  timestamptz '2026-07-07T00:00:00.000Z' + (g || ' seconds')::interval
+           FROM generate_series(1, 51) AS g`,
+          [tenantId, source],
+        );
+      }
+    });
+
+    const page1 = await listEvents(cookie, 'source=label');
+    expect(page1.nextCursor).not.toBeNull();
+    const cursor = encodeURIComponent(page1.nextCursor!);
+
+    const sameFilter = await app.inject({
+      method: 'GET',
+      url: `/api/events?source=label&cursor=${cursor}`,
+      headers: { cookie },
+    });
+    expect(sameFilter.statusCode).toBe(200);
+
+    // Without the binding these would return a silently unfiltered page that
+    // omits every non-label row newer than the cursor position.
+    for (const url of [`/api/events?cursor=${cursor}`, `/api/events?source=matcher&cursor=${cursor}`]) {
+      const res = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(res.statusCode, url).toBe(400);
+    }
+  });
+
+  it('rejects malformed cursors and treats an empty one as no cursor', async () => {
+    const { cookie } = await setup('c20f');
+
+    const malformed = [
+      'not-a-cursor',
+      Buffer.from('plain text').toString('base64url'),
+      Buffer.from(JSON.stringify({ t: '2026-07-01T00:00:00.000Z' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ t: '2026-07-01T00:00:00.000Z', id: 'nope', s: null })).toString(
+        'base64url',
+      ),
+      Buffer.from(
+        JSON.stringify({ t: '2026-07-01T00:00:00.000Z', id: randomUUID(), s: null, extra: 1 }),
+      ).toString('base64url'),
+    ];
+    for (const cursor of malformed) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/events?cursor=${encodeURIComponent(cursor)}`,
+        headers: { cookie },
+      });
+      expect(res.statusCode, cursor).toBe(400);
+    }
+
+    const empty = await app.inject({ method: 'GET', url: '/api/events?cursor=', headers: { cookie } });
+    expect(empty.statusCode).toBe(200);
+  });
+
+  it('a well-formed cursor from another tenant returns an empty page, not an error', async () => {
+    const { tenantId: theirTenant } = await setup('c20g-them');
+    const theirEventId = await insertEvent(theirTenant, 'matcher', '2026-07-08T00:00:00.000Z');
+    const { cookie: ourCookie } = await setup('c20g-us');
+
+    const foreignCursor = Buffer.from(
+      JSON.stringify({ t: '2026-07-08T00:00:00.000Z', id: theirEventId, s: null }),
+    ).toString('base64url');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/events?cursor=${encodeURIComponent(foreignCursor)}`,
+      headers: { cookie: ourCookie },
+    });
+
+    // Indistinguishable from an exhausted cursor: 400 would confirm the cursor
+    // is syntactically well-formed but belongs to someone else.
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toHaveLength(0);
+  });
+});

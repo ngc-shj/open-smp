@@ -17,8 +17,29 @@ function quoteCsvCell(value: string): string {
   return `"${escaped}"`;
 }
 
+// Rows are joined with \r\n, so an embedded \r\n inside a cell splits the
+// record in two for any line-oriented consumer — the E2E CSV assertions and
+// csv-export's own tests among them. RFC 4180 permits newlines inside a quoted
+// field, so this is not a quoting bug; it is a mismatch with the
+// one-record-per-line contract everything downstream relies on.
+//
+// This runs at the export boundary rather than at the API boundary because the
+// exposed columns are provider- and HR-supplied: display names arrive verbatim
+// from the connector (apps/worker/src/sync.ts) and from HR CSV imports, and
+// refusing a sync over a control character in data the operator does not
+// control would break ingestion. The operator-authored `note` IS rejected at
+// the API, where a newline is always a mistake.
+function stripNewlines(value: string): string {
+  return value.replace(/[\r\n]/g, ' ');
+}
+
+// Order is load-bearing: neutralizeCell inspects position 0, so it must see the
+// original leading character. Stripping first would turn a leading \r into a
+// space, neutralizeCell would find nothing dangerous, and the formula-injection
+// defence would silently stop applying to \r-led cells. Quoting stays last
+// (I24.3) — nothing may run on quoteCsvCell's output.
 function csvField(value: string): string {
-  return quoteCsvCell(neutralizeCell(value));
+  return quoteCsvCell(stripNewlines(neutralizeCell(value)));
 }
 
 const CSV_HEADER = [

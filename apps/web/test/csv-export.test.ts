@@ -146,3 +146,98 @@ describe('buildAccountsCsv wiring', () => {
     expect(dataLine).toContain("'=HYPERLINK");
   });
 });
+
+describe('C24: newline stripping keeps one record per line', () => {
+  function itemWith(overrides: Partial<AccountListItem>): AccountListItem {
+    return {
+      accountId: 'acct-nl',
+      appKey: 'google-workspace',
+      appName: 'Google Workspace',
+      email: 'ok@example.com',
+      displayName: 'Ok Person',
+      accountStatus: 'active',
+      isAdmin: false,
+      lastActivityAt: null,
+      lastSyncedAt: '2026-01-02T00:00:00.000Z',
+      link: null,
+      label: null,
+      ...overrides,
+    };
+  }
+
+  // The columns that actually carry hostile input: display names arrive
+  // verbatim from the connector and from HR CSV imports, and the evidence
+  // fields derive from them. The operator-authored note is guarded at the API
+  // instead, so it cannot reach the exporter with a newline in it.
+  it('a provider-supplied displayName containing CRLF stays on one record', () => {
+    const csv = buildAccountsCsv([itemWith({ displayName: 'Ev\r\nil' })]);
+
+    expect(csv.split('\r\n')).toHaveLength(2);
+    expect(csv).toContain('"Ev  il"');
+  });
+
+  it('a matched value containing CRLF stays on one record', () => {
+    const csv = buildAccountsCsv([
+      itemWith({
+        link: {
+          status: 'matched',
+          confidence: 1,
+          ruleId: 'exact-email',
+          identityId: 'id-1',
+          identityName: 'Someone',
+          evidence: { rule: 'exact-email', matchedValue: 'a\r\nb', candidates: [] },
+        },
+      }),
+    ]);
+
+    expect(csv.split('\r\n')).toHaveLength(2);
+  });
+
+  it('a candidate display name containing CRLF stays on one record', () => {
+    const csv = buildAccountsCsv([
+      itemWith({
+        link: {
+          status: 'ambiguous',
+          confidence: 0.5,
+          ruleId: 'name-domain',
+          identityId: null,
+          identityName: null,
+          evidence: {
+            rule: 'name-domain',
+            matchedValue: 'x',
+            candidates: [{ identityId: 'id-1', displayName: 'c\r\nd' }],
+          },
+        },
+      }),
+    ]);
+
+    expect(csv.split('\r\n')).toHaveLength(2);
+  });
+
+  // Pins the measured behaviour of all four line-break shapes. Together they
+  // characterise WHY the export is safe: the third row's leading quote is what
+  // fails if \r is dropped from DANGEROUS_FIRST_CHARS, and the first row's two
+  // spaces are what fails if the strip is changed to deletion.
+  it.each([
+    ['a\r\nb', '"a  b"'],
+    ['a\nb', '"a b"'],
+    ['\rlead', `"' lead"`],
+    ['a\rb', '"a b"'],
+  ])('note %j exports as %s on a single record', (note, expectedCell) => {
+    const csv = buildAccountsCsv([
+      itemWith({ label: { kind: 'known_shared', note: note as string } }),
+    ]);
+
+    expect(csv.split('\r\n')).toHaveLength(2);
+    expect(csv).toContain(expectedCell);
+  });
+
+  // Ordering guard (I24.3): stripping before neutralizeCell would leave a
+  // \r-led formula cell unquoted, silently disabling the CSV-injection defence
+  // for exactly the inputs it exists to catch.
+  it('a \\r-led formula is still neutralized after stripping', () => {
+    const csv = buildAccountsCsv([itemWith({ displayName: '\r=cmd|calc' })]);
+
+    expect(csv).toContain(`"' =cmd|calc"`);
+  });
+});
