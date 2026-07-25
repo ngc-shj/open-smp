@@ -88,6 +88,7 @@ export default async function AccountsPage({
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Admin</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Last activity</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Link</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">Identity</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Confidence</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Evidence</th>
                 <th className="px-3 py-2 text-left font-medium text-neutral-600">Label</th>
@@ -109,6 +110,20 @@ export default async function AccountsPage({
                   <td className="px-3 py-2">
                     {item.link ? <StatusChip status={item.link.status} /> : <StatusChip status="orphan" />}
                   </td>
+                  <td className="px-3 py-2">
+                    {item.link?.identityId ? (
+                      <Link
+                        href={`/identities/${encodeURIComponent(item.link.identityId)}`}
+                        className="text-neutral-700 underline underline-offset-2 hover:text-neutral-900"
+                      >
+                        {item.link.identityName ?? item.link.identityId}
+                      </Link>
+                    ) : (
+                      // orphan / ambiguous links carry identity_id IS NULL by
+                      // schema check, so there is nothing to navigate to.
+                      <span className="text-neutral-400">—</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-neutral-500">
                     {item.link ? item.link.confidence.toFixed(2) : '—'}
                   </td>
@@ -129,7 +144,7 @@ export default async function AccountsPage({
               ))}
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-3 py-6 text-center text-neutral-400">
+                  <td colSpan={11} className="px-3 py-6 text-center text-neutral-400">
                     No accounts in this filter.
                   </td>
                 </tr>

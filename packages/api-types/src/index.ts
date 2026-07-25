@@ -20,6 +20,38 @@ export type AccountLink = {
 
 export type AccountLabelKind = 'known_shared' | 'service_account' | 'external_collaborator';
 
+export type IdentityAccountItem = {
+  accountId: string;
+  appKey: string;
+  appName: string;
+  email: string | null;
+  displayName: string | null;
+  accountStatus: string;
+  isAdmin: boolean;
+  lastActivityAt: string | null;
+  // Non-nullable because the query is driven FROM account_links: an account
+  // only appears here when it has a link row. account_links has UNIQUE
+  // (tenant_id, saas_account_id), so the join yields at most one row per
+  // account (C18/I18.4).
+  linkStatus: string;
+  confidence: number;
+  label: AccountLabel | null;
+};
+
+export type IdentityDetailResponse = {
+  identityId: string;
+  employeeId: string;
+  primaryEmail: string;
+  secondaryEmails: string[];
+  displayName: string;
+  status: 'active' | 'left';
+  leftAt: string | null;
+  accounts: IdentityAccountItem[];
+  // The page cannot distinguish "exactly 50 accounts" from "the list was cut
+  // off" by length alone, so the cap is reported explicitly (C18/I18.5).
+  accountsTruncated: boolean;
+};
+
 export type AccountLabel = { kind: AccountLabelKind; note: string | null };
 
 export type AccountLabelResponse = { accountId: string; kind: AccountLabelKind; note: string | null };

@@ -4,6 +4,7 @@ import { withTenant } from '@open-smp/schema';
 import type { AccountListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
+import { PAGE_SIZE } from '../page-size.js';
 
 const LINK_STATUSES = ['matched', 'orphan', 'ghost', 'ambiguous'] as const;
 
@@ -15,7 +16,6 @@ const accountsQuerySchema = z
   })
   .strict();
 
-const PAGE_SIZE = 50;
 
 type AccountRow = {
   account_id: string;

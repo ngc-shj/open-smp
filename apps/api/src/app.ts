@@ -11,6 +11,7 @@ import { registerSaasAppsRoute } from './routes/saas-apps.js';
 import { registerSyncMatchRoutes } from './routes/sync-match.js';
 import { registerAccountsRoute } from './routes/accounts.js';
 import { registerAccountLabelsRoute } from './routes/account-labels.js';
+import { registerIdentitiesRoute } from './routes/identities.js';
 import { registerEventsRoute } from './routes/events.js';
 
 export type RegisteredRoute = { method: string; url: string; hasRateLimit: boolean };
@@ -81,6 +82,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         registerSyncMatchRoutes(authenticated, deps);
         registerAccountsRoute(authenticated, deps);
         registerAccountLabelsRoute(authenticated, deps);
+        registerIdentitiesRoute(authenticated, deps);
         registerEventsRoute(authenticated, deps);
       });
     },

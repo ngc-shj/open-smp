@@ -9,6 +9,7 @@ const COLUMN_HEADERS = [
   'Admin',
   'Last activity',
   'Link',
+  'Identity',
   'Confidence',
   'Evidence',
   'Label',

@@ -1513,3 +1513,259 @@ describe('C13 acceptance: saas-apps duplicate key', () => {
     });
   });
 });
+
+describe('C18 acceptance: identity detail', () => {
+  async function seedIdentity(
+    tenantId: string,
+    opts: { employeeId: string; status: 'active' | 'left'; displayName: string; email: string },
+  ): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO identities
+           (tenant_id, employee_id, primary_email, secondary_emails, display_name, status, left_at)
+         VALUES ($1, $2, $3, '{}', $4, $5, $6)
+         RETURNING id`,
+        [
+          tenantId,
+          opts.employeeId,
+          opts.email,
+          opts.displayName,
+          opts.status,
+          opts.status === 'left' ? '2024-03-31T00:00:00.000Z' : null,
+        ],
+      );
+      return result.rows[0]!.id;
+    });
+  }
+
+  async function seedLinkedAccount(
+    tenantId: string,
+    saasAppId: string,
+    identityId: string | null,
+    opts: { externalId: string; email: string; linkStatus: string; confidence: string },
+  ): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const account = await tx.query<{ id: string }>(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, $3, $4, $5, 'active', false)
+         RETURNING id`,
+        [tenantId, saasAppId, opts.externalId, opts.email, `Display ${opts.externalId}`],
+      );
+      const accountId = account.rows[0]!.id;
+      await tx.query(
+        `INSERT INTO account_links
+           (tenant_id, saas_account_id, identity_id, status, confidence, rule_id)
+         VALUES ($1, $2, $3, $4, $5, 'exactEmail')`,
+        [tenantId, accountId, identityId, opts.linkStatus, opts.confidence],
+      );
+      return accountId;
+    });
+  }
+
+  async function seedApp(tenantId: string, key: string): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name) VALUES ($1, $2, $3) RETURNING id`,
+        [tenantId, key, 'Google Workspace'],
+      );
+      return result.rows[0]!.id;
+    });
+  }
+
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Identity Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    const saasAppId = await seedApp(tenantId, 'google-workspace');
+    return { tenantId, cookie, saasAppId };
+  }
+
+  it('an active identity with one matched account returns that account and no leftAt', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt1');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E100',
+      status: 'active',
+      displayName: 'Active Person',
+      email: 'active@example.com',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, identityId, {
+      externalId: 'gws-1',
+      email: 'active@example.com',
+      linkStatus: 'matched',
+      confidence: '0.95',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.status).toBe('active');
+    expect(body.leftAt).toBeNull();
+    expect(body.displayName).toBe('Active Person');
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0].linkStatus).toBe('matched');
+    expect(body.accountsTruncated).toBe(false);
+    // numeric(3,2) arrives as a string from the driver (D9) — the route must
+    // coerce, and asserting the value alone would pass on "0.95".
+    expect(typeof body.accounts[0].confidence).toBe('number');
+    expect(body.accounts[0].confidence).toBeCloseTo(0.95);
+  });
+
+  it('a left identity returns status left, a non-null leftAt, and its ghost account', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt2');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E200',
+      status: 'left',
+      displayName: 'Departed Person',
+      email: 'gone@example.com',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, identityId, {
+      externalId: 'gws-2',
+      email: 'gone@example.com',
+      linkStatus: 'ghost',
+      confidence: '0.90',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.status).toBe('left');
+    expect(body.leftAt).not.toBeNull();
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0].linkStatus).toBe('ghost');
+  });
+
+  it('an identity with no accounts returns an empty list, not an error', async () => {
+    const { tenantId, cookie } = await setup('idt3');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E300',
+      status: 'active',
+      displayName: 'Unattributed',
+      email: 'none@example.com',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().accounts).toEqual([]);
+  });
+
+  it('a foreign-tenant identity returns 404 with no row disclosure', async () => {
+    const { cookie } = await setup('idt4');
+    const otherTenantId = await seedTenant(`tenant-idt4other-${randomUUID()}`, 'Other Tenant');
+    const foreignIdentityId = await seedIdentity(otherTenantId, {
+      employeeId: 'E400',
+      status: 'active',
+      displayName: 'Someone Else',
+      email: 'other@example.com',
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${foreignIdentityId}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.body).not.toContain('Someone Else');
+  });
+
+  it('a non-uuid identityId returns 400', async () => {
+    const { cookie } = await setup('idt5');
+    const res = await app.inject({ method: 'GET', url: '/api/identities/not-a-uuid', headers: { cookie } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('orphan and ambiguous accounts never appear (identity_id IS NULL by schema check)', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt6');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E600',
+      status: 'active',
+      displayName: 'Has One Match',
+      email: 'match@example.com',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, identityId, {
+      externalId: 'gws-6a',
+      email: 'match@example.com',
+      linkStatus: 'matched',
+      confidence: '1.00',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, null, {
+      externalId: 'gws-6b',
+      email: 'orphan@example.com',
+      linkStatus: 'orphan',
+      confidence: '0.00',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0].email).toBe('match@example.com');
+  });
+
+  it('caps the account list at PAGE_SIZE and reports accountsTruncated', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt7');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E700',
+      status: 'active',
+      displayName: 'Over Capped',
+      email: 'many@example.com',
+    });
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         SELECT $1, $2, 'bulk-' || g, 'bulk' || g || '@example.com', 'Bulk ' || g, 'active', false
+         FROM generate_series(1, 60) AS g`,
+        [tenantId, saasAppId],
+      );
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence, rule_id)
+         SELECT $1, sa.id, $2, 'matched', 0.80, 'exactEmail'
+         FROM saas_accounts sa
+         WHERE sa.tenant_id = $1 AND sa.external_id LIKE 'bulk-%'`,
+        [tenantId, identityId],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.accounts).toHaveLength(50);
+    expect(body.accountsTruncated).toBe(true);
+  });
+
+  it('exactly PAGE_SIZE accounts reports accountsTruncated false', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt8');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E800',
+      status: 'active',
+      displayName: 'Exactly Fifty',
+      email: 'fifty@example.com',
+    });
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         SELECT $1, $2, 'fifty-' || g, 'fifty' || g || '@example.com', 'Fifty ' || g, 'active', false
+         FROM generate_series(1, 50) AS g`,
+        [tenantId, saasAppId],
+      );
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence, rule_id)
+         SELECT $1, sa.id, $2, 'matched', 0.80, 'exactEmail'
+         FROM saas_accounts sa
+         WHERE sa.tenant_id = $1 AND sa.external_id LIKE 'fifty-%'`,
+        [tenantId, identityId],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.accounts).toHaveLength(50);
+    // This is the case that distinguishes "capped" from "happens to be 50" —
+    // an implementation computing the flag from accounts.length > PAGE_SIZE
+    // after slicing would report true here.
+    expect(body.accountsTruncated).toBe(false);
+  });
+});

@@ -4,10 +4,9 @@ import { withTenant } from '@open-smp/schema';
 import type { DiscoveryEventListItem, DiscoveryEventPayload } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
+import { PAGE_SIZE } from '../page-size.js';
 
 const eventsQuerySchema = z.object({ cursor: z.string().uuid().optional() }).strict();
-
-const PAGE_SIZE = 50;
 
 type EventRow = {
   id: string;
