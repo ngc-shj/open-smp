@@ -52,11 +52,19 @@ the wrong shape.
 ## D4 — the freeze narrowed a type and broke my own gate's cast
 
 `Object.freeze` narrows the value to a readonly tuple, which does not overlap `unknown[]`. The gate's
-cast failed `typecheck` with `TS2352` — **after** `pnpm test:unit` had passed, because vitest does not
-typecheck. Per-file test runs had been green throughout.
+cast — written as `value as unknown[]` at the time — failed `typecheck` with `TS2352`, **after**
+`pnpm test:unit` had passed, because vitest does not typecheck. Per-file test runs had been green
+throughout.
 
 Recorded because it is the reason the full gate set must be run rather than the subset that seems
 relevant: unit-green and typecheck-red were simultaneously true for several minutes.
+
+**Not reproducible from the tree, and the first draft of this entry did not say so** (round-2
+DOC-1). The failing cast never reached a commit, and the round-1 fix later widened the element check,
+so removing today's `as unknown` from `value as unknown as readonly unknown[]` typechecks cleanly —
+a reviewer tried exactly that and got 0 errors. The `TS2352` is real history, not a claim anyone can
+re-run. Since D4 and D5 exist to warn against trusting an unverified green, an entry of theirs that
+cannot be verified needs to say which state it describes.
 
 ## D5 — an early red proof produced a FALSE GREEN in a scratchpad worktree
 
@@ -69,8 +77,15 @@ All eight mutations were then run in the main repo with restore-from-backup. The
 right tool for mutating *source read by path* (cycle 3's gates read files from disk); it is the wrong
 tool for mutating a module reached through package resolution.
 
-A cycle-3 reviewer hit this same trap and caught it the same way. Recording it here so the next
-cycle's first instinct is to check `require.resolve` before trusting a green.
+**Corrected in round 2 (DOC-1).** The first draft said "a cycle-3 reviewer hit this same trap and
+caught it the same way". A cycle-3 reviewer's *report* did mention worktree symlinks resolving back
+to the main repo, but the archived cycle-3 artifacts do not record it — what they record is a
+different worktree trap (a worktree created *inside* the repo, causing vitest double-collection;
+plan `:693`, `:750`). So the citation pointed at something a future reader cannot verify, which is
+the failure this very entry warns about.
+
+Stated correctly: the symlink-resolution false green is new to this cycle. Recording it so the next
+cycle's first instinct is to check `require.resolve` before trusting a green from a worktree.
 
 ## D6 — `packages/schema` gains a dependency on `@open-smp/api-types`
 
