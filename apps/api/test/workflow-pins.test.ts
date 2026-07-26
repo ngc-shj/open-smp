@@ -30,7 +30,15 @@ const PINNED = /^[ \t]*(-[ \t]+)?uses:[ \t]*[\w.-]+\/[\w.-]+(\/[\w.-]+)*@[0-9a-f
 // What counts as a line to check. Kept separate from PINNED because the two
 // fail differently: a line PINNED rejects fails loudly, a line this misses is
 // never examined at all.
-const USES_LINE = /(^|[\s{,])uses[ \t]*:/;
+//
+// `uses:` must be the line's first token, or follow a sequence dash or a flow
+// mapping's `{`/`,`. Widening this to "anywhere on the line" catches flow
+// mappings but also fires on ordinary prose — a comment reading
+// "# uses: actions/checkout is pinned below" reddens the gate with phantom
+// unpinned references. A gate that reds on a valid workflow gets weakened by
+// whoever hits it next, so the false-positive direction matters as much as the
+// escape it closes.
+const USES_LINE = /^[ \t]*(-[ \t]*)?([{,][ \t]*)?uses[ \t]*:/;
 
 async function workflowFiles(): Promise<string[]> {
   const dir = path.join(import.meta.dirname, '..', '..', '..', '.github', 'workflows');
@@ -110,6 +118,18 @@ describe('C32 acceptance: every GitHub Action is pinned to a commit SHA', () => 
     ['a step-level uses', '        uses: actions/upload-artifact@v4'],
   ])('collects %s so it cannot escape the allowlist unseen', (_label, line) => {
     expect(USES_LINE.test(line)).toBe(true);
+  });
+
+  // The other direction. A detector that fires on prose reddens a valid
+  // workflow, and the next person to hit that weakens it — so the
+  // false-positive side is part of the contract, not an afterthought.
+  it.each([
+    ['a comment about pinning', '      # uses: actions/checkout is pinned to the SHA below'],
+    ['a commented-out step', '      # - {uses: actions/checkout@v5}'],
+    ['a name: value mentioning uses', '      - name: step that uses: something'],
+    ['a run: line mentioning uses', '        run: echo "uses: nothing"'],
+  ])('does not collect %s', (_label, line) => {
+    expect(USES_LINE.test(line)).toBe(false);
   });
 
   it.each([

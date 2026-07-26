@@ -23,8 +23,25 @@ import { describe, expect, it } from 'vitest';
 // Bound to the VALUE, not to the form. A gate written as "key: z.<not literal>"
 // fires on z.enum and z.string but passes `z.literal('label')` — a one-token
 // edit that defeats the whole argument — and passes a file move.
+//
+// The source is normalised before matching (comments stripped, whitespace
+// collapsed) for the same reason audit-append-only.test.ts does it: a
+// line-anchored regex over raw text is defeated by ordinary formatting. The
+// first version of this gate used `[^,\n]*`, which cannot cross the newline a
+// formatter inserts into a long zod chain — so `key:\n  z\n    .string()`
+// evaded it entirely, as did `key : z.string()` and `'key': z.string()`. Each
+// is a spelling, and binding to spellings is the defect this gate exists to
+// prevent elsewhere.
+const KEY_DECLARATION = /['"]?key['"]?\s*:\s*z\s*\.[^,)]*\)?/g;
 const PINNED_KEY = "key: z.literal('google-workspace')";
 const SEEDED_KEY = 'google-workspace';
+
+function normalizeSource(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/\s+/g, ' ');
+}
 
 async function collectSourceFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -51,9 +68,14 @@ describe('C29/I29.5 control 3: saas_apps.key stays pinned to one literal', () =>
     // schema to a shared module does not carry it out of the gate silently.
     const declarations: { file: string; text: string }[] = [];
     for (const file of files) {
-      const source = await readFile(file, 'utf8');
-      for (const match of source.matchAll(/key:\s*z\.[^,\n]*/g)) {
-        declarations.push({ file: path.relative(srcDir, file), text: match[0].trim() });
+      const source = normalizeSource(await readFile(file, 'utf8'));
+      for (const match of source.matchAll(KEY_DECLARATION)) {
+        declarations.push({
+          file: path.relative(srcDir, file),
+          // Collapse `z .literal(...)` back to the canonical spacing the
+          // comparison uses; normalizeSource may have split the member access.
+          text: match[0].replace(/\s*\.\s*/g, '.').replace(/\s*:\s*/, ': ').trim(),
+        });
       }
     }
 

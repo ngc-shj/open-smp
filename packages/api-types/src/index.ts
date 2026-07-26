@@ -36,6 +36,19 @@ export const ACCOUNT_LABEL_KINDS = [
 
 export type AccountLabelKind = (typeof ACCOUNT_LABEL_KINDS)[number];
 
+// The audit family of discovery_events.kind. Shared rather than API-local
+// because both sides must agree on which events carry audit fields: the API
+// decides whether to project them, and the web app decides whether their
+// absence means "this is a sync event" or "this audit event is corrupt".
+// Deciding that from the payload alone conflates the two.
+export const LABEL_AUDIT_KINDS = ['label_set', 'label_cleared'] as const;
+
+export type LabelAuditKind = (typeof LABEL_AUDIT_KINDS)[number];
+
+export function isLabelAuditKind(value: string): value is LabelAuditKind {
+  return (LABEL_AUDIT_KINDS as readonly string[]).includes(value);
+}
+
 export function isAccountLabelKind(value: unknown): value is AccountLabelKind {
   return (
     typeof value === 'string' && (ACCOUNT_LABEL_KINDS as readonly string[]).includes(value)

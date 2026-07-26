@@ -8,12 +8,15 @@ import type { AccountLabelKind } from '@open-smp/api-types';
 // correct when a future audit kind is added.
 export const AUDIT_SOURCE = 'label';
 
-// The kind list is the value; the type is derived from it rather than the other
-// way round, so the events projection allowlist and this module cannot disagree
-// about what counts as an audit event.
-export const LABEL_AUDIT_KINDS = ['label_set', 'label_cleared'] as const;
+// Re-exported from @open-smp/api-types so this module's importers are
+// unchanged. The list moved there because apps/web needs it too: the events
+// page must distinguish "a sync event has no audit fields" from "this audit
+// event's fields were withheld as corrupt", and only the kind separates them.
+// A separate value/type import as well as the re-export: `export … from` does
+// not bind the name locally, and the signatures below use it.
+import type { LabelAuditKind } from '@open-smp/api-types';
 
-export type LabelAuditKind = (typeof LABEL_AUDIT_KINDS)[number];
+export { LABEL_AUDIT_KINDS, type LabelAuditKind } from '@open-smp/api-types';
 
 export type LabelAuditSnapshot = { kind: AccountLabelKind; note: string | null };
 
