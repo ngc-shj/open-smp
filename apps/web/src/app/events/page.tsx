@@ -20,6 +20,13 @@ async function fetchEvents(
   if (res.status === 401) {
     redirect('/login');
   }
+  // A rejected cursor means the position is unusable, not that the page is
+  // broken — a hand-edited or stale cursor should land the operator on page one
+  // rather than on an error screen. Retried once, without the cursor, so a
+  // genuine failure still surfaces.
+  if (res.status === 400 && cursor) {
+    return fetchEvents(source, undefined);
+  }
   if (!res.ok) {
     throw new Error(`failed to load events: ${res.status}`);
   }
@@ -64,7 +71,14 @@ export default async function EventsPage({
 }) {
   const params = await searchParams;
   const source = params.source && SOURCE_RE.test(params.source) ? params.source : undefined;
-  const { items, nextCursor } = await fetchEvents(source, params.cursor);
+  // Dropping the source is only half the job: the cursor is bound to the filter
+  // it was minted under, so keeping it after the source was rejected CREATES the
+  // mismatch the API 400s on — and a 400 here throws, which is the error screen
+  // this validation exists to avoid. Capitalising the source in a real
+  // "Load more" URL was enough to reach it. A cursor whose filter did not
+  // survive validation has no position to resume from, so it goes too.
+  const cursor = params.source && !source ? undefined : params.cursor;
+  const { items, nextCursor } = await fetchEvents(source, cursor);
 
   return (
     <>

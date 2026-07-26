@@ -36,6 +36,11 @@ async function fetchAccounts(
   if (res.status === 401) {
     redirect('/login');
   }
+  // Same as the events page: a rejected cursor is an unusable position, not a
+  // broken page, so it falls back to the first page instead of an error screen.
+  if (res.status === 400 && cursor) {
+    return fetchAccounts(status, label, undefined);
+  }
   if (!res.ok) {
     throw new Error(`failed to load accounts: ${res.status}`);
   }

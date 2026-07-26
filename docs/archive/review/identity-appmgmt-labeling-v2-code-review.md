@@ -127,6 +127,69 @@ handles `23505`/`23503` and sends its own bodies.)
 - `SourceFilter` has no injection surface; `SOURCE_RE` blocks scripts, traversal, and CRLF.
 - Round-1 F4's deferral (projection casts `snapshot.kind`) assessed and **concurred with**.
 
+## Functionality Findings (round 2)
+
+### R2-F1 [Major, continuing] — the `?source=` fix closed the reported case, not the property
+The expert's diagnosis is the most useful thing in this round. Round 1's F3 was reported as
+"invalid `?source=` renders an error page"; my fix dropped the invalid source, which closes that
+reproduction. But the cursor is **filter-bound** — so dropping the source while forwarding the
+cursor *creates* the mismatch the API 400s on, and a 400 throws. The error screen the fix exists
+to prevent was still reachable by capitalising the source on a real "Load more" link:
+
+```
+raw="LABEL"  -> source=undefined, cursor.s=label => 400 -> page THROWS
+raw="label"  -> source=label,     cursor.s=label => 200 ok
+```
+
+- Action: the cursor is dropped whenever the source is dropped — a position bound to a filter
+  that did not survive validation has nothing to resume from.
+- Modified: `apps/web/src/app/events/page.tsx:65-73`
+- Red-proof: with the cursor forwarded, the new E2E case renders no table at all (the error
+  screen); with the fix, 5/5 events specs pass.
+- Test: `an invalid source alongside a cursor also falls back instead of erroring`.
+
+### R2-F2 [Minor, new] — untabled 4xx statuses mislabelled as `bad_request`
+Measured: a 418 came back as `{"error":"bad_request"}`. No route emits one today, but asserting
+"the caller sent a bad request" about a status we have not classified is the same mislabelling
+that made the 429 regression invisible.
+- Action: unmapped 4xx now falls back to a neutral `'client_error'`.
+- Modified: `apps/api/src/app.ts:124-129`
+
+### R2-F3 [Minor, new] — unknown-route 404s bypassed the error handler
+Measured: `GET /nope` returned Fastify's default
+`{"message":"Route GET:/nope not found","error":"Not Found","statusCode":404}` — unchanged by
+the round-1 work, because an unmatched route never reaches `setErrorHandler`. No internals leak,
+but it is the one path still shaped differently from every other error.
+- Action: added `setNotFoundHandler` sending the flat `{error:'not_found'}`.
+- Modified: `apps/api/src/app.ts:136-141`
+- Verified the sweeps are unaffected: integration stays 133/133.
+
+### R2-F4 [Minor, continuing — pre-existing on `main`] — a malformed cursor rendered an error page
+Confirmed pre-existing on `main` for **both** list pages (`git show main:...` shows the same
+`throw`), so not a regression — but in scope under the pre-existing-in-changed-file rule, and
+the same class as R2-F1.
+- Action: both pages retry once without the cursor on a 400. A stale or hand-edited cursor is an
+  unusable position, not a broken page; a genuine failure still throws.
+- Modified: `apps/web/src/app/events/page.tsx:18-33`, `apps/web/src/app/accounts/page.tsx:34-45`
+- Tests: one case per page (`events.spec.ts`, `accounts.spec.ts`). Verified the accounts cursor
+  really 400s on garbage (`z.string().uuid()` at `accounts.ts:20`), so the test is not passing
+  for the wrong reason.
+
+### Verified clean by the functionality expert
+- F1's `cursor_t` is correct, including `nextCursor` null / empty-page / filter-bound
+  interactions. Combined with the calendar check, the accepted domain was measured across 13
+  values and is genuinely a subset of Postgres's.
+- **F5 is correct for every kind, for a stronger reason than my comment claimed**:
+  `projectSyncPayload` can only ever write `counts`/`runId`, so `before`/`after` are
+  *unreachable* on a non-audit kind. The expert planted a hostile row storing `before`/`after`
+  under an unknown kind and confirmed it still projects to `{"counts":…}` and renders `—`.
+- `SourceFilter`'s three values are complete: `sync_failed` also writes `appKey`, but from the
+  same table, so it cannot introduce a fourth. `google-workspace` is pinned by
+  `z.literal(...)`.
+- No contract regression: C18–C27's documented bodies are all sent via explicit `reply.send`
+  and never transit the error handler.
+- F6's deferral premise ("the two writers agree today") verified rather than taken.
+
 ## Testing Findings (round 2)
 
 ### TEST-R2-F1 [Major, new] — the page↔spec check matched filenames, not coverage

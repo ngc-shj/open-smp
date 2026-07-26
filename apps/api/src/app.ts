@@ -122,12 +122,22 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         415: 'unsupported_media_type',
         429: 'too_many_requests',
       };
-      return reply.code(status).send({ error: CLIENT_ERRORS[status] ?? 'bad_request' });
+      // A status with no entry falls back to a neutral label rather than to
+      // 'bad_request': claiming the caller sent a bad request is a statement
+      // about a status we have not classified, and mislabelling is what made
+      // the 429 regression invisible.
+      return reply.code(status).send({ error: CLIENT_ERRORS[status] ?? 'client_error' });
     }
 
     req.log.error({ err: error }, 'unhandled error');
     return reply.code(500).send({ error: 'internal_error' });
   });
+
+  // An unmatched route never reaches the error handler, so Fastify's default
+  // body survived it: `{"message":"Route GET:/nope not found","error":"Not
+  // Found","statusCode":404}`, which echoes the requested route back. Nothing
+  // sensitive, but the flat shape is what every other error path now sends.
+  app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not_found' }));
 
   return app;
 }

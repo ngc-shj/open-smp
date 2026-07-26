@@ -101,4 +101,32 @@ test.describe('events', () => {
     await expect(page.getByRole('heading', { name: 'Discovery events' })).toBeVisible();
     await expect(page.locator('tbody tr').first()).toBeVisible();
   });
+
+  test('an invalid source alongside a cursor also falls back instead of erroring', async ({
+    page,
+  }) => {
+    // The harder half: the cursor is bound to the filter it was minted under, so
+    // dropping only the source turns a URL typo into a filter mismatch the API
+    // 400s on — and a 400 throws. Capitalising the source on a real "Load more"
+    // link is enough to reach it, which is why the no-cursor case above is not
+    // sufficient on its own.
+    const cursor = Buffer.from(
+      JSON.stringify({ t: '2026-07-01T00:00:00.000000Z', id: '11111111-2222-3333-4444-555555555555', s: 'label' }),
+    ).toString('base64url');
+
+    await page.goto(`/events?source=LABEL&cursor=${encodeURIComponent(cursor)}`);
+
+    await expect(page.getByRole('heading', { name: 'Discovery events' })).toBeVisible();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
+  });
+
+  test('a malformed cursor falls back to the first page instead of erroring', async ({ page }) => {
+    // Pre-existing on both list pages: any cursor the API rejects threw and
+    // rendered an error screen. A stale or hand-edited cursor is an unusable
+    // position, not a broken page.
+    await page.goto('/events?cursor=not-a-real-cursor');
+
+    await expect(page.getByRole('heading', { name: 'Discovery events' })).toBeVisible();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
+  });
 });

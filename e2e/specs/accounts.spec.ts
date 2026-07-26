@@ -66,6 +66,14 @@ test.describe('accounts', () => {
     await expect(dataRows).toHaveCount(1);
   });
 
+  test('a malformed cursor falls back to the first page instead of erroring', async ({ page }) => {
+    // Pre-existing on both list pages: any cursor the API rejects threw and
+    // rendered an error screen rather than degrading.
+    await page.goto('/accounts?status=orphan&cursor=not-a-real-cursor');
+
+    await expect(page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.orphan.email) })).toBeVisible();
+  });
+
   test('CSV export contains the expected header and the 4 seeded emails', async ({ page }) => {
     await page.goto('/accounts?status=matched');
 
