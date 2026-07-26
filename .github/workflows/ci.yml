@@ -137,7 +137,11 @@ jobs:
           fi
 
       - name: Install Playwright chromium browser
-        run: pnpm exec playwright install --with-deps chromium
+        # --filter e2e, not a bare `pnpm exec`: @playwright/test is declared in
+        # e2e/package.json only, so the root has no `playwright` binary to run.
+        # This step had never actually executed — the repository carried no git
+        # remote for three cycles, so CI never ran and the error stayed hidden.
+        run: pnpm --filter e2e exec playwright install --with-deps chromium
 
       - name: Run the e2e suite
         run: pnpm test:e2e
