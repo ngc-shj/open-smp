@@ -35,9 +35,16 @@ describe('C29 acceptance: the projection validates the label-kind domain', () =>
   });
 
   // I29.2, and the assertion that actually distinguishes corruption from a
-  // genuine "no label". Mutating the reject branch to emit `null` instead of
-  // omitting makes THIS fail while the regression pins below stay green —
-  // which is why it is stated separately from them.
+  // genuine "no label": forging an omitted field as null would record a clear
+  // event that never happened.
+  //
+  // It is stated separately from the pins below because of what falsifies it,
+  // not because of what a single mutation does to the file. Reverting the
+  // domain check alone fails this and the out-of-domain case while every pin
+  // stays green (executed: 2 failed / 8 passed) — the pins cannot see that
+  // regression at all. Emitting `null` from the reject branch instead of
+  // omitting fails this one too, and takes the pins with it (6 failed / 4);
+  // that is a coarser mutation, not evidence the split is unnecessary.
   it('distinguishes an omitted-because-corrupt field from a genuine null', () => {
     const corrupt = projectAuditPayload(auditRecord({ kind: 'not_a_kind', note: null }, null));
     const cleared = projectAuditPayload(auditRecord(null, null));
