@@ -1,7 +1,12 @@
 // Single source of truth for the C6 API wire shapes shared between
-// apps/api (producer) and apps/web (consumer). Type-only — no runtime
-// exports — so importing this package never pulls server code into the
-// web bundle (C8 invariant).
+// apps/api (producer) and apps/web (consumer).
+//
+// C8 as amended by C29: this package may export frozen primitive domain
+// constants and the type guards over them, but no functions with I/O, no
+// imports from apps/*, and no server-only modules. The property C8 protects —
+// "the API is the only data path" — is preserved because a string array is
+// data, not a path. It was previously stated as "type-only, no runtime
+// exports", which C29 makes false: ACCOUNT_LABEL_KINDS below is a value.
 
 export type LinkStatus = 'matched' | 'orphan' | 'ghost' | 'ambiguous';
 
@@ -18,7 +23,37 @@ export type AccountLink = {
   } | null;
 };
 
-export type AccountLabelKind = 'known_shared' | 'service_account' | 'external_collaborator';
+// The list is the value and the type derives from it, not the other way round:
+// a runtime member-set is what the events projection needs to validate a stored
+// payload's kind (C29/I29.1), and deriving the type guarantees the check and
+// the claim cannot disagree. Adding a kind here still needs a migration — the
+// DB enum is a separate copy by necessity, pinned by I29.4's pg_enum test.
+export const ACCOUNT_LABEL_KINDS = [
+  'known_shared',
+  'service_account',
+  'external_collaborator',
+] as const;
+
+export type AccountLabelKind = (typeof ACCOUNT_LABEL_KINDS)[number];
+
+// The audit family of discovery_events.kind. Shared rather than API-local
+// because both sides must agree on which events carry audit fields: the API
+// decides whether to project them, and the web app decides whether their
+// absence means "this is a sync event" or "this audit event is corrupt".
+// Deciding that from the payload alone conflates the two.
+export const LABEL_AUDIT_KINDS = ['label_set', 'label_cleared'] as const;
+
+export type LabelAuditKind = (typeof LABEL_AUDIT_KINDS)[number];
+
+export function isLabelAuditKind(value: string): value is LabelAuditKind {
+  return (LABEL_AUDIT_KINDS as readonly string[]).includes(value);
+}
+
+export function isAccountLabelKind(value: unknown): value is AccountLabelKind {
+  return (
+    typeof value === 'string' && (ACCOUNT_LABEL_KINDS as readonly string[]).includes(value)
+  );
+}
 
 export type IdentityAccountItem = {
   accountId: string;

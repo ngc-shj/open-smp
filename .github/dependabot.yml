@@ -1,0 +1,15 @@
+version: 2
+
+# Pinning actions by commit SHA (C32) stops the repo receiving upstream security
+# fixes until a human edits the SHA — actions/checkout has shipped credential-
+# persistence fixes historically. Pinning without an update path is half a
+# control, so the bump path ships with the pin rather than after it.
+#
+# Dependabot understands SHA pins and rewrites them in place, preserving the
+# trailing "# vN" comment. The pin-shape unit test accepts the dotted versions
+# it writes (# v5.0.1), which the first draft of that gate rejected.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,10 +1,10 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { apiFetch } from '@/lib/api-server';
-import type { DiscoveryEventListResponse, DiscoveryEventPayload } from '@/lib/api-types';
+import type { DiscoveryEventListResponse } from '@/lib/api-types';
 import { NavBar } from '@/components/NavBar';
 import { SourceFilter } from '@/components/SourceFilter';
-import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
+import { auditTransition } from '@/lib/audit-transition';
 
 async function fetchEvents(
   source: string | undefined,
@@ -32,29 +32,6 @@ async function fetchEvents(
   }
 
   return (await res.json()) as DiscoveryEventListResponse;
-}
-
-function labelSnapshot(snapshot: DiscoveryEventPayload['before']): string {
-  if (!snapshot) return 'none';
-  return snapshot.note
-    ? `${LABEL_KIND_NAMES[snapshot.kind]} (${snapshot.note})`
-    : LABEL_KIND_NAMES[snapshot.kind];
-}
-
-/**
- * The audit column answers "what changed", which for a label is the transition
- * rather than either end of it: a `label_set` on an already-labelled account is
- * a different act from one on an unlabelled account, and only the pair shows it.
- *
- * Keyed on the projected payload rather than on a copy of the kind list: the
- * API's allowlist is what decides whether these fields are served at all, so a
- * future audit kind renders here the moment the server projects it. A second
- * kind list on this side would silently render '—' for a real audit event until
- * someone remembered to update it.
- */
-function auditTransition(payload: DiscoveryEventPayload): string {
-  if (payload.before === undefined && payload.after === undefined) return '—';
-  return `${labelSnapshot(payload.before ?? null)} → ${labelSnapshot(payload.after ?? null)}`;
 }
 
 // The API constrains `source` to a slug and 400s anything else, and a non-ok
@@ -109,7 +86,7 @@ export default async function EventsPage({
                     {event.payload.counts ? JSON.stringify(event.payload.counts) : '—'}
                   </td>
                   <td className="px-3 py-2 text-neutral-700">
-                    {auditTransition(event.payload)}
+                    {auditTransition(event.kind, event.payload)}
                   </td>
                   {/* saasAccountId is rendered as text, not a link: there is no
                       per-account page to navigate to yet (SC25). */}

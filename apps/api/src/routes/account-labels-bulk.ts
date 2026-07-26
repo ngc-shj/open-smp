@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
+import type { AccountLabelKind } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 import { noteSchema } from '../label-note.js';
 import { LABEL_KINDS } from '../label-kinds.js';
-import { AUDIT_SOURCE } from '../audit.js';
+import { recordLabelAuditBatch, type LabelAuditPayload } from '../audit.js';
 
 
 // 100 bounds the work per request; uniqueness at the schema level means the
@@ -58,7 +59,11 @@ export function registerAccountLabelsBulkRoute(app: FastifyInstance, deps: AppDe
         // Set-based rather than a per-id loop: 100 ids would otherwise mean
         // ~300 statements per request at 60 req/min. The unnest form also makes
         // the all-or-nothing property structural instead of loop-preserved.
-        const priorRows = await tx.query<{ saas_account_id: string; kind: string; note: string | null }>(
+        const priorRows = await tx.query<{
+          saas_account_id: string;
+          kind: AccountLabelKind;
+          note: string | null;
+        }>(
           `SELECT saas_account_id, kind, note FROM account_labels
            WHERE tenant_id = $1 AND saas_account_id = ANY($2::uuid[])`,
           [tenantId, accountIds],
@@ -77,22 +82,17 @@ export function registerAccountLabelsBulkRoute(app: FastifyInstance, deps: AppDe
         // One audit row per account, not one per request: an operator
         // suppressing 50 accounts in a click must leave 50 traces, and a single
         // "bulk" record would erase every per-account before-state.
-        const payloads = accountIds.map((accountId) => {
+        const payloads: LabelAuditPayload[] = accountIds.map((accountId) => {
           const before = prior.get(accountId);
-          return JSON.stringify({
+          return {
             actorUserId: userId,
             saasAccountId: accountId,
             before: before ? { kind: before.kind, note: before.note } : null,
             after: { kind, note: note ?? null },
-          });
+          };
         });
 
-        await tx.query(
-          `INSERT INTO discovery_events (tenant_id, source, kind, payload)
-           SELECT $1, $2, 'label_set', payload::jsonb
-           FROM unnest($3::text[]) AS payload`,
-          [tenantId, AUDIT_SOURCE, payloads],
-        );
+        await recordLabelAuditBatch(tx, tenantId, 'label_set', payloads);
 
         return { updated: accountIds.length };
       });

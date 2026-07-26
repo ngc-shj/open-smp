@@ -1,4 +1,9 @@
-import type { AccountLabelKind } from '@/lib/api-types';
+// Relative, not the `@/` alias. This module is reached by audit-transition.ts,
+// which is unit-tested, and the root vitest project does not resolve that
+// alias. It works today only because this import is type-only and erased
+// before vitest sees it — so adding any runtime import here would break an
+// unrelated test file with an error naming the wrong module.
+import type { AccountLabelKind } from './api-types';
 
 // Single source for label-kind display strings (R2), in a module with no
 // 'use client' directive: server components read this map directly, and a

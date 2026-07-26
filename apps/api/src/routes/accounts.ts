@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
-import type { AccountListItem } from '@open-smp/api-types';
+import type { AccountLabelKind, AccountListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
@@ -42,7 +42,10 @@ type AccountRow = {
   link_identity_id: string | null;
   link_identity_name: string | null;
   link_evidence: unknown;
-  label_kind: string | null;
+  // Typed at the boundary rather than cast at the use site: the column is the
+  // account_label_kind enum (migration 0003), so the DB is what guarantees the
+  // domain. Stating that once here beats asserting it wherever the row is read.
+  label_kind: AccountLabelKind | null;
   label_note: string | null;
 };
 
@@ -74,7 +77,7 @@ function toListItem(row: AccountRow): AccountListItem {
     label:
       row.label_kind === null
         ? null
-        : { kind: row.label_kind as NonNullable<AccountListItem['label']>['kind'], note: row.label_note },
+        : { kind: row.label_kind, note: row.label_note },
   };
 }
 
