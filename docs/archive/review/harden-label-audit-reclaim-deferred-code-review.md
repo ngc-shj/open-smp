@@ -186,20 +186,51 @@ Per-contract:
 | C28 | unit (delegation, empty batch) + integration (bulk unmodified, single-account) | `verified-local` |
 | C29 | unit (projection domain, LABEL_FILTERS) + integration (`pg_enum`, ordered) | `verified-local` |
 | C31 | integration (separate `buildApp`, non-`/api` routes, 4 branches) | `verified-local` |
-| C32 | unit (pin shape) — **SHA resolution pending, see below** | shape `verified-local` |
+| C32 | unit (pin shape) + **observed CI run** | shape `verified-local`, resolution `verified-CI` |
 | C33 | unit (insert-site member-set) | `verified-local` |
 
-**Open item — C32 acceptance criterion 4 (FN-F3, Minor).** The criterion mandates an
-observed-green CI run with a recorded run id, and the plan classifies SHA *resolution* as
-`verifiable-CI` **only**, explicitly rejecting parity-by-construction. The branch is unpushed, so
-no run exists. This is **not** dischargeable locally by design: a workflow file cannot be executed
-outside CI, which is the entire lesson VE5's resolution taught this project.
+**C32 acceptance criterion 4 (FN-F3) — DISCHARGED.**
 
-All four SHAs were verified as real commits against the GitHub API during planning and again in
-review, and the shape gate covers the pin form — but that is shape, not resolution. **The criterion
-remains open until the branch is pushed and a run id recorded.** Recording it as open rather than
-quietly satisfied is the point; the last time this project accepted "the same command passes
-locally" in place of an observed run, it hid a CI step that had never executed in its life.
+The criterion mandated an observed-green CI run with a recorded run id, and the plan classified SHA
+*resolution* as `verifiable-CI` **only**, explicitly rejecting parity-by-construction. All four
+SHAs had been verified as real commits against the GitHub API during planning and again in review,
+and the shape gate covers the pin form — but that is shape, not resolution.
+
+**Observed**: PR [#2](https://github.com/ngc-shj/open-smp/pull/2), run
+[`30205663497`](https://github.com/ngc-shj/open-smp/actions/runs/30205663497), all three jobs green.
+
+```
+checks          55s   lint 0, typecheck 0, unit 218 passed / 22 files
+integration   1m04s   140 passed / 5 files
+compose-smoke 2m58s   stack boot + curl gates, e2e 43 passed, seed acceptance bar intact
+```
+
+Counts match the local run exactly (218 / 140 / 43), so the pins resolve and the pinned versions
+behave as the tags did.
+
+Note the trigger: `ci.yml` fires on `push: branches:[main]` and `pull_request`, so a branch push
+alone produces no run — the PR is what discharges this. Recorded because "pushed" and "observed" are
+not the same statement, and this criterion exists because that distinction once hid a CI step that
+had never executed in its life.
+
+**New, from the observed run — deferred as SC41.** CI emitted a deprecation annotation on all three
+jobs: the pinned `actions/setup-node@49933ea5` and `pnpm/action-setup@b906affc` commits target
+Node.js 20, which GitHub is deprecating and currently force-runs on Node 24.
+
+This is a direct, expected consequence of C32 — pinning freezes the action version, so a
+deprecation that a floating tag would have absorbed now surfaces as a warning the repo owns. It is
+the cost the plan named when it brought `dependabot.yml` into scope alongside the pin, and it is
+Dependabot's job to clear: the first bump PR will move both to a Node-24 commit.
+
+- **Worst case**: GitHub removes the Node 20 forced-migration shim and the two actions stop running,
+  breaking every CI job.
+- **Likelihood**: low in the near term — GitHub is force-running them on Node 24 today, so the
+  behaviour is already what the upgrade would produce.
+- **Cost to fix**: zero engineering; merge the Dependabot PR when it arrives. Doing it by hand now
+  would mean re-resolving and re-verifying two SHAs to reach the state the bump path already
+  delivers.
+- **Owner / trigger**: the first Dependabot bump PR, or immediately if a job starts failing rather
+  than warning.
 
 ---
 
