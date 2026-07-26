@@ -232,6 +232,33 @@ Dependabot's job to clear: the first bump PR will move both to a Node-24 commit.
 - **Owner / trigger**: the first Dependabot bump PR, or immediately if a job starts failing rather
   than warning.
 
+**SC41 — CLOSED 2026-07-27.** Dependabot opened four bump PRs within minutes of the merge that
+created this deferral, and all four merged (#3 `actions/checkout` → v7.0.1, #4 `actions/setup-node`
+→ v7.0.0, #5 `actions/upload-artifact` → v7.0.1, #6 `pnpm/action-setup` → v6.0.9). Post-bump CI on
+`main`: run [`30209808545`](https://github.com/ngc-shj/open-smp/actions/runs/30209808545), all three
+jobs green.
+
+Verified by **contrast, not by absence** — `gh run view` does not re-render annotations for a
+completed run, so "I don't see the warning" proves nothing. Queried the annotations API for both
+runs:
+
+```
+run 30209808545 (post-bump) -> []
+run 30205663497 (the run that recorded the deferral)
+  -> ["Node.js 20 is deprecated. The following actions target Node.js 20 ...
+      actions/setup-node@49933ea5..., pnpm/action-setup@b906affc..."]
+```
+
+The old run still carries the annotation; the new one has none. Two things worth keeping from this:
+
+1. **The bump path worked exactly as the cost argument predicted** — zero engineering, and the
+   Dependabot PRs arrived before anyone could have hand-bumped the SHAs. Pairing `dependabot.yml`
+   with the pin rather than deferring it is what made the deferral cheap.
+2. **C32's shape gate accepted the real bump output.** All 25 cases pass against the new pins,
+   including the dotted `# v7.0.1` form. The first draft of that regex required `# v\d+$` and would
+   have failed every one of these four PRs — the correction was made on a predicted case, and this
+   is the confirmation against real Dependabot output.
+
 ---
 
 ## Resolution Status
