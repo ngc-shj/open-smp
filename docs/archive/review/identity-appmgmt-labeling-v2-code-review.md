@@ -1,7 +1,211 @@
 # Code Review: identity-appmgmt-labeling-v2
 
 Date: 2026-07-26
-Review round: 1
+Review round: 2 (round-1 sections retained below)
+
+---
+
+# Round 2
+
+## Changes from Previous Round
+
+Round-1 fixes were committed as `f0fb389` and re-reviewed by all three experts. The
+orchestrator additionally re-probed its own round-1 fix and found it incomplete.
+
+## Orchestrator self-finding (Major) — the round-1 cursor fix was shape-only and still let a 500 through
+
+While the round-2 experts were running, I re-tested the domain claim I had made in round 1
+rather than restating it. `CURSOR_TIMESTAMP_RE` checks the *spelling* of a timestamp, not the
+*validity* of its calendar fields:
+
+```
+2026-02-30T00:00:00Z   regex: true   Date.parse: true   (JS rolls it to Mar 2)
+$ psql -c "SELECT '2026-02-30T00:00:00Z'::timestamptz;"
+ERROR:  date/time field value out of range: "2026-02-30T00:00:00Z"
+```
+
+So a cursor carrying February 30th passed both round-1 guards and still reached the query —
+re-opening exactly the 22008 the fix existed to close. The round-1 claim that the accepted
+domain was "a subset of what Postgres takes" was **derived from the format rather than
+measured against the domain**, which is the same defect class the plan's convergence notes
+record six times.
+
+**Fix**: `decodeCursor` now round-trips the value through `Date` and compares every UTC field
+against the string it came from — a value that rolled over comes back with different fields.
+This catches every out-of-range component (month, day, hour, minute, second, leap year) in one
+comparison instead of enumerating month lengths.
+
+**Verified across the domain, not a sample** — every value the validator accepts was then fed
+to Postgres:
+
+```
+reject  2026-02-30  2026-13-01  2026-01-32  2026-01-01T25:00:00  0000-00-00  2026-02-29  ...T00:00:60
+ACCEPT  2026-02-28  2024-02-29  2026-12-31T23:59:59.999999  2026-07-09T00:00:00.500900  0001-01-01  9999-12-31
+$ psql: all six ACCEPT values cast cleanly to timestamptz
+```
+
+Leap-year handling is correct in both directions (2024-02-29 accepted, 2026-02-29 rejected).
+
+- Modified: `apps/api/src/routes/events-cursor.ts:18-52,63`
+- Tests added: four calendar-rollover rejection cases plus a leap-day round-trip case
+  (`apps/api/test/events-cursor.test.ts`).
+- Red-proof: against round 1's shape-only check, `2026-02-30` and `2026-02-29` both fail. The
+  month-13 and hour-25 cases stay green there because `Date.parse` already rejected them —
+  reported accurately rather than claimed as four catches.
+
+## Security Findings (round 2)
+
+### S-R2-F1 [Critical, continuing] — the calendar fix was still incomplete: astronomical year zero
+The security expert independently reproduced the Feb-30 class against the **live API** (five
+shape-valid strings returning HTTP 500), then tested my *uncommitted* `isRealCalendarDate`
+against the real module via `tsx` — not a replica — and found two cases still passing:
+
+```
+0000-01-01T00:00:00Z  ACCEPTED -> reaches query
+0000-12-31T23:59:59Z  ACCEPTED -> reaches query
+2026-02-30T00:00:00Z  rejected (400)   <- my fix, working
+```
+
+Root cause: JS numbers years astronomically, so `new Date('0000-01-01T00:00:00Z').getUTCFullYear()`
+is `0` and the field-by-field round-trip **agrees with itself**. Postgres has no year 0 and
+raises 22008. The round-trip technique is structurally blind to exactly this case — a real
+limitation of the approach I chose, found because the reviewer tested the module rather than
+reading it.
+
+Confirmed independently: `SELECT '0000-01-01T00:00:00Z'::timestamptz` → `ERROR: date/time field
+value out of range`.
+
+- Action: added an explicit `Number(year) < 1` lower bound with a comment naming why the
+  round-trip cannot catch it.
+- Modified: `apps/api/src/routes/events-cursor.ts:38-45`
+- Tests: two year-zero cases added to the unit rejection table; `2026-02-30` and
+  `0000-01-01` added to the integration malformed-cursor set (which also asserts the body
+  shape and the absence of driver text).
+- Severity note: the expert set `escalate: false` and justified it — the information-disclosure
+  half of round-1 F1 is genuinely fixed (bodies are opaque), leaving a self-inflicted 500 on an
+  authenticated endpoint. No auth bypass, cross-tenant read, injection, or secret disclosure.
+
+### S-R2-F2 [Major, new — introduced by my round-1 fix] — the error handler mislabelled 429s
+Measured by driving `/api/events` past `LIST_RATE_LIMIT` against the live API: request 240
+returned `429` with correct `retry-after`/`limit` headers but a body of `{"error":"bad_request"}`.
+`@fastify/rate-limit`'s error carries no string `code`, so my handler fell through to the
+default. Throttling reported as a client mistake hides an abuse signal from callers and log
+pipelines.
+
+The expert also noted **no test could catch it**: every 429 assertion in the suite checked
+status only — decorative coverage for the body contract.
+
+- Action: the body now comes from a status-keyed table (`400/403/404/413/415/429`) instead of
+  the error's own `code`, which fixes S-R2-F3 in the same change.
+- Modified: `apps/api/src/app.ts:99-126`
+- Test: the login rate-limit test now asserts `{error:'too_many_requests'}`.
+- Red-proof: reverting the handler to the round-1 form fails it with
+  `expected { error: 'bad_request' } to deeply equal { error: 'too_many_requests' }`.
+
+### S-R2-F3 [Minor, new — introduced by my round-1 fix] — internal Fastify codes reflected verbatim
+Measured: `POST /api/saas-apps` with malformed JSON returned
+`400 {"error":"FST_ERR_CTP_INVALID_JSON_BODY"}`. Reflecting `error.code` leaked framework
+identity and made internal taxonomy a de-facto part of the public contract — the same class the
+round-1 fix was written to close. (Route-level SQLSTATEs never reach here; `saas-apps.ts`
+handles `23505`/`23503` and sends its own bodies.)
+
+- Action: closed by the same status-keyed table as S-R2-F2.
+
+### Verified clean by the security expert (measured, not read)
+- `to_char(... AT TIME ZONE 'UTC' ...)` round-trips exactly: 87/87 real rows satisfy
+  `to_char(...)::timestamptz = created_at` under a half-hour-offset session TZ, and a
+  DST-boundary value round-trips under `America/New_York`. No TZ/DST hazard.
+- The handler preserves the statuses it should: 401 `unauthorized`, 403 `origin_mismatch`,
+  zod 400 `invalid_query`, 415 `invalid_body`. No driver text in any body — the round-1
+  disclosure is genuinely gone.
+- R43 boundary-widening: none. The extracted `LABEL_KINDS`/`LABEL_FILTERS` are value-identical
+  to the three previous copies and match `pg_enum` exactly; `AUDIT_KINDS` is the same two-element
+  set; `projectPayload` still fails closed on unknown kinds.
+- The web-side F5 change is safe: `projectSyncPayload` only ever emits `counts`/`runId` (live
+  table confirms sync payload keys are exactly `["runId","counts"]`), so a sync event can never
+  present audit fields to `auditTransition`.
+- `SourceFilter` has no injection surface; `SOURCE_RE` blocks scripts, traversal, and CRLF.
+- Round-1 F4's deferral (projection casts `snapshot.kind`) assessed and **concurred with**.
+
+## Testing Findings (round 2)
+
+### TEST-R2-F1 [Major, new] — the page↔spec check matched filenames, not coverage
+The expert added `apps/web/src/app/sync/page.tsx` with no spec covering it and the check
+**passed** — because `sync.spec.ts` exists by name, while that spec only ever navigates to
+`/accounts`. The same hole applied to `auth`, `labeling`, and `session-expiry`. True positives
+did work (an uncovered `reports/` page failed correctly), which is what made the gap easy to
+miss: the guard I wrote in round 1 to close a prose-only obligation was itself matching a
+spelling rather than the property.
+
+I reproduced the exact case before fixing: `sync/page.tsx` present → `EXIT=0`.
+
+- Action: the check now reads every spec's source and requires an actual
+  `page.goto('/<route>')`, with a boundary so `/accounts` does not satisfy `/account`. The
+  `login` exemption was **removed** as no longer needed — `auth.spec.ts` genuinely navigates
+  there, and matching on navigation makes the special case unnecessary. Only the root redirect
+  stays exempt.
+- Modified: `apps/web/test/page-spec-membership.test.ts:1,17-21,42-64`
+- Verified: baseline green; the reviewer's `sync/page.tsx` reproduction now fails with
+  `pages no E2E spec navigates to: sync`.
+
+### TEST-R2-F2 [Minor, new] — the audit-guard self-tests did not exercise `normalizeSource`
+Measured by the expert: replacing `normalizeSource`'s body with an identity function left **all
+four tests green**. The multi-line snippet's DELETE→table gap is 79 characters, well inside the
+widened 200-char window, so it matched with or without normalization — the self-tests proved
+the pattern fires, not that stripping does anything.
+
+- Action: added a third case where the gap only fits after normalization (comment prose pushes
+  the raw distance past the window).
+- Modified: `apps/api/test/audit-append-only.test.ts:69-83`
+- Red-proof: with `normalizeSource` neutered, that case now fails while the others stay green —
+  so normalization is load-bearing for at least one assertion.
+
+### TEST-R2-F3 [Minor, new] — `SourceFilter` shipped with no test at any tier
+The component exists precisely because the filter was URL-only, yet `labeling.spec.ts` reaches
+`/events?source=label` by direct navigation and would pass with no control on the page at all.
+
+- Action: added three cases to `events.spec.ts` — clicking the control (not navigating to the
+  URL), the `SOURCE_RE` fallback rendering normally for `?source=<script>`, and the non-audit
+  row case below.
+- Modified: `e2e/specs/events.spec.ts:1-2,28-74,95-102`
+- Note on fixture independence: the seeder writes **no** `discovery_events`, so a spec asserting
+  on label or matcher rows would pass or fail by spec order. The filter test now creates its own
+  audit event via the API and clears it in `finally`; the matcher test runs matching first.
+  A first draft of the filter assertion tolerated an empty page, which would have passed
+  vacuously — corrected to require a non-empty result.
+
+### TEST-R2-F4 [Minor, new] — `auditTransition`'s changed discriminator was unpinned
+The round-1 F5 fix switched it from a kind allowlist to `before/after === undefined`. The
+positive case was covered (`labeling.spec.ts` asserts `none → Known shared`); the negative half
+was not.
+
+- Action: `a non-audit row renders no label transition` asserts a matcher row renders `—`.
+- Modified: `e2e/specs/events.spec.ts:76-93`
+
+### Verified by the testing expert through executed mutation
+- **T-L9 exact route list**: dumped `apiRoutes` from the live `onRoute` hook — 21 entries,
+  byte-identical to the assertion; commenting out the bulk route registration drops it to 20 and
+  fails. It cannot pass another way.
+- **Microsecond fixture**: boundary independently re-derived at positions 50/51.
+- **Four hostile-timestamp cases**: reverting the decoder fails exactly those four and no others.
+- **C20 ordering proxy**: `toISOString` is fixed-width for years 1–9999 so lexicographic equals
+  chronological, and `|` (0x7C) exceeds every UUID character, so the composite key cannot be
+  confused across the separator.
+- **`exact: true` in `apps.spec.ts`**: a correct disambiguation, not a symptom mask — once the
+  confirm panel opens, "Google Workspace" genuinely appears in two cells.
+- Round-1 F7's deferral assessed and **concurred with**.
+
+### [Adjacent] Major — stray `wt/` worktree broke the integration gate
+My round-1 red-proofing worktree was created inside the repo root instead of the scratchpad.
+Vitest collected it, so `pnpm test:integration` exited 1 with five `Cannot find package`
+failures while all 133 real tests passed — a gate reporting red for a reason unrelated to the
+branch, and the same class as the round-1 `zzproj.test.ts` incident. Removed; the gate is back
+to 5 files / 133 passed. Red-proofing worktrees belong under the scratchpad, which is where the
+other three this session were created.
+
+---
+
+# Round 1
 
 ## Changes from Previous Round
 

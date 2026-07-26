@@ -99,15 +99,30 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     // Fastify's default serializer puts `message` in the body, so rethrowing
     // here shipped driver text to the client — a bad cursor answered with
     // `date/time field value out of range`, naming the column type and the
-    // failing value. Client errors keep their own shape (they carry no
-    // internals and callers depend on them); anything else is logged in full
-    // and answered opaquely.
-    const details = error as { statusCode?: unknown; code?: unknown };
+    // failing value.
+    //
+    // The body comes from a status-keyed table rather than from the error's own
+    // `code`: reflecting `code` sent framework internals
+    // (FST_ERR_CTP_INVALID_JSON_BODY) to callers and made them a de-facto part
+    // of the contract, and it also mislabelled throttling — @fastify/rate-limit
+    // carries no string code, so every 429 came back as `bad_request`, which
+    // hides an abuse signal behind what reads as a client mistake.
+    //
+    // Routes that answer 4xx themselves never reach here; they `reply.send`
+    // their own documented bodies.
+    const details = error as { statusCode?: unknown };
     const declared = typeof details.statusCode === 'number' ? details.statusCode : 500;
     const status = reply.statusCode >= 400 ? reply.statusCode : declared;
     if (status < 500) {
-      const code = typeof details.code === 'string' ? details.code : 'bad_request';
-      return reply.code(status).send({ error: code });
+      const CLIENT_ERRORS: Record<number, string> = {
+        400: 'bad_request',
+        403: 'forbidden',
+        404: 'not_found',
+        413: 'payload_too_large',
+        415: 'unsupported_media_type',
+        429: 'too_many_requests',
+      };
+      return reply.code(status).send({ error: CLIENT_ERRORS[status] ?? 'bad_request' });
     }
 
     req.log.error({ err: error }, 'unhandled error');

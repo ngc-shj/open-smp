@@ -205,6 +205,7 @@ describe('C6 acceptance: login rate limit', () => {
   it('returns 429 on the 6th login attempt within a minute', async () => {
     const payload = { tenantSlug: 'no-such-tenant-rl', email: 'nobody@example.com', password: 'wrong' };
     let lastStatus = 0;
+    let lastBody = '';
     for (let i = 0; i < 6; i += 1) {
       const res = await app.inject({
         method: 'POST',
@@ -213,8 +214,13 @@ describe('C6 acceptance: login rate limit', () => {
         payload,
       });
       lastStatus = res.statusCode;
+      lastBody = res.body;
     }
     expect(lastStatus).toBe(429);
+    // The body, not only the status: throttling reported as a generic client
+    // error hides an abuse signal from callers and log pipelines, and the
+    // status-only assertion cannot see that regression.
+    expect(JSON.parse(lastBody)).toEqual({ error: 'too_many_requests' });
   });
 });
 
@@ -2524,6 +2530,16 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
       // "date/time field value out of range" — a 500 where the decoder promises
       // a 400, with database internals in the body.
       Buffer.from(JSON.stringify({ t: '0', id: randomUUID(), s: null })).toString('base64url'),
+      // Shape-valid but calendar-invalid. Both were measured returning 500 at
+      // the live API before the calendar and year-zero checks landed: Date.parse
+      // rolls Feb 30 forward instead of failing, and JS numbers years
+      // astronomically so year 0 survives a field-by-field round-trip.
+      Buffer.from(JSON.stringify({ t: '2026-02-30T00:00:00Z', id: randomUUID(), s: null })).toString(
+        'base64url',
+      ),
+      Buffer.from(JSON.stringify({ t: '0000-01-01T00:00:00Z', id: randomUUID(), s: null })).toString(
+        'base64url',
+      ),
     ];
     for (const cursor of malformed) {
       const res = await app.inject({

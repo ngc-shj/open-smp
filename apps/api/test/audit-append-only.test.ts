@@ -66,6 +66,21 @@ describe('C19/I19.4 acceptance: no apps/api source mutates discovery_events', ()
          /* drop audit rows past the retention horizon */
          FROM discovery_events WHERE created_at < now()\`);`,
     ],
+    [
+      // This is the row that makes normalizeSource load-bearing. The two above
+      // keep the DELETE→table gap inside the raw 200-char window, so they match
+      // with or without normalization — they prove the pattern fires, not that
+      // stripping does anything. Here the commentary pushes the raw gap past the
+      // window and only the normalized form is within it.
+      'a statement buried under comment prose',
+      `await tx.query(\`DELETE
+         /* Retention sweep. Audit rows are append-only by database privilege
+            (migration 0005 revokes UPDATE/DELETE from opensmp_app), so this
+            statement can only run as the migration owner. It exists for the
+            operator-invoked purge described in the runbook, not for any API
+            path, and must never be reachable from a request handler. */
+         FROM discovery_events WHERE created_at < now()\`);`,
+    ],
   ])('detects a mutation written as %s', (_label, snippet) => {
     expect(normalizeSource(snippet)).toMatch(MUTATION_PATTERN);
   });

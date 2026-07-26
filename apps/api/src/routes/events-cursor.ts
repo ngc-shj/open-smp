@@ -19,13 +19,47 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Date.parse tolerates. Date.parse accepts values Postgres rejects as
 // timestamptz — `'0'` is the cheapest example, and it reaches the query as a
 // bind value and raises 22008, i.e. a 500 carrying a database error message,
-// which is precisely the totality this module promises not to break. Validating
-// against the producer's own format keeps the accepted domain a subset of what
-// the database will take, rather than a sample of it.
+// which is precisely the totality this module promises not to break.
+//
 // Fractional digits are optional so a cursor minted before the microsecond fix
-// (or by any ISO-8601 producer) still decodes; the year is capped at four
-// digits, which is what keeps the value inside timestamptz's range.
-const CURSOR_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+// (or by any ISO-8601 producer) still decodes.
+const CURSOR_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/;
+
+/**
+ * Shape alone is not enough: `2026-02-30T00:00:00Z` matches the pattern AND
+ * satisfies Date.parse (JS rolls it forward to March 2), while Postgres rejects
+ * it outright. Anything that only checks the spelling therefore still lets a
+ * 22008 through — the exact failure this validation exists to prevent.
+ *
+ * So the calendar fields are checked against the Date the runtime built from
+ * them: a value that rolled over comes back with different fields than it went
+ * in with, which catches every out-of-range component in one comparison rather
+ * than enumerating month lengths and leap years.
+ */
+function isRealCalendarDate(value: string): boolean {
+  const match = CURSOR_TIMESTAMP_RE.exec(value);
+  if (!match) return false;
+
+  const [, year, month, day, hour, minute, second] = match;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+
+  // Year zero needs its own check because the round-trip below cannot see it:
+  // JS uses astronomical numbering and happily reports getUTCFullYear() === 0,
+  // so the comparison agrees with itself. Postgres has no year 0 (1 BC is
+  // followed by AD 1) and raises 22008. The producer only ever emits years far
+  // above this, so >= 1 is the minimal bound that closes the gap.
+  if (Number(year) < 1) return false;
+
+  return (
+    parsed.getUTCFullYear() === Number(year) &&
+    parsed.getUTCMonth() + 1 === Number(month) &&
+    parsed.getUTCDate() === Number(day) &&
+    parsed.getUTCHours() === Number(hour) &&
+    parsed.getUTCMinutes() === Number(minute) &&
+    parsed.getUTCSeconds() === Number(second)
+  );
+}
 
 export function encodeCursor(cursor: EventCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
@@ -60,7 +94,7 @@ export function decodeCursor(raw: string): EventCursor | null {
   }
 
   const { t, id, s } = record;
-  if (typeof t !== 'string' || !CURSOR_TIMESTAMP_RE.test(t) || Number.isNaN(Date.parse(t))) {
+  if (typeof t !== 'string' || !isRealCalendarDate(t)) {
     return null;
   }
   if (typeof id !== 'string' || !UUID_RE.test(id)) {
