@@ -7,8 +7,10 @@ import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
 import type { HrImportResponse } from '@/lib/api-types';
 
-// Keep in sync with apps/api/src/routes/hr-import.ts MAX_UPLOAD_BYTES —
-// api-types is type-only (C8), so the value cannot be imported at runtime.
+// Keep in sync with apps/api/src/routes/hr-import.ts MAX_UPLOAD_BYTES. The
+// value lives in apps/api, which apps/web cannot import from — moving it into
+// @open-smp/api-types would fix that, and is SC37. (The older reason given here,
+// "api-types is type-only", stopped being true when C29 added a value export.)
 // Checked client-side because an over-limit upload aborted mid-stream by the
 // server does not reliably deliver its 400 through the Next proxy.
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;

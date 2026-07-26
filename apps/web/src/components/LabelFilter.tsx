@@ -1,17 +1,7 @@
 import Link from 'next/link';
-import type { AccountLabelKind } from '@/lib/api-types';
-import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
+import { LABEL_FILTER_OPTIONS, type LabelFilterValue } from '@/lib/label-filters';
 
-export type LabelFilterValue = AccountLabelKind | 'none' | 'any';
-
-const FILTERS: { value: LabelFilterValue | null; label: string }[] = [
-  { value: null, label: 'All' },
-  { value: 'none', label: 'Unlabeled' },
-  { value: 'any', label: 'Any label' },
-  { value: 'known_shared', label: LABEL_KIND_NAMES.known_shared },
-  { value: 'service_account', label: LABEL_KIND_NAMES.service_account },
-  { value: 'external_collaborator', label: LABEL_KIND_NAMES.external_collaborator },
-];
+export type { LabelFilterValue };
 
 /**
  * Server-rendered links rather than a client control: the filter is a URL
@@ -23,7 +13,7 @@ export function LabelFilter({ status, active }: { status: string; active: LabelF
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="text-neutral-500">Label:</span>
-      {FILTERS.map((filter) => {
+      {LABEL_FILTER_OPTIONS.map((filter) => {
         const href = filter.value
           ? `/accounts?status=${status}&label=${filter.value}`
           : `/accounts?status=${status}`;

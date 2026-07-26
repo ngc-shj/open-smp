@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import {
   accountLabelKindEnum,
   accountStatusEnum,
@@ -20,12 +21,13 @@ describe('enum value sets', () => {
     expect(accountStatusEnum.enumValues).toEqual(['active', 'suspended', 'archived']);
   });
 
-  it('account_label_kind matches the C10 contract', () => {
-    expect(accountLabelKindEnum.enumValues).toEqual([
-      'known_shared',
-      'service_account',
-      'external_collaborator',
-    ]);
+  // Asserted against the domain, not against a transcription of itself. The
+  // previous form compared the enum to a hardcoded list in this file, so it
+  // fired only when someone edited tables.ts and forgot the test — never when
+  // the domain moved. Now a kind added to ACCOUNT_LABEL_KINDS without the
+  // matching migration fails here.
+  it('account_label_kind derives from the shared label-kind domain', () => {
+    expect([...accountLabelKindEnum.enumValues]).toEqual([...ACCOUNT_LABEL_KINDS]);
   });
 });
 

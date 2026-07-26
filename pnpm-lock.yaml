@@ -251,6 +251,9 @@ importers:
 
   packages/schema:
     dependencies:
+      '@open-smp/api-types':
+        specifier: workspace:*
+        version: link:../api-types
       drizzle-orm:
         specifier: ^0.44.7
         version: 0.44.7(@types/pg@8.20.0)(pg@8.22.0)
