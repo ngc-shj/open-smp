@@ -135,6 +135,34 @@ beforeEach(async () => {
   await app.ready();
 });
 
+describe('error-shape acceptance: framework-generated responses stay flat and opaque', () => {
+  it('an unmatched route returns the flat not-found shape, not Fastify\'s default', async () => {
+    // An unmatched route never reaches setErrorHandler, so without an explicit
+    // not-found handler Fastify's default body survives — it carries `message`
+    // and echoes the requested route back. Deep-equal rather than a status
+    // check: the status was already 404 before the fix, so only the shape
+    // falsifies its removal.
+    const res = await app.inject({ method: 'GET', url: '/api/no-such-route' });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('a malformed JSON body is answered without naming the framework', async () => {
+    // Reflecting the error's own `code` sent FST_ERR_CTP_INVALID_JSON_BODY to
+    // callers, making Fastify's internal taxonomy part of the public contract.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: { origin: APP_ORIGIN, 'content-type': 'application/json' },
+      payload: '{ not json',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).not.toMatch(/FST_ERR/);
+  });
+});
+
 describe('C6 acceptance: 401 sweep over every non-login route', () => {
   it('unauthenticated request to every non-login route returns 401', async () => {
     const nonLoginRoutes = app.apiRoutes.filter(

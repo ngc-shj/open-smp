@@ -2,6 +2,24 @@ import { test, expect, type Page } from '@playwright/test';
 import { SEEDED_ACCOUNTS } from '../fixtures/seed-facts.js';
 
 test.describe('events', () => {
+  async function runFilterAssertions(page: Page): Promise<void> {
+    await page.goto('/events');
+
+    // Clicking is the point: the filter existed as a URL parameter before this
+    // control, so reaching /events?source=label by navigation would pass with
+    // no control on the page at all.
+    await page.getByRole('link', { name: 'Label audit', exact: true }).click();
+
+    await expect(page).toHaveURL(/\/events\?source=label/);
+
+    const sources = await page.locator('tbody tr td:first-child').allTextContents();
+    // Non-empty matters: an empty page would satisfy "every row is a label row"
+    // vacuously. The audit row is produced below rather than borrowed from
+    // whichever spec ran first — the seeder writes no discovery_events.
+    expect(sources.length).toBeGreaterThan(0);
+    expect(new Set(sources)).toEqual(new Set(['label']));
+  }
+
   test('/events renders the heading, the full column set, and a populated tbody', async ({ page }) => {
     await page.goto('/events');
 
@@ -54,24 +72,6 @@ test.describe('events', () => {
       expect([204, 404]).toContain(cleared.status());
     }
   });
-
-  async function runFilterAssertions(page: Page): Promise<void> {
-    await page.goto('/events');
-
-    // Clicking is the point: the filter existed as a URL parameter before this
-    // control, so reaching /events?source=label by navigation would pass with
-    // no control on the page at all.
-    await page.getByRole('link', { name: 'Label audit', exact: true }).click();
-
-    await expect(page).toHaveURL(/\/events\?source=label/);
-
-    const sources = await page.locator('tbody tr td:first-child').allTextContents();
-    // Non-empty matters: an empty page would satisfy "every row is a label row"
-    // vacuously. The audit row is produced below rather than borrowed from
-    // whichever spec ran first — the seeder writes no discovery_events.
-    expect(sources.length).toBeGreaterThan(0);
-    expect(new Set(sources)).toEqual(new Set(['label']));
-  }
 
   test('a non-audit row renders no label transition', async ({ page }) => {
     // Run matching first rather than relying on a matcher event left behind by

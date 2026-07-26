@@ -127,6 +127,130 @@ handles `23505`/`23503` and sends its own bodies.)
 - `SourceFilter` has no injection surface; `SOURCE_RE` blocks scripts, traversal, and CRLF.
 - Round-1 F4's deferral (projection casts `snapshot.kind`) assessed and **concurred with**.
 
+# Round 3
+
+## Security Findings (round 3) — **No findings**
+
+All three round-2 security findings resolved. The expert's verification is worth recording
+because it settles, by exhaustion rather than by sampling, the question two earlier rounds got
+wrong.
+
+**The cursor domain is closed in both directions.** Probing the real module (not a replica) and
+adjudicating each result against Postgres 16.13's own parser:
+
+- *Under-rejection* — 73,066 candidates spanning years 0000–9999, every out-of-range
+  month/day/hour/minute/second shape, leap days, and 60k random values. 1,598 were accepted by
+  the validator; **all 1,598 cast cleanly to `timestamptz`, 0 errors.** The harness was
+  negative-controlled: it reproduced both prior bug classes (`2026-02-30`, `0000-01-01`), so a
+  silent-pass harness is ruled out.
+- *Over-rejection* — the tightened predicate could have started 400ing cursors the API itself
+  mints. 20,000 Postgres-minted timestamps in the route's exact producer format plus all 119
+  live rows: **0 rejected.**
+- *Adversarial* — newline/CR/NUL smuggling, Arabic-Indic and fullwidth digits, lowercase
+  `z`/`t`, `+00:00` offsets, 5-digit years, 7 fraction digits, type confusion, and prototype
+  pollution (`__proto__` as a fourth key leaves `Object.prototype` untouched) all rejected.
+  `s` accepts SQL-shaped text but reaches only a JS equality check and never enters
+  `buildEventsWhere`, where only `t` and `id` go, both parameterized.
+
+**The 400-retry is bounded and creates no oracle.** Traced over 12 status scenarios: at most two
+calls in every case, including "400 always", because the retry passes `cursor: undefined`. 401
+redirects before the retry check; 403/404/429/500 all throw on the first call. C20's deliberate
+property — a well-formed foreign-tenant cursor returns 200-with-empty-page, never 400 — still
+holds, so the retry is never entered on that path and no new distinguisher appears.
+
+**`setNotFoundHandler` does not touch auth or Origin.** Swept the real 21-route table in-process
+with a pool that throws if reached: every non-GET route 403s without a valid Origin, every GET
+401s unauthenticated, and only genuinely unmatched routes reach the new handler.
+
+**R43**: the `status` computation and the `status < 500` boundary are byte-identical to
+`f0fb389`; only the body label changed. No widening.
+
+## Functionality + Testing Findings (round 3)
+
+### TEST-R3-1 [Major, continuing] — the membership guard lied a second time, under a new strategy
+Round 2 replaced filename matching with navigation matching. The expert showed the navigation
+match is satisfied by text that never runs. Reproduced:
+
+```
+MATCH  test.skip('x', async()=>{ await page.goto('/sync') })
+MATCH  // await page.goto('/sync')            <- the realistic one
+MATCH  /* await page.goto('/sync') */
+MATCH  // TODO: add page.goto('/sync') coverage
+miss   await page.goto("/sync")               <- spurious RED, double quotes
+```
+
+The commented-out case is how this bites in practice: a flaky spec gets commented out during
+debugging and the guard keeps reporting its page as covered. **This is the ninth instance of the
+guard-bound-to-a-spelling defect in this plan's history, and the second time this particular
+guard has failed** — first by filename, then by raw text.
+
+- Action: an `executableSource` helper strips comments and excises `test.skip`/`fixme`/`todo`
+  bodies by brace matching before the route match runs; the pattern now also accepts double
+  quotes and leading whitespace (TEST-R3-2, the fail-safe direction, closed in the same edit).
+- Modified: `apps/web/test/page-spec-membership.test.ts:5-35,44-70`
+- **The guard now guards itself**: eleven self-tests pin all five false-green forms as rejected,
+  all four real navigation spellings as accepted, that `/sync-history` does not satisfy `/sync`,
+  and that a live test in the same file as a skipped one still counts.
+- Verified end-to-end: a page whose only coverage is a commented-out navigation is now reported
+  uncovered (`pages no E2E spec navigates to: probe-route`).
+- **Stated limitation, rather than an implied invariant**: navigation through a helper or a link
+  click still reads as uncovered. That is the safe direction, and the comment now says so
+  instead of claiming the property is fully expressed.
+
+### F-R3-1 [Minor, new] — `setNotFoundHandler` shipped with no test
+Deleting it left the whole suite green while Fastify's default body returned.
+
+- Action: added two error-shape integration cases — an unmatched route must deep-equal
+  `{error:'not_found'}`, and a malformed JSON body must not name the framework.
+- Modified: `apps/api/test/api.integration.test.ts:138-165`
+- Red-proof: removing `setNotFoundHandler` fails the first with
+  `expected { …(3) } to deeply equal { error: 'not_found' }`. Deep-equal rather than a status
+  check is what makes it red — the status was already 404 before the fix.
+
+### TEST-R3-3 [Minor, new] — helper declared between tests
+- Action: `runFilterAssertions` moved above the first `test()`.
+- Modified: `e2e/specs/events.spec.ts:5-21`
+
+### F-R3-2 [Minor] — the untabled-4xx `'client_error'` fallback is unexercised — DEFERRED
+- **Anti-Deferral entry.** Not fixed this round.
+- **Worst case**: reverting `'client_error'` to `'bad_request'` — the exact regression R2-F2
+  fixed — keeps every test green, so the fallback's label could silently drift back to
+  mislabelling an unclassified status.
+- **Likelihood**: very low, and bounded. Reaching the branch needs a thrown error carrying a 4xx
+  `statusCode` outside `{400,403,404,413,415,429}`; no current route produces one, and the two
+  framework paths that do reach the handler (malformed JSON → 400, bad content-type → 415) are
+  both tabled and now both tested.
+- **Cost to fix**: the honest options are a throwaway route registered inside `buildApp` for the
+  test's benefit — production code existing only to be tested, on the security-sensitive app
+  factory — or exporting `CLIENT_ERRORS` purely to assert its default. Both trade a real
+  structural cost for a branch nothing reaches. The reviewer costed this the same way and
+  offered the deferral as the reasonable alternative.
+- **Owner / trigger**: fold in the first time a route legitimately throws an untabled 4xx, or if
+  the handler's mapping is edited again.
+
+### Verified clean by the round-3 expert
+- The 400-retry is depth-1 bounded (the retry passes `cursor: undefined`, so the branch cannot
+  re-enter), verified over all twelve status scenarios and all six reachable source/cursor
+  combinations. `redirect('/login')` still propagates — neither page wraps the recursive call in
+  a try/catch. `nextCursor` stays coherent: both Load-more hrefs are built from the *fallback
+  response's* cursor, never from `params.cursor`, so pagination works from page one.
+- `SOURCE_RE` is character-identical to the API's zod regex plus the same 1–64 bound, so the
+  retry can never itself 400 on events; on accounts, `status`/`label` are allowlisted first.
+- E2E order-independence confirmed: `playwright.config.ts` sets `fullyParallel: false,
+  workers: 1`, the seeder writes zero `discovery_events`, and the matcher writes exactly one
+  `match_completed` row with no `before`/`after` — so the `—` assertion is load-bearing against
+  the real projection rather than against an assumption.
+- Removing the `login` exemption is safe: `auth.spec.ts` genuinely contains
+  `page.goto('/login')`, verified by running the regex across all nine specs.
+- All four Anti-Deferral entries re-assessed and still holding; neither `audit.ts` nor
+  `seed-facts.ts` was touched this round.
+
+### [Adjacent] Minor — the E2E filter spec grows the audit table on every run
+The spec labels a seeded account and clears it, but the two audit rows it emits are
+**permanently unremovable by design** (C27 revokes DELETE on `discovery_events`). Intended for
+an append-only trail, and the label itself is cleaned up, but the accumulation is recorded here
+rather than left unnoticed. It falls under SC26 (audit retention), already out of scope.
+
 ## Functionality Findings (round 2)
 
 ### R2-F1 [Major, continuing] — the `?source=` fix closed the reported case, not the property
