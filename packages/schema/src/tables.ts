@@ -14,6 +14,7 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import { sql } from 'drizzle-orm';
 
 const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
@@ -40,11 +41,12 @@ export const accountStatusEnum = pgEnum('account_status', [
   'suspended',
   'archived',
 ]);
-export const accountLabelKindEnum = pgEnum('account_label_kind', [
-  'known_shared',
-  'service_account',
-  'external_collaborator',
-]);
+// Derived from the shared domain rather than re-listed. The DB enum still needs
+// its own migration when a kind is added — storage cannot be derived — but the
+// drizzle mirror can be, so it is. Order matters: a Postgres enum's declaration
+// order is its sort order, and api.integration.test.ts asserts pg_enum's order
+// against this same domain.
+export const accountLabelKindEnum = pgEnum('account_label_kind', ACCOUNT_LABEL_KINDS);
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').primaryKey().defaultRandom(),

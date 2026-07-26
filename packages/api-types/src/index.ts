@@ -28,11 +28,17 @@ export type AccountLink = {
 // payload's kind (C29/I29.1), and deriving the type guarantees the check and
 // the claim cannot disagree. Adding a kind here still needs a migration — the
 // DB enum is a separate copy by necessity, pinned by I29.4's pg_enum test.
-export const ACCOUNT_LABEL_KINDS = [
+// Frozen, not merely `as const`. The assertion is compile-time only: without
+// the freeze, `ACCOUNT_LABEL_KINDS.push('anything')` succeeds at runtime and
+// isAccountLabelKind starts returning true for it — and that guard is what the
+// events projection uses to refuse an out-of-domain kind into the audit union,
+// while the same array backs z.enum() in both label-write routes. Widening it
+// widens both.
+export const ACCOUNT_LABEL_KINDS = Object.freeze([
   'known_shared',
   'service_account',
   'external_collaborator',
-] as const;
+] as const);
 
 export type AccountLabelKind = (typeof ACCOUNT_LABEL_KINDS)[number];
 
@@ -41,7 +47,7 @@ export type AccountLabelKind = (typeof ACCOUNT_LABEL_KINDS)[number];
 // decides whether to project them, and the web app decides whether their
 // absence means "this is a sync event" or "this audit event is corrupt".
 // Deciding that from the payload alone conflates the two.
-export const LABEL_AUDIT_KINDS = ['label_set', 'label_cleared'] as const;
+export const LABEL_AUDIT_KINDS = Object.freeze(['label_set', 'label_cleared'] as const);
 
 export type LabelAuditKind = (typeof LABEL_AUDIT_KINDS)[number];
 

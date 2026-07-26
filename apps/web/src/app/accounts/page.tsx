@@ -9,18 +9,12 @@ import { SyncControl } from '@/components/SyncControl';
 import { NavBar } from '@/components/NavBar';
 import { LabelControl } from '@/components/LabelControl';
 import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
-import { LabelFilter, type LabelFilterValue } from '@/components/LabelFilter';
+import { LabelFilter } from '@/components/LabelFilter';
+import { LABEL_FILTER_VALUES, type LabelFilterValue } from '@/lib/label-filters';
 import { AccountSelectCheckbox, AccountSelectionProvider } from '@/components/AccountSelection';
 
 const TABS: LinkStatus[] = ['orphan', 'ghost', 'ambiguous', 'matched'];
 
-const LABEL_FILTERS: LabelFilterValue[] = [
-  'none',
-  'any',
-  'known_shared',
-  'service_account',
-  'external_collaborator',
-];
 
 async function fetchAccounts(
   status: string,
@@ -63,7 +57,7 @@ export default async function AccountsPage({
 }) {
   const params = await searchParams;
   const status = TABS.includes(params.status as LinkStatus) ? (params.status as LinkStatus) : 'orphan';
-  const label = LABEL_FILTERS.includes(params.label as LabelFilterValue)
+  const label = LABEL_FILTER_VALUES.includes(params.label as LabelFilterValue)
     ? (params.label as LabelFilterValue)
     : null;
   const cursor = params.cursor;

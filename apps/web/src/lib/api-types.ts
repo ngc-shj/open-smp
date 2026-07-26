@@ -8,10 +8,12 @@
 // too, re-exported rather than imported from @open-smp/api-types directly, so
 // this stays the one place shared types and values cross into the web app.
 
-// The one value that crosses into apps/web (see the note above). The events
-// page needs it to tell a sync event's missing audit fields apart from an audit
-// event whose fields the API withheld as corrupt.
-export { isLabelAuditKind } from '@open-smp/api-types';
+// The values that cross into apps/web (see the note above). isLabelAuditKind
+// lets the events page tell a sync event's missing audit fields apart from an
+// audit event whose fields the API withheld as corrupt; ACCOUNT_LABEL_KINDS is
+// what the accounts filter bar derives its options from instead of re-listing
+// them.
+export { ACCOUNT_LABEL_KINDS, isLabelAuditKind } from '@open-smp/api-types';
 
 export type {
   LinkStatus,
