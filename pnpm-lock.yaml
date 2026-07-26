@@ -136,6 +136,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@open-smp/api-types':
+        specifier: workspace:*
+        version: link:../../packages/api-types
       '@open-smp/connector-google-workspace':
         specifier: workspace:*
         version: link:../../packages/connectors/google-workspace

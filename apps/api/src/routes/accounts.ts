@@ -11,7 +11,12 @@ import { LABEL_FILTERS } from '../label-kinds.js';
 // 'none' and 'any' let an operator ask "what have I not triaged yet" without a
 // second endpoint; both are predicates on the account_labels LEFT JOIN the
 // query already performs, so neither costs an extra round trip.
-const accountsQuerySchema = z
+//
+// Exported so a unit test can assert the status filter still derives from
+// LINK_STATUSES. Re-inlining the union here is otherwise invisible: the four
+// members happen to match today, so typecheck, lint and every test stay green
+// while the single-source property is quietly gone.
+export const accountsQuerySchema = z
   .object({
     status: z.enum(LINK_STATUSES).optional(),
     app: z.string().min(1).optional(),

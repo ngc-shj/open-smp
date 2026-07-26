@@ -35,4 +35,14 @@ describe('C42/I42.1: LinkResult.status is the shared domain', () => {
 
     expect(results.map((r) => r.status)).toEqual([...LINK_STATUSES]);
   });
+
+  // The other direction. The witness above proves LinkStatus is assignable INTO
+  // the field, which stays true if the field is widened to bare `string` — and
+  // I42.1 claims equality, not containment. This fails to compile the moment
+  // the field stops being the domain.
+  it('rejects a status outside the domain', () => {
+    // @ts-expect-error - status is the domain, not an arbitrary string
+    const widened: LinkResult['status'] = 'not_a_status';
+    expect(widened).toBe('not_a_status');
+  });
 });

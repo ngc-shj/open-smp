@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ACCOUNT_LABEL_KINDS, LINK_STATUSES } from '@open-smp/api-types';
 import {
@@ -24,17 +24,31 @@ describe('enum value sets', () => {
   });
 
   // C41/I41.2. The domain's order is not free: a Postgres enum's declaration
-  // order is its sort order, and migration 0001_init.sql has shipped. This
-  // pins the domain against the migration text so a reorder of the domain
-  // fails here rather than silently disagreeing with the deployed database.
-  it('link_status order matches the shipped migration', () => {
-    const migration = readFileSync(
-      new URL('../migrations/0001_init.sql', import.meta.url),
-      'utf8',
-    );
-    const match = migration.match(/CREATE TYPE link_status AS ENUM \(([^)]*)\)/);
-    expect(match, 'migration must declare the link_status enum').not.toBeNull();
-    const declared = [...match![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  // order is its sort order, and 0001_init.sql has shipped. This pins the
+  // domain against the migration text so a reorder fails here rather than
+  // silently disagreeing with the deployed database.
+  //
+  // Every migration is read, not just 0001, and the enum's evolution is
+  // replayed — CREATE TYPE then each ALTER TYPE ... ADD VALUE in filename
+  // order, which is the order migrate.ts applies them. Reading 0001 alone
+  // would red on a *correct* schema: a shipped migration cannot be edited, so
+  // adding a status necessarily lands in a later file, and the only ways to
+  // satisfy a 0001-only assertion are to edit history or delete the test.
+  it('link_status order matches the shipped migrations', () => {
+    const dir = new URL('../migrations/', import.meta.url);
+    const sql = readdirSync(dir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+      .map((name) => readFileSync(new URL(name, dir), 'utf8'))
+      .join('\n');
+
+    const created = sql.match(/CREATE TYPE link_status AS ENUM \(([^)]*)\)/);
+    expect(created, 'migrations must declare the link_status enum').not.toBeNull();
+    const declared = [...created![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    for (const added of sql.matchAll(/ALTER TYPE link_status ADD VALUE '([^']+)'/g)) {
+      declared.push(added[1]);
+    }
+
     expect(declared).toEqual([...LINK_STATUSES]);
   });
 

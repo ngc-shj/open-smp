@@ -37,10 +37,19 @@ to audit.
 **Plan**: left the form unspecified, requiring only that map↔stylesheet agreement be gated.
 
 **Decided by execution**: the test reads `globals.css` and asserts every status-specific class token
-has a matching `.<token> {` rule. Its known limit, established by execution: the regex matches text
-inside CSS comments, so a rule commented out but left in place still passes. Deleting a rule — the
-realistic failure — does fire (M3). Recorded rather than fixed, because a comment-aware CSS parse is
-a large step up in machinery for a case SC45 already accepts as underivable.
+has a matching rule.
+
+**Tightened in code review (F3).** The first form matched `.<token> {` — the selector alone — which
+review proved blind to *two* shapes, not the one this log first recorded: a rule commented out, and a
+rule whose body has been emptied. Both render a colourless chip, which is exactly what the gate exists
+to catch. The assertion now requires a non-empty body containing `@apply`, which closes the
+emptied-body mode (proven: it goes red).
+
+**Residual limit, stated accurately**: a rule commented out but left in place still passes, because
+the `@apply` sits inside the comment text. Deleting a rule — the realistic failure — fires (M3), and
+so does emptying one. Closing the comment case needs comment-aware parsing, which is a large step up
+in machinery for a case SC45 already accepts as underivable. The first draft of this entry framed the
+limit as narrower than it was; that framing is what review corrected.
 
 ## D4 — C41 gained a second test the plan did not name
 
@@ -62,9 +71,13 @@ is what replaces it, and without it M1 would have produced no schema-side failur
 `apps/worker` already declares `@open-smp/matcher` so no new package edge is needed.
 
 **Decided by execution**: `Pick<LinkResult, 'saasAccountId' | 'identityId' | 'status' | 'confidence'
-| 'ruleId'> & { evidence: unknown }`. This tracks the matcher's result shape structurally rather than
-naming `LinkStatus` directly, so the parameter follows `LinkResult` on any future field change, not
-only on a status widening. No manifest edit was needed for `apps/worker`.
+| 'ruleId'> & { evidence: unknown }`, named `UpsertLinkInput` and exported (the export came later, in
+review — see D8). This tracks the matcher's result shape structurally rather than naming `LinkStatus`
+directly, so the parameter follows `LinkResult` on any future field change, not only on a status
+widening.
+
+The production code needed no manifest edit, as the plan predicted — but the *gate* for this site did.
+See D9.
 
 ## D6 — `chipClassFor` had a prototype-key bug, found by the self-R-check
 
@@ -107,6 +120,52 @@ Removed. That left the `LINK_STATUSES` value import unused, which failed `pnpm l
 (`@typescript-eslint/no-unused-vars`) while `pnpm typecheck` and `pnpm test:unit` both stayed green —
 the same lint-red/tests-green split cycle 4 recorded. The import is now type-only, which VE7 permits.
 
+## D8 — Code review round 1: two Majors, both real gate defects
+
+**F1 — the migration-order gate blocked the operation it exists to protect.** The first form read
+`0001_init.sql` alone. But `migrate.ts:26-27` applies *every* `migrations/*.sql` in filename order, and
+Postgres widens an enum with `ALTER TYPE ... ADD VALUE`, which by definition lands in a *later* file —
+`0001` is immutable once shipped, which is the gate's own stated premise. So a **correctly migrated**
+schema failed it, and the only ways to satisfy it were to edit shipped history or delete the test.
+
+Reproduced before fixing: adding `0006_link_status_quarantined.sql` with the `ALTER TYPE` plus the
+matching domain member turned it red. The gate now reads the whole migration directory and replays the
+enum's evolution (CREATE TYPE, then each ADD VALUE in filename order). Verified both directions: the
+`ALTER TYPE` path is green, and M2's reorder is still red.
+
+This was the sharpest finding of the cycle. D4 named this test as the sole replacement for coverage the
+`linkStatusEnum` derivation removed — so it was load-bearing precisely when someone adds a status, and
+that is exactly when it would have blocked them.
+
+**F2 — sites 2 and 8 had no gate at all.** Review executed both reverts: re-inlining the union in
+`routes/accounts.ts` and in `upsertLink`'s parameter left `test:unit` at 258 passed, typecheck at 0
+errors, and lint clean. Nothing anywhere noticed. The central invariant of this change was ungated at
+two of its six derived sites, and `apps/api/test/label-kinds.test.ts` was already the precedent for
+gating exactly this — it just was not applied.
+
+Fixed by exporting `accountsQuerySchema` and naming `UpsertLinkInput`, then gating both.
+
+**The first fix for site 2 did not work, and the failed attempt is the useful part.** It asserted the
+schema's members equal `LINK_STATUSES` — which stays green under the revert, because `z.enum` snapshots
+its members at construction, so a hand-written union with the same four members builds a byte-identical
+validator. A behavioural assertion structurally cannot distinguish them. The gate now reads the route's
+source text for `z.enum(LINK_STATUSES)` and for the absence of an inlined literal; the behavioural
+assertions are kept alongside, since they pin what the route accepts. Red-proven as M8.
+
+Site 8's gate is a type-level witness (M9), which fires at typecheck in two places — the call site and
+the test — rather than at runtime. That is the right tier for a type-level invariant.
+
+## D9 — The site-8 gate needed a manifest edge the worker did not declare
+
+Adding `apps/worker/test/upsert-link-domain.test.ts` broke typecheck and the unit run with
+`Cannot find package '@open-smp/api-types'`. `apps/worker` reaches the domain transitively through
+`@open-smp/matcher` and had never declared the direct edge.
+
+This is the same undeclared-edge class I42.3 exists to catch, hit while writing a test *for* that
+class. Fixed by declaring `@open-smp/api-types` in `apps/worker/package.json`, matching what C42 did
+for the matcher. Worth recording because the failure was loud only after the test existed — the
+production code never needed the direct import, so nothing had surfaced it.
+
 ---
 
 ## NFR3 — mutation proofs
@@ -123,6 +182,11 @@ domain mutations ran **in the main repository from a backup**, never in a worktr
 | M5 | reorder `ACCOUNT_TABS` to equal the domain order | 2 tab tests red |
 | M6 | replace the fallback with a real chip class | `falls back for a value outside the domain` red |
 | M7 | revert `chipClassFor` to the `??` form | 5 prototype-key tests red |
+| M8 | re-inline the union in `routes/accounts.ts` (site 2) | `builds its status enum from LINK_STATUSES` red — **added in review; the first version of this gate stayed green** |
+| M9 | re-inline the union in `UpsertLinkInput` (site 8) | typecheck red in 2 places (call site + witness) — added in review |
+| M10 | add `0006_…ALTER TYPE…` + the domain member | migration-order gate **green** (was red before the F1 fix — a correct schema must pass) |
+| M11 | empty the `.status-chip-ghost` rule body | `defines a non-empty rule for each status-specific class` red — added in review |
+| M12 | widen `LinkResult['status']` to bare `string` | typecheck red — `TS2578: Unused '@ts-expect-error' directive`, added in review to close the direction the assignment witness cannot see |
 
 **M1's outcome, recorded as the plan required.** The expectation spanned more than one tree state:
 
@@ -138,7 +202,7 @@ domain mutations ran **in the main repository from a backup**, never in a worktr
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **258 tests / 27 files** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **264 tests / 29 files** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — **43**, unchanged as I40.3 predicted |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |

@@ -86,11 +86,15 @@ describe('C40/I40.6: every chip class has a rule in globals.css', () => {
     expect(css).toContain('.status-chip');
   });
 
-  it('defines a rule for each status-specific class', () => {
+  // Requires a rule that actually applies something, not merely a selector
+  // token that appears somewhere. Matching the selector alone passes on two
+  // shapes that both render a colourless chip: a rule commented out but left
+  // in place, and a rule whose body has been emptied.
+  it('defines a non-empty rule for each status-specific class', () => {
     const missing = Object.values(CHIP_CLASSES)
       .flatMap((className) => className.split(/\s+/))
       .filter((token) => token !== 'status-chip')
-      .filter((token) => !new RegExp(`\\.${token}\\s*\\{`).test(css));
+      .filter((token) => !new RegExp(`\\.${token}\\s*\\{[^}]*@apply[^}]*\\}`).test(css));
     expect(missing).toEqual([]);
   });
 });
