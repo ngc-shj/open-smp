@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review rounds: 2 (round 1 below; round 2 appended at the end)
+Review rounds: 3 (each appended in order below)
 
 ## Changes from Previous Round
 
@@ -401,3 +401,110 @@ passes today and hard to write so it fails tomorrow, and the only way to tell th
 the mutation. Round 1 ran mutations for the gates it doubted and reasoned about the ones it did not —
 R2-1 is what that costs, and it is the same mistake twice in one commit, since the lesson was written
 down in D8 while the sibling gate went unproven.
+
+---
+
+# Round 3
+
+Date: 2026-07-27
+Scope: verify the round-2 fixes, and probe specifically for new false-reds/false-greens they
+introduced — since that is exactly what round 2 found in round 1's work.
+
+## Changes from Previous Round
+
+Round 2's six fixes were applied in `1cf53e0` and touched only test files. Round 3 re-executed every
+round-2 mutation and confirmed all six resolved, then probed the fixes themselves.
+
+**Three findings — 2 Major, 1 Minor. All applied. Again, every one is a defect in a gate the previous
+round had just repaired, and again no production code changed.**
+
+## Findings
+
+### R3-1 [Major, new] — the positional detector was inverted, not merely blind
+
+R2-3 made the gate *refuse* positional `ADD VALUE ... BEFORE/AFTER` rather than replay it. Correct
+choice, incomplete regex: it required a trailing whitespace character, and Postgres does not need one
+because a string literal is its own token. Verified against the running Postgres 16:
+
+```text
+ALTER TYPE r3v ADD VALUE 'dormant' AFTER'matched';   -> ALTER TYPE
+enumsortorder                                        -> matched, dormant, orphan
+```
+
+With that form present, the detector missed it, the append-only replay took over, and the gate
+**passed the wrong order and failed the correct one** — the exact defect R2-3 was raised to prevent.
+
+**Applied**: `(BEFORE|AFTER)\s*'`. All three spellings now fail loudly (verified).
+
+### R3-2 [Major, new] — the `--` stripper corrupted SQL string literals
+
+`replace(/--[^\n]*/g, '')` is not literal-aware. A `--` inside a quoted value swallowed the rest of the
+line — in one executed case a real `ADD VALUE`, in another the `CREATE TYPE` itself, producing
+"migrations must declare the link_status enum" against a file that declares it. A gate that fails for
+a reason unrelated to its claim is worse than one that misses.
+
+**Applied**: a tokenizing walk that treats a comment marker as one only outside a literal. Verified: a
+`DEFAULT 'a--b';` sharing a line with a real `ADD VALUE` now passes, and the commented-out `ADD VALUE`
+still fails.
+
+### R3-3 [Minor, new] — the broadened negatives false-redded on ordinary comments
+
+R2-6 widened the check to any quoted status literal in the file. That catches a `const LOCAL = [...]`
+indirection, but also reds a comment mentioning `'orphan'` or a message containing `'ghost'`. Both
+files already carry literals of that shape nearby, so this was when-not-if.
+
+**Applied**: comments stripped before the check, via a local `stripTsComments` in each of the two test
+directories. Verified both directions — a status-mentioning comment stays green in both files, and
+both re-inline reverts still fire.
+
+## Regression checks
+
+The round-3 fixes *loosen* two negatives, so the round-2 detections they were widened for had to be
+re-proven. Both still fire (site-2 re-inline red, site-8 re-inline red). The five valid `ALTER TYPE`
+spellings from R2-2 still pass, and R2-4's commented-out case still fails.
+
+## On the duplicated `stripTsComments`
+
+It exists twice, in `apps/api/test/` and `apps/worker/test/`. Knowing choice, not an oversight in a
+cycle about removing duplication: the two packages share no test-utility path, and the alternative
+considered — `packages/api-types` — would put a test helper in the package whose entire contract (C39)
+is that it holds nothing but the domain. Two copies is cheaper than eroding that boundary; a third
+would be the point to build a shared test package. `packages/schema` has its own separate stripper
+because it strips *SQL*, a different language with different rules.
+
+## Recurring Issue Check — Round 3
+
+- **RT7 (gate proves it can fail)** — FINDING(R3-1). The positional gate was verified inverted against
+  a real Postgres, not reasoned about.
+- **False-red pressure on correct code** — FINDING(R3-2, R3-3). Both would red a correct file.
+- **False-green blindness** — FINDING(R3-1). The missed form silently degraded to a wrong-order
+  assertion instead of the intended explicit refusal.
+- **Comment matches behaviour** — PASS. All three gate comments now describe what the code does.
+- **R2 (duplication)** — PASS with the note above; the duplication is deliberate and its cheaper
+  alternative was rejected for a stated reason.
+- **Mutation hygiene** — PASS. All mutations in the main repo from backups; tree clean, migrations
+  directory back to five files.
+
+## Final verification — Round 3
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **265 / 29** (baseline 241 / 25) |
+| `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
+| `pnpm test:e2e` | exit 0 — 43, unchanged |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+## Three-round assessment
+
+Rounds 2 and 3 found nine issues between them, **all in gates, none in the derivation**. The
+derivation — the actual subject of SC42 — has been correct since Phase 2 and no round has found a
+defect in it.
+
+What kept being wrong is the machinery asserting it. The recurring failure was writing a gate that
+passes today rather than one that fails tomorrow for the right reason, and in every case the
+difference was invisible until a mutation was executed. R3-1 is the sharpest instance: a gate that
+had already been corrected once for this exact class was still inverted, and only a real Postgres
+query showed it.

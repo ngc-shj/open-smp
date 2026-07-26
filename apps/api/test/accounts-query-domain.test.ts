@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { LINK_STATUSES } from '@open-smp/api-types';
 import { accountsQuerySchema } from '../src/routes/accounts.js';
+import { stripTsComments } from './strip-ts-comments.js';
 
 // C40 site 2. The accounts route validates ?status= with z.enum(LINK_STATUSES),
 // and nothing else notices if that reverts to a hand-written union: the four
@@ -23,10 +24,11 @@ describe('C40: the accounts status filter derives from the domain', () => {
     // chain does not red a derivation that is still intact.
     expect(source).toMatch(/status:\s*z\s*\.\s*enum\(\s*LINK_STATUSES\s*\)/);
     // The failure this exists to catch: a re-inlined union. Any quoted status
-    // literal in the file is one, since the domain is imported by name — this
-    // is broader than matching `z.enum([...])`, which a local `const` would
-    // slip past.
-    expect(source).not.toMatch(/'(matched|orphan|ghost|ambiguous)'/);
+    // literal in the *code* is one, since the domain is imported by name — this
+    // is broader than matching `z.enum([...])`, which a local `const` would slip
+    // past. Comments are excluded: a note mentioning 'orphan' is not a copy of
+    // the domain, and redding on one would be a false red on an intact file.
+    expect(stripTsComments(source)).not.toMatch(/'(matched|orphan|ghost|ambiguous)'/);
   });
 
   it('accepts exactly the domain, in the domain order', () => {

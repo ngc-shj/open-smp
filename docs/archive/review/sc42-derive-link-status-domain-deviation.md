@@ -222,6 +222,54 @@ production code was untouched by this round. The recurring shape is that a gate 
 passes today and hard to write so it fails tomorrow — and the only way to tell them apart is to run
 the mutation. Round 1 ran mutations for the gates it doubted and reasoned about the ones it did not.
 
+## D11 — Code review round 3: the gate repairs carried the bugs a third time
+
+Three findings, two Major, all defects in gates round 2 had just fixed. Round 3 ran specifically
+because rounds 1 and 2 established that pattern — not because anything was outstanding.
+
+**NEW-1 — the positional detector was inverted, not merely blind.** R2-3 chose to *refuse* positional
+`ADD VALUE ... BEFORE/AFTER` rather than replay it, which was right. But the detector required a
+trailing whitespace character (`(BEFORE|AFTER)\s`), and Postgres does not need one: a string literal
+is its own token, so `AFTER'matched'` is valid. Verified against the running Postgres 16:
+
+```text
+ALTER TYPE r3v ADD VALUE 'dormant' AFTER'matched';   -> ALTER TYPE
+enumsortorder                                        -> matched, dormant, orphan
+```
+
+With that form present, the append-only replay took over and the gate **passed the wrong order and
+failed the correct one** — the precise defect R2-3 existed to prevent, reintroduced by an incomplete
+regex. Fixed to `(BEFORE|AFTER)\s*'`. All three spellings now fail loudly.
+
+**NEW-2 — the `--` stripper corrupted SQL string literals.** `replace(/--[^\n]*/g, '')` is not
+literal-aware, so a `--` inside a quoted value (a separator, some default text) swallowed the rest of
+the line — including, in the executed case, a real `ADD VALUE` on the same line, and in another a
+`CREATE TYPE`, producing "migrations must declare the link_status enum" on a file that declares it.
+A gate failing for a reason unrelated to its claim is worse than one that misses.
+
+Replaced with a small tokenizing walk that only treats a comment marker as one outside a literal.
+
+**NEW-3 — the broadened negatives false-redded on ordinary comments.** R2-6 widened the check to *any*
+quoted status literal in the file, which catches a `const LOCAL = [...]` indirection but also reds a
+comment mentioning `'orphan'` or an error message containing `'ghost'`. Both files already carry
+literals of that shape nearby, so this was a matter of when, not if. Comments are now stripped before
+the check — verified both directions: a status-mentioning comment stays green, both re-inline reverts
+still fire.
+
+**On the duplicated stripper.** `stripTsComments` exists twice, in `apps/api/test/` and
+`apps/worker/test/`. That is a knowing choice, not an oversight in a cycle about removing duplication:
+the two packages share no test-utility path, and the alternative considered — putting it in
+`packages/api-types` — would push a test helper into the package whose entire contract (C39) is that
+it holds nothing but the domain. A third copy would be the point to build a shared test package;
+two is cheaper than the boundary erosion. `packages/schema` has its own separate one because it strips
+*SQL*, a different language with different rules.
+
+**What three rounds say.** Every finding in rounds 2 and 3 was in a gate, and every one was found by
+running a mutation rather than reading the code. The derivation itself — the actual subject of the
+cycle — has been correct since Phase 2. What kept being wrong is the machinery asserting it, which is
+worth recording plainly: writing a gate that passes today is easy, and writing one that fails tomorrow
+for the right reason took three rounds of execution to get right.
+
 ---
 
 ## NFR3 — mutation proofs
@@ -260,6 +308,22 @@ member. `want` is what a correct gate must do; all seven matched:
 
 Plus, for the other round-2 gates: a commented-out CSS rule now reds; a reflowed `z.enum(...)` chain
 stays green (correct refactor); a `const LOCAL = [...]` indirection reds.
+
+**Round 3's cases**, all executed, all matching `want`:
+
+| Case | Want | Got |
+|---|---|---|
+| `ADD VALUE 'x' AFTER'matched'` (no space) | FAIL | FAIL |
+| `ADD VALUE 'x' BEFORE'orphan'` (no space) | FAIL | FAIL |
+| `ADD VALUE 'x' AFTER 'matched'` (spaced) | FAIL | FAIL |
+| `DEFAULT 'a--b';` on the same line as a real `ADD VALUE` | PASS | PASS |
+| comment mentioning `'orphan'` in `accounts.ts` | PASS | PASS |
+| comment mentioning `'orphan'` in worker `match.ts` | PASS | PASS |
+| site-2 re-inline (round-2 catch must hold) | FAIL | FAIL |
+| site-8 re-inline (round-2 catch must hold) | FAIL | FAIL |
+
+The last two are the regression check that matters: round 3 loosened both negatives by stripping
+comments, so it had to prove the detections they were widened for in round 2 still fire.
 
 **M1's outcome, recorded as the plan required.** The expectation spanned more than one tree state:
 

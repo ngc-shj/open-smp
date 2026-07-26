@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { LINK_STATUSES } from '@open-smp/api-types';
 import type { UpsertLinkInput } from '../src/match.js';
+import { stripTsComments } from './strip-ts-comments.js';
 
 // C42/I42.4, site 8. `upsertLink` writes account_links.status, so its parameter
 // type is the last type-level checkpoint before a status reaches the enum
@@ -18,10 +19,12 @@ import type { UpsertLinkInput } from '../src/match.js';
 describe('C42: the worker write path derives its status from the domain', () => {
   it('derives its input type from LinkResult, not a re-spelled union', () => {
     const source = readFileSync(new URL('../src/match.ts', import.meta.url), 'utf8');
-    expect(source).toMatch(/UpsertLinkInput\s*=\s*Pick<\s*\n?\s*LinkResult/);
-    // Any quoted status literal in this module is a re-inlined union: the
-    // production code reaches the domain only through LinkResult.
-    expect(source).not.toMatch(/'(matched|orphan|ghost|ambiguous)'/);
+    expect(source).toMatch(/UpsertLinkInput\s*=\s*Pick<\s*LinkResult/);
+    // Any quoted status literal in this module's *code* is a re-inlined union:
+    // the production code reaches the domain only through LinkResult. Comments
+    // are excluded — a note mentioning 'orphan' is not a copy of the domain,
+    // and redding on one would be a false red on an intact file.
+    expect(stripTsComments(source)).not.toMatch(/'(matched|orphan|ghost|ambiguous)'/);
   });
 
   // Kept alongside the source assertion: it pins that the derived type actually
