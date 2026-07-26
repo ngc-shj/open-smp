@@ -1,12 +1,12 @@
 // Single-sourced from @open-smp/api-types, re-exported here so existing
 // imports of '@/lib/api-types' keep working unchanged.
 //
-// This barrel is type-only. The upstream package is no longer (C29 added
-// ACCOUNT_LABEL_KINDS as a value), but the C8 "API is the only data path"
-// invariant is untouched either way: a frozen string array is data, not a
-// path. If a future change needs that value in apps/web, re-export it here
-// rather than importing @open-smp/api-types directly, so this stays the one
-// place shared types and values cross into the web app.
+// Mostly types, plus the few runtime values apps/web genuinely needs — C29
+// added ACCOUNT_LABEL_KINDS upstream, and isLabelAuditKind crosses here. The
+// C8 "API is the only data path" invariant is untouched: a frozen string array
+// and a predicate over it are data, not a path. A future value belongs here
+// too, re-exported rather than imported from @open-smp/api-types directly, so
+// this stays the one place shared types and values cross into the web app.
 
 // The one value that crosses into apps/web (see the note above). The events
 // page needs it to tell a sync event's missing audit fields apart from an audit

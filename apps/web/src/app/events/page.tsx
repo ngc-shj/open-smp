@@ -34,7 +34,6 @@ async function fetchEvents(
   return (await res.json()) as DiscoveryEventListResponse;
 }
 
-
 // The API constrains `source` to a slug and 400s anything else, and a non-ok
 // response here throws — so an unvalidated param turns a hand-typed URL into a
 // rendered error page. The accounts page allowlists its filters and falls back
