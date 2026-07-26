@@ -93,3 +93,60 @@ explicitly-invoked gates rather than one command.
 - C31's throwing routes are registered on a separate `buildApp` instance under `/test-throw/*`, so all
   five existing `apiRoutes` consumers (`:168`, `:187`, `:198`, `:688`, `:1501`, `:1526`) pass
   unmodified.
+
+---
+
+## Phase 3 additions
+
+## D5 — `LABEL_AUDIT_KINDS` moved to `api-types` (not anticipated by the plan)
+
+Round-2 finding R2-2 required the events page to decide from the event *kind* rather than from
+field absence, because both-fields-absent is what a sync event and a wholly-corrupt audit payload
+both look like. `apps/web` cannot import from `apps/api`, so the audit-kind list had to move to
+`@open-smp/api-types`, with `audit.ts` re-exporting it.
+
+This is the same move C29 made for the label-kind domain, for the same reason, and it makes
+`isLabelAuditKind` the second runtime value to cross into `apps/web`. Recorded because it widens
+the shared package beyond what the plan's C8 amendment enumerated — the amendment permits "frozen
+primitive domain constants and the type guards over them", which this is, but the plan named only
+the label-kind domain when it was written.
+
+## D6 — `auditTransition` / `labelSide` extracted from `page.tsx` to `lib/`
+
+Round-2 finding R2-4: the function fixing the round-1 Major had no test, so deleting its guard
+would have restored the forgery silently. It could not be unit-tested where it lived —
+`apps/web/tsconfig.json:14` sets `jsx: preserve`, so the vitest unit project cannot transform
+`page.tsx` at all. This was established during plan review (round-3 finding T8) for a different
+contract and applies identically here.
+
+Moving the pure functions to `apps/web/src/lib/audit-transition.ts` makes them testable and leaves
+`page.tsx` as markup plus data fetching. Recorded because it is a structural change to a file the
+plan did not list.
+
+## D7 — the round-1 fix for SEC-2 was itself defective, twice over
+
+The SC30 gate, added in Phase 3 to close round-1 finding FN-F1, was written form-bound in round 1
+and *again* form-bound in its round-2 replacement, before being bound to the property in round 3
+(R2-1). The `uses:` detector was
+widened in round 1 to close an escape and thereby made to fire on ordinary comments.
+
+Recorded as a deviation rather than only as review history because it is the same failure the plan's
+risk R-D names, appearing in the fixes rather than in the plan: a check bound to how something is
+spelled rather than to what must be true. The countermeasure that worked was executing the check
+against realistic variants before accepting it — which is how both were caught.
+
+## Deferred parity gap: C32's observed-green CI run
+
+C32 acceptance criterion 4 requires a CI run id and the plan classifies SHA resolution as
+`verifiable-CI` **only**. The branch is unpushed, so the criterion is open.
+
+**Anti-Deferral entry.**
+- **Worst case**: a pinned SHA does not resolve, or the pinned action version behaves differently
+  from the tag it replaced, and the first CI run on this branch fails.
+- **Likelihood**: low. All four SHAs were verified as real commits against the GitHub API twice
+  (planning and review), the annotated-tag dereference for `pnpm/action-setup` was handled, and the
+  unit gate covers the pin shape. But "low" is not "verified", and this project's own history has a
+  CI step that had never executed in its life while every local signal was green.
+- **Cost to fix**: zero engineering — push the branch and read the run.
+- **Owner / trigger**: the push. This is a sequencing item, not a code defect, and it must not be
+  recorded as satisfied until a run id exists.
