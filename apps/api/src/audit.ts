@@ -27,9 +27,41 @@ export type LabelAuditPayload = {
 };
 
 /**
- * Records a label mutation on the caller's transaction (never a pool): the
- * event and the mutation commit together or roll back together. An audit row
+ * Records label mutations on the caller's transaction (never a pool): the
+ * events and the mutation commit together or roll back together. An audit row
  * for a mutation that rolled back is worse than none.
+ *
+ * This is the only statement in apps/api that writes an audit row (C28/I28.1).
+ * The bulk route used to carry its own copy, which meant a change to the audit
+ * shape could land on one path and silently miss the highest-volume one.
+ *
+ * Set-based rather than one statement per payload: 100 accounts must stay one
+ * INSERT, not 100 (NFR3).
+ */
+export async function recordLabelAuditBatch(
+  tx: PoolClient,
+  tenantId: string,
+  kind: LabelAuditKind,
+  payloads: readonly LabelAuditPayload[],
+): Promise<void> {
+  // No statement at all for an empty batch, so a caller that filters down to
+  // nothing cannot emit a degenerate unnest (I28.2).
+  if (payloads.length === 0) {
+    return;
+  }
+
+  await tx.query(
+    `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+     SELECT $1, $2, $3, payload::jsonb
+     FROM unnest($4::text[]) AS payload`,
+    [tenantId, AUDIT_SOURCE, kind, payloads.map((payload) => JSON.stringify(payload))],
+  );
+}
+
+/**
+ * Single-payload convenience over {@link recordLabelAuditBatch}. Delegation
+ * rather than a second statement is the point: there is one audit INSERT in
+ * the tree, so the two label routes cannot drift apart (C28/FR1).
  */
 export async function recordLabelAudit(
   tx: PoolClient,
@@ -37,9 +69,5 @@ export async function recordLabelAudit(
   kind: LabelAuditKind,
   payload: LabelAuditPayload,
 ): Promise<void> {
-  await tx.query(
-    `INSERT INTO discovery_events (tenant_id, source, kind, payload)
-     VALUES ($1, $2, $3, $4::jsonb)`,
-    [tenantId, AUDIT_SOURCE, kind, JSON.stringify(payload)],
-  );
+  await recordLabelAuditBatch(tx, tenantId, kind, [payload]);
 }

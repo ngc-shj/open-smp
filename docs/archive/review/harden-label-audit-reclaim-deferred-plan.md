@@ -877,3 +877,93 @@ Phase 3 must classify each contract's verification path by ID:
 Every contract this cycle is CI-verifiable. Unlike cycles 1–2, no contract's evidence rests on parity-by-construction. VE1 remains `blocked-deferred` but is untouched by this cycle.
 
 **The C32 row changed in round 2** and is worth stating plainly, because the first draft's version of it was the kind of claim VE5's resolution exists to prevent. The draft asserted C32 was "not verifiable any other way" than by an observed CI run. That conflated two properties: whether the SHAs *resolve* (only CI can say) and whether every `uses:` line *is* SHA-pinned (a static property of a text file, checkable in the cheapest job). Accepting the conflation would have left a supply-chain control with no executable gate — decaying silently on the first `uses:` line a later cycle adds, with CI green throughout because tag-pinned actions work fine.
+
+---
+
+## Implementation Checklist (Phase 2-1)
+
+Derived by executing the greps below against `main` @ `3a56620`, not from the contracts' prose.
+Where a member-set appears in a contract, this section is the re-derivation that confirms it.
+
+### Files to modify
+
+| File | Contract | Change |
+|---|---|---|
+| `packages/api-types/src/index.ts` | C29 | add `ACCOUNT_LABEL_KINDS` (value) + `isAccountLabelKind`; derive `AccountLabelKind` from it; correct the C8 comment |
+| `apps/api/src/label-kinds.ts` | C29 | import-plus-re-export form (`LABEL_FILTERS` spreads `ACCOUNT_LABEL_KINDS`) |
+| `apps/api/src/audit.ts` | C28 | add `recordLabelAuditBatch`; `recordLabelAudit` delegates to it |
+| `apps/api/src/routes/account-labels-bulk.ts` | C28, C29 | drop the inline INSERT + `AUDIT_SOURCE` import; call the batch writer; retype `:61` |
+| `apps/api/src/routes/account-labels.ts` | C29 | retype `:51`, `:59`, `:118`; delete casts at `:76`, `:78`, `:90`, `:130` |
+| `apps/api/src/routes/accounts.ts` | C29 | retype `:45`; delete cast at `:77` |
+| `apps/api/src/routes/identities.ts` | C29 | retype `:35`; delete cast at `:55` |
+| `apps/api/src/routes/events.ts` | C29 | `isAccountLabelKind` guard replaces the cast at `:125` |
+| `apps/web/src/lib/api-types.ts` | C29 | correct the C8 comment only (no value re-export — that is SC40) |
+| `.github/workflows/ci.yml` | C32 | pin 10 `uses:` lines by SHA |
+| `.github/dependabot.yml` | C32 | new — `package-ecosystem: github-actions` |
+| `apps/api/test/audit-append-only.test.ts` | C33 | add the insert-site member-set assertion |
+| `apps/api/test/*.test.ts` (new) | C28, C29, C32 | delegation, projection domain, pin shape |
+| `apps/api/test/api.integration.test.ts` | C28, C29, C31 | single-account audit row, `pg_enum` order, error-handler branches |
+
+### Member-sets, re-derived 2026-07-26 (all reproduce the locked contracts)
+
+```
+$ grep -rn "INSERT INTO discovery_events" apps packages --include='*.ts' | grep -v /test/
+  audit.ts:41, account-labels-bulk.ts:91          <- audit family (C28 collapses to 1)
+  worker/match.ts:125, worker/sync.ts:150,157,178 <- sync family (out of scope)
+
+$ grep -rnE "as (NonNullable<)?\w+(\[['\"][\w]+['\"]\])*(>)?\[['\"]kind['\"]\]|as AccountLabelKind" apps/api/src
+  7 hits: account-labels.ts:76,78,90,130 / events.ts:125 / accounts.ts:77 / identities.ts:55
+
+$ grep -rnE "(kind|label_kind)\??: string" apps/api/src
+  8 hits: 6 to retype (account-labels.ts:51,59,118 / account-labels-bulk.ts:61 /
+          accounts.ts:45 / identities.ts:35) + 2 named exclusions (events.ts:67,134)
+```
+
+### Shared utilities to reuse (R1 — do not reimplement)
+
+- `collectSourceFiles` / `normalizeSource` — `apps/api/test/audit-append-only.test.ts:22-41`. C33's new assertion reuses both.
+- `withTenant` — `@open-smp/schema`. Every audit write stays on the caller's `tx` (I28.5).
+- `LABEL_AUDIT_KINDS` / `AUDIT_SOURCE` — `apps/api/src/audit.ts:9,14`. Already single-sourced.
+- `PAGE_SIZE`, `LIST_RATE_LIMIT`, `MUTATION_RATE_LIMIT` — existing shared constants; untouched.
+
+### R19 — all test trees referencing the changed symbols
+
+`grep -rl` over `apps`, `packages`, `e2e` for `recordLabelAudit`, `AUDIT_SOURCE`, `LABEL_KINDS`,
+`AccountLabelKind`, `projectAuditPayload` returns **no test file**. The symbols are exercised only
+through HTTP in `api.integration.test.ts` and through the UI in the Playwright specs, so there is no
+parallel test tree to update. Recorded because R19's failure mode is finding this out at the
+full-suite run rather than at planning time.
+
+### CI gate parity (Step 2-1 item 7)
+
+`extract-ci-checks.sh` emits only `pnpm lint` and `pnpm typecheck`, then warns that `ci.yml` carries
+multi-line `run:` blocks it cannot parse. **The extracted set is therefore a subset and must not be
+treated as the gate list.** Read manually from `ci.yml`, the full set is:
+
+| Gate | ci.yml | Runs locally? |
+|---|---|---|
+| `pnpm lint` | `:23` | yes |
+| `pnpm typecheck` | `:24` | yes |
+| `pnpm test:unit` | `:25` | yes |
+| `pnpm test:integration` | `:42` | yes (Testcontainers, needs Docker) |
+| compose stack boot + curl gates | `:60-137` | yes (needs `docker compose up -d --build`) |
+| `pnpm --filter e2e exec playwright install` | `:144` | already installed locally |
+| `pnpm test:e2e` | `:147` | yes (needs the compose stack) |
+| `bash e2e/scripts/assert-seed-preserved.sh` | `:150` | yes |
+
+**Parity gap: the repo has no local pre-PR aggregate script** (`scripts/pre-pr.sh` absent). Every
+gate above is individually runnable locally, so the gap is one of convenience rather than coverage —
+but it means Phase 2-4 must invoke each gate explicitly rather than relying on one script.
+**Disposition**: run each explicitly this cycle; creating the aggregate script is not in scope and is
+not deferred silently — it is recorded here as the reason Phase 2-4's completion check is a list
+rather than a single command.
+
+**New-file gates**: C32 adds `.github/dependabot.yml` and several `apps/api/test/*.test.ts` files.
+The unit glob `apps/**/*.test.ts` picks up new test files automatically — that is the intent — and
+`pnpm lint` covers the new YAML only if ESLint is configured for it (it is not; ESLint is TS-only
+here, so `dependabot.yml` has no local linter and is verified by CI accepting it).
+
+### Memory cross-check
+
+No `~/.claude/projects/-Users-noguchi-.../memory` directory exists for this project, so there are no
+recorded feedback rules to regress against. Recorded so its absence is deliberate rather than unchecked.

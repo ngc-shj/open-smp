@@ -13,6 +13,7 @@ type SweepMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
+import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import { decryptCredentials } from '@open-smp/crypto';
 import { SYNC_QUEUE, MATCH_QUEUE, type SyncJobData, type MatchJobData } from '@open-smp/queues';
 import { buildApp } from '../src/app.js';
@@ -146,6 +147,61 @@ describe('error-shape acceptance: framework-generated responses stay flat and op
 
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({ error: 'not_found' });
+  });
+
+  // C31. The fallback at app.ts:129 has never executed: `client_error` appears
+  // in exactly one place tree-wide, and no test reached it. These run on a
+  // SEPARATE buildApp instance under a non-/api path, for two different
+  // reasons — the separate instance leaves the shared `app` untouched, and the
+  // path keeps the throwing routes out of `apiRoutes`, whose deep-equal
+  // assertion below pins an exact 21-element list.
+  describe('C31 acceptance: the unclassified-4xx fallback and the 500 branch', () => {
+    async function appWithThrowingRoutes() {
+      const probe = buildApp(deps);
+      probe.get('/test-throw/unclassified', async () => {
+        const error = new Error('conflict') as Error & { statusCode?: number };
+        error.statusCode = 409;
+        throw error;
+      });
+      probe.get('/test-throw/internal', async () => {
+        throw new Error('boom');
+      });
+      await probe.ready();
+      return probe;
+    }
+
+    it('answers an unclassified 4xx with the neutral client_error label', async () => {
+      const probe = await appWithThrowingRoutes();
+      try {
+        const res = await probe.inject({ method: 'GET', url: '/test-throw/unclassified' });
+
+        expect(res.statusCode).toBe(409);
+        // Deep equality, not a status check: the status was already 409 before
+        // this test existed, so only the body falsifies the fallback. And it
+        // must be `client_error`, not `bad_request` — claiming the caller sent
+        // a bad request is a statement about a status we have not classified,
+        // and that mislabelling is what made the 429 regression invisible.
+        expect(res.json()).toEqual({ error: 'client_error' });
+      } finally {
+        await probe.close();
+      }
+    });
+
+    it('answers an unhandled error with internal_error and leaks nothing', async () => {
+      const probe = await appWithThrowingRoutes();
+      try {
+        const res = await probe.inject({ method: 'GET', url: '/test-throw/internal' });
+
+        expect(res.statusCode).toBe(500);
+        expect(res.json()).toEqual({ error: 'internal_error' });
+        // The thrown message must not reach the caller; nor may Fastify's
+        // internal taxonomy.
+        expect(res.body).not.toMatch(/boom/);
+        expect(res.body).not.toMatch(/FST_ERR/);
+      } finally {
+        await probe.close();
+      }
+    });
   });
 
   it('a malformed JSON body is answered without naming the framework', async () => {
@@ -1307,6 +1363,28 @@ describe('C11 acceptance: account labeling', () => {
       return Number(result.rows[0]!.n);
     });
   }
+
+  // C29/I29.4. The DB enum is the one label-kind copy that cannot be derived
+  // from the domain — it is storage. This is what keeps it honest, and it needs
+  // the real database, which is why it lives here rather than at the unit tier.
+  //
+  // Order-sensitive, not a set comparison: a Postgres enum's declaration order
+  // IS its sort order, so it drives ORDER BY on the column. `ALTER TYPE ... ADD
+  // VALUE 'x' BEFORE 'service_account'` would leave the two sets equal while
+  // the storage order silently diverged from the domain.
+  describe('C29/I29.4 acceptance: the DB enum matches ACCOUNT_LABEL_KINDS', () => {
+    it('account_label_kind enumerates exactly the domain, in order', async () => {
+      const result = await appPool.query<{ enumlabel: string }>(
+        `SELECT e.enumlabel
+           FROM pg_enum e
+           JOIN pg_type t ON t.oid = e.enumtypid
+          WHERE t.typname = 'account_label_kind'
+          ORDER BY e.enumsortorder`,
+      );
+
+      expect(result.rows.map((row) => row.enumlabel)).toEqual([...ACCOUNT_LABEL_KINDS]);
+    });
+  });
 
   describe('T-A1: PUT on an unlabeled account emits label_set with before:null', () => {
     it('writes exactly one audit row naming the actor and the new label', async () => {

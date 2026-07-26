@@ -1,7 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
-import type { DiscoveryEventListItem, DiscoveryEventPayload } from '@open-smp/api-types';
+import {
+  isAccountLabelKind,
+  type DiscoveryEventListItem,
+  type DiscoveryEventPayload,
+} from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
@@ -106,7 +110,10 @@ function projectSyncPayload(record: Record<string, unknown>): DiscoveryEventPayl
   return projected;
 }
 
-function projectAuditPayload(record: Record<string, unknown>): DiscoveryEventPayload {
+// Exported for the same reason buildEventsWhere is: the domain check is the
+// contract worth pinning, and reaching it through the HTTP route would need a
+// planted corrupt row that C27's append-only privilege exists to prevent.
+export function projectAuditPayload(record: Record<string, unknown>): DiscoveryEventPayload {
   const projected: DiscoveryEventPayload = {};
   if (typeof record.actorUserId === 'string') {
     projected.actorUserId = record.actorUserId;
@@ -120,9 +127,14 @@ function projectAuditPayload(record: Record<string, unknown>): DiscoveryEventPay
       projected[field] = null;
     } else if (typeof value === 'object') {
       const snapshot = value as Record<string, unknown>;
-      if (typeof snapshot.kind === 'string') {
+      // The guard narrows, so no cast is needed — and a kind outside the domain
+      // omits the field rather than being asserted into a union it does not
+      // belong to (C29/I29.1, I29.2). Omission is deliberate: `null` already
+      // means "no label", so mapping corruption to null would forge a clear
+      // event that never happened.
+      if (isAccountLabelKind(snapshot.kind)) {
         projected[field] = {
-          kind: snapshot.kind as NonNullable<DiscoveryEventPayload['before']>['kind'],
+          kind: snapshot.kind,
           note: typeof snapshot.note === 'string' ? snapshot.note : null,
         };
       }

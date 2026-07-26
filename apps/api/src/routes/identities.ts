@@ -1,7 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
-import type { IdentityDetailResponse, IdentityAccountItem } from '@open-smp/api-types';
+import type {
+  AccountLabelKind,
+  IdentityDetailResponse,
+  IdentityAccountItem,
+} from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
@@ -32,7 +36,9 @@ type AccountRow = {
   // precision loss), so this MUST be coerced before it reaches the API shape
   // or the UI's confidence.toFixed() throws — same hazard as accounts.ts.
   link_confidence: string;
-  label_kind: string | null;
+  // Typed at the boundary — see the same note in accounts.ts: account_labels.kind
+  // is a DB enum, so the guarantee belongs where the row enters the program.
+  label_kind: AccountLabelKind | null;
   label_note: string | null;
 };
 
@@ -51,10 +57,7 @@ function toAccountItem(row: AccountRow): IdentityAccountItem {
     label:
       row.label_kind === null
         ? null
-        : {
-            kind: row.label_kind as NonNullable<IdentityAccountItem['label']>['kind'],
-            note: row.label_note,
-          },
+        : { kind: row.label_kind, note: row.label_note },
   };
 }
 

@@ -85,6 +85,30 @@ describe('C19/I19.4 acceptance: no apps/api source mutates discovery_events', ()
     expect(normalizeSource(snippet)).toMatch(MUTATION_PATTERN);
   });
 
+  // C28/I28.1: the bulk route used to carry its own copy of the audit INSERT,
+  // so a change to the audit row could land on the single-account path and
+  // silently miss the highest-volume one. After C28 there is exactly one
+  // statement, and this is what keeps it that way — the count alone would be
+  // satisfied by a second insert appearing in audit.ts, so the file is asserted
+  // too.
+  it('has exactly one INSERT INTO discovery_events, and it lives in audit.ts', async () => {
+    const srcDir = path.join(import.meta.dirname, '..', 'src');
+    const files = await collectSourceFiles(srcDir);
+    expect(files.length).toBeGreaterThan(0);
+
+    const sites: string[] = [];
+    for (const file of files) {
+      const source = normalizeSource(await readFile(file, 'utf8'));
+      if (/INSERT INTO discovery_events/i.test(source)) {
+        sites.push(path.relative(srcDir, file));
+      }
+    }
+
+    expect(sites, `audit INSERT must exist in exactly one file, found: ${sites.join(', ')}`).toEqual(
+      ['audit.ts'],
+    );
+  });
+
   it('does not fire on the INSERT and SELECT paths the audit trail depends on', () => {
     const insert = `await tx.query(\`INSERT INTO discovery_events (tenant_id, source, kind, payload)
        VALUES ($1, $2, $3, $4::jsonb)\`);`;
