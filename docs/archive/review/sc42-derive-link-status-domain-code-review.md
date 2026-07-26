@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review rounds: 4 (each appended in order below)
+Review rounds: 5 (each appended in order below)
 
 ## Changes from Previous Round
 
@@ -387,7 +387,7 @@ indirection the narrow form missed (`const LOCAL = [...]` fed to `z.enum`, verif
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **277 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -491,7 +491,7 @@ because it strips *SQL*, a different language with different rules.
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **277 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -606,7 +606,7 @@ whose contract (C39) is that it holds nothing but the domain. A third call site 
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **277 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -624,3 +624,104 @@ one-character patch but three structural changes — one shared pattern instead 
 at every boundary in a single pass, and a direct test table for the scanner instead of validating it
 only through the gate that consumes it. The extraction's own regression, caught immediately by that
 new table, is the evidence the table was the missing piece.
+
+---
+
+# Round 5
+
+Date: 2026-07-27
+Scope: did round 4's structural change break the cycle, or does the pattern continue?
+
+## Changes from Previous Round
+
+Round 4 replaced a one-character patch with structure: one shared `ADD_VALUE` constant, `\s*` at every
+boundary in a single pass, and a 12-case table testing the scanner directly.
+
+**One Critical, one Major. The structural change worked for the class it targeted — whitespace is
+genuinely fixed and held under every probe — but the class was drawn one notch too narrow.**
+
+## Findings
+
+### R5-1 [Critical, new] — the label has more spellings than a plain literal
+
+`ADD_VALUE` was followed by a hardcoded `'([^']+)'`. Postgres accepts three other label forms and a
+fully-quoted schema-qualified type name. Verified live:
+
+```text
+ALTER TYPE r5v ADD VALUE $$dq$$;    -> ALTER TYPE
+ALTER TYPE r5v ADD VALUE E'esc';    -> ALTER TYPE
+ALTER TYPE r5v ADD VALUE U&'uni';   -> ALTER TYPE
+```
+
+Four **confirmed false greens**, each executed as a real migration adding a status the domain does not
+list — the gate stayed green in all four. Same severity class as R4-1, one axis over.
+
+### R5-2 [Major, new] — the positional detector inherited the same assumption
+
+A positional insert with a non-plain label went undetected, so the append-only replay asserted an order
+disagreeing with the database. Confirmed against real Postgres that the reorder does happen.
+
+## Disposition — stop failing silently, rather than enumerate harder
+
+Every round ended the same way: a spelling nobody anticipated did not match, and the replay carried on
+as if the statement were absent. Enumerating one more axis buys one more round. So:
+
+1. **`LABEL` is now a shared constant** beside `ADD_VALUE`, covering `'x'`, `E'x'`, `U&'x'`, `$$x$$`,
+   and `''` as an escaped quote — extracted for the same reason the prefix was in round 4, so the two
+   consumers cannot drift on it.
+2. **The gate asserts parse-completeness.** It counts statements it can *see* (`ADD_VALUE_ANY`) against
+   statements whose label it can *parse*, and fails when they differ:
+
+   ```text
+   every ALTER TYPE ... link_status ... ADD VALUE must have a label this test can parse
+   (saw 1, parsed 0); teach it the spelling rather than letting the statement pass unseen
+   ```
+
+   This is the only change here that closes spellings nobody has thought of yet.
+3. **That property is itself asserted** — a case feeds the scanner `ADD VALUE ??unparseable??` and
+   pins seen=1, parsed=0. Plus cases for all four newly-supported label forms, `''` escaping, and
+   another enum's `ADD VALUE` not being attributed to `link_status`.
+
+## Verification
+
+Ten new cases run as real migration files, all matching expectation: the four false greens now red
+when the domain lacks the status and pass when it lists it; both positional variants red; the
+unparseable label reds. Twelve rounds-2-through-4 regression cases re-run, all unchanged.
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
+| `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
+| `pnpm test:e2e` | exit 0 — 43, unchanged |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+## Recurring Issue Check — Round 5
+
+- **RT7 (gate proves it can fail)** — FINDING(R5-1, R5-2), closed by the parse-completeness assertion
+  rather than by another enumeration. Round 4's table was verified non-vacuous by the reviewer
+  (4/4 mutations red), so it did its job; it simply could not enumerate an unknown axis.
+- **R3 (incomplete pattern propagation)** — FINDING. The pattern continued but the axis moved: round 4
+  generalised across whitespace correctly, and did not generalise across lexical form. The stated rule
+  was "no whitespace is required between tokens"; the unstated neighbour is "a literal has more than
+  one spelling".
+- **False-green blindness** — FINDING(R5-1, R5-2). Four executed false greens.
+- **Comment matches behaviour** — PASS after the fix; `ADD_VALUE`'s comment previously read as more
+  complete than the code was.
+- **R2 (duplication)** — PASS. `ADD_VALUE` and `LABEL` are single sources.
+- **Mutation hygiene** — PASS. Main-repo mutations from backups; tree clean, 5 migrations, Postgres
+  scratch types dropped.
+
+## Five-round assessment
+
+Twelve findings across rounds 2–5, **every one in a gate, none in the derivation** — which has now been
+independently traced clean five times.
+
+The recurring defect was never really "regexes are brittle". It was that the scanners **failed
+silently** on input they did not understand, and each round fixed one silence. The structural answers
+arrived in order of increasing generality: one shared pattern (round 4), a direct test table (round 4),
+and finally an assertion that the scanner must parse everything it can see (round 5). Only the last
+one is closed against spellings nobody has thought of — which is the argument for reaching for it
+first the next time a gate parses text.

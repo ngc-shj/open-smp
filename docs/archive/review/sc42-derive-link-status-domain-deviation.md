@@ -323,6 +323,54 @@ since neither copy is load-bearing for the other's assertion. Two is cheaper tha
 package or pushing a test helper into `packages/api-types`, whose contract (C39) is that it holds
 nothing but the domain. A third call site is the trigger to promote it.
 
+## D13 — Code review round 5: the axis moved, so the gate stopped guessing
+
+One Critical, one Major, and the fix is the one the previous four rounds were circling.
+
+**R5-1/R5-2 — the label has more spellings than a plain literal.** Round 4 generalised across
+*whitespace* and that generalisation held under every probe. It did not generalise across the *lexical
+form of the literal*. `ADD_VALUE` was followed by a hardcoded `'([^']+)'`, and Postgres accepts three
+other label forms plus a fully-quoted schema-qualified type name — verified live:
+
+```text
+ALTER TYPE r5v ADD VALUE $$dq$$;    -> ALTER TYPE
+ALTER TYPE r5v ADD VALUE E'esc';    -> ALTER TYPE
+ALTER TYPE r5v ADD VALUE U&'uni';   -> ALTER TYPE
+enumsortorder                       -> a,dq,esc,uni
+```
+
+Four confirmed false greens, each executed as a real migration adding a status the domain does not
+list — the gate stayed green in every one. That is the exact divergence the gate exists to catch, and
+the positional detector inherited the same assumption, so a positional insert with a non-plain label
+went undetected and the replay asserted an order disagreeing with the database.
+
+**The fix is to stop failing silently, not to enumerate harder.** Every round of this has ended the
+same way: a spelling nobody anticipated simply did not match, and the replay carried on as if the
+statement were not there. Enumerating one more axis would have bought one more round. So the gate now
+counts **statements it can see at all** (`ADD_VALUE_ANY`) against **statements whose label it can
+parse** (`ADD_VALUE + LABEL`), and fails when those differ:
+
+```text
+every ALTER TYPE ... link_status ... ADD VALUE must have a label this test can parse
+(saw 1, parsed 0); teach it the spelling rather than letting the statement pass unseen
+```
+
+An unanticipated spelling is now a loud red naming what to fix. That property is itself asserted —
+one case feeds the scanner `ADD VALUE ??unparseable??` and pins that seen=1, parsed=0.
+
+`LABEL` also became a shared constant beside `ADD_VALUE`, for the same reason the prefix did in round
+4: the two consumers had drifted on the prefix, and leaving the label inline would have let them drift
+again. It handles `''` as an escaped quote rather than as the label's end, and the `CREATE TYPE`
+extraction was fixed to match.
+
+**What five rounds actually cost, stated plainly.** Twelve findings, every one in a gate, none in the
+derivation — which has been correct since Phase 2 and has now been independently traced clean five
+times. The recurring defect was writing scanners that fail silently on input they do not understand,
+and fixing each silence one instance at a time. The structural answers came late: one shared pattern
+(round 4), a direct test table for the scanner (round 4), and a parse-completeness assertion (round 5).
+Of those, only the last one closes spellings nobody has thought of yet — which is why it is the one
+that should have come first.
+
 ---
 
 ## NFR3 — mutation proofs
