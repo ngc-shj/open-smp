@@ -270,6 +270,59 @@ cycle — has been correct since Phase 2. What kept being wrong is the machinery
 worth recording plainly: writing a gate that passes today is easy, and writing one that fails tomorrow
 for the right reason took three rounds of execution to get right.
 
+## D12 — Code review round 4: the class, not the instance
+
+One Major, and the review's diagnosis was better than its finding.
+
+**R4-1 — the same bug R3-1 diagnosed, two tokens to the left.** R3-1 fixed `(BEFORE|AFTER)\s` →
+`\s*` with a comment stating the general rule: *a string literal is its own token, so no whitespace is
+required before it*. The very same pattern contained `ADD\s+VALUE\s+`, and Postgres accepts
+`ADD VALUE'quarantined'` — verified live:
+
+```text
+ALTER TYPE r4v ADD VALUE'c';           -> ALTER TYPE
+ALTER TYPE r4v ADD VALUE'd'AFTER'a';   -> ALTER TYPE   (a,d,b,c)
+```
+
+So the replay missed the value entirely: the database gains a status the domain does not list, and the
+gate whose whole purpose is catching that divergence stayed green. I wrote down the rule and applied
+it to one keyword.
+
+**Fixed by class rather than by instance**, which is what the reviewer actually asked for:
+
+1. The `ALTER TYPE ... ADD VALUE` prefix is now **one** shared constant (`ADD_VALUE`) used by both the
+   positional detector and the replay. The two were separate literals, which is how they drifted.
+2. `\s*` at every keyword-to-literal boundary in it, in one pass.
+3. **The scanner got its own test table** — twelve cases: eight spellings that must parse (canonical,
+   no-space, `IF NOT EXISTS` both ways, lowercase, quoted identifier, schema-qualified, multiline),
+   two commented-out forms that must not, two comment-marker-inside-a-literal forms that must not eat
+   real DDL. Previously the scanner was validated only indirectly, through the gate that consumes it,
+   which is why each spelling took a full round to surface.
+
+**And the extraction immediately broke something, which is the useful part.** Sharing the prefix
+silently changed what the positional detector matched — `ADD_VALUE` stops before the new label, so
+appending `\s*(BEFORE|AFTER)` no longer matched the label in between, and two positional cases flipped
+from FAIL to PASS. The case table caught it on the first run. A refactor of a gate is a change to the
+gate, and it needs the same table the gate does.
+
+**Two hazards recorded rather than fixed**, both unreachable only by accident of current content:
+
+- `stripSqlComments` does not handle nested block comments or dollar-quoting. The migrations contain
+  zero block comments, and `0001_init.sql`'s `DO $$` block happens to be quote-balanced — by luck, not
+  design.
+- `stripTsComments` would treat a regex literal containing `/*` as opening a block comment. Neither
+  scanned file contains a regex literal, and `/a/*b/` is not valid TypeScript anyway.
+
+Both are now stated in the code. The reason to write them down rather than fix them: the next person
+to add a `/* */` block to a migration or a regex to `accounts.ts` is the one who turns a note into a
+false green, and a comment is what tells them.
+
+**The duplicated `stripTsComments` stays duplicated.** Two byte-identical copies, each consumed by one
+gate. Assessed again in round 4: drift would mean a missed improvement in one gate, not a false green,
+since neither copy is load-bearing for the other's assertion. Two is cheaper than either a shared test
+package or pushing a test helper into `packages/api-types`, whose contract (C39) is that it holds
+nothing but the domain. A third call site is the trigger to promote it.
+
 ---
 
 ## NFR3 — mutation proofs

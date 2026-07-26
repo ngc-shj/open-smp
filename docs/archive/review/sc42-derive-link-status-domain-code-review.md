@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review rounds: 3 (each appended in order below)
+Review rounds: 4 (each appended in order below)
 
 ## Changes from Previous Round
 
@@ -387,7 +387,7 @@ indirection the narrow form missed (`const LOCAL = [...]` fed to `z.enum`, verif
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **265 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **277 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -491,7 +491,7 @@ because it strips *SQL*, a different language with different rules.
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **265 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **277 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -508,3 +508,119 @@ passes today rather than one that fails tomorrow for the right reason, and in ev
 difference was invisible until a mutation was executed. R3-1 is the sharpest instance: a gate that
 had already been corrected once for this exact class was still inverted, and only a real Postgres
 query showed it.
+
+---
+
+# Round 4
+
+Date: 2026-07-27
+Scope: convergence check. Rounds 2 and 3 each found that the previous round's gate repairs carried new
+bugs; round 4 asks whether round 3's fixes are finally correct, or the pattern continues.
+
+## Changes from Previous Round
+
+Round 3's three fixes were applied in `d702e67`, touching only test files plus two new helpers.
+
+**One Major. The pattern continued — but the review's diagnosis was more valuable than its finding,
+and the fix this round is to the class rather than the instance.**
+
+## Findings
+
+### R4-1 [Major, new] — the same bug R3-1 diagnosed, two tokens to the left
+
+R3-1 changed `(BEFORE|AFTER)\s` to `\s*` and wrote the general rule in a comment: *a string literal is
+its own token, so no whitespace is required before it.* The same pattern contained `ADD\s+VALUE\s+`.
+Postgres accepts `ADD VALUE'quarantined'` — verified against the running Postgres 16:
+
+```text
+ALTER TYPE r4v ADD VALUE'c';           -> ALTER TYPE
+ALTER TYPE r4v ADD VALUE'd'AFTER'a';   -> ALTER TYPE   (order: a,d,b,c)
+```
+
+The replay missed the value entirely, so the database could gain a status the domain does not list and
+the gate whose entire purpose is catching that divergence stayed green. The rule was written down and
+applied to exactly one keyword.
+
+**Applied, by class:**
+
+1. The `ALTER TYPE ... ADD VALUE` prefix is now one shared constant used by both the positional
+   detector and the replay. They were separate literals, which is how they drifted.
+2. `\s*` at every keyword-to-literal boundary, in one pass.
+3. The scanner got **its own test table** — 12 cases: eight spellings that must parse, two commented-out
+   forms that must not, two comment-marker-in-a-literal forms that must not eat real DDL. It had only
+   ever been validated indirectly through the gate consuming it, which is why each spelling cost a
+   full round to surface.
+
+**The extraction immediately broke something, and that is the useful part.** Sharing the prefix
+silently changed what the positional detector matched — the constant stops before the new label, so
+appending `\s*(BEFORE|AFTER)` no longer matched the label in between, and two positional cases flipped
+FAIL → PASS. The new case table caught it on the first run. A refactor of a gate is a change to the
+gate and needs the same table the gate does.
+
+## Verified resolved (round-3 fixes)
+
+All three confirmed by re-executed mutation: R3-1 (four positional spellings all red), R3-2 (`--`
+inside a literal no longer eats real DDL), R3-3 (a comment mentioning `'orphan'` stays green in both
+TS files).
+
+## Regression re-proof
+
+Thirteen migration cases run as real files; all matched expectation. Notably the round-2/3 catches all
+still hold: commented-out `ADD VALUE` fails, the five valid spellings pass, `--` in a literal passes,
+both positional forms fail. Separately re-proven: site-2 re-inline red, site-8 re-inline red,
+commented-out CSS rule red, emptied CSS body red, reflowed `z.enum` green, `const LOCAL` indirection
+red.
+
+## Hazards recorded rather than fixed
+
+Both unreachable only by accident of current content, so both are now stated in the code — the next
+person to add the construct is who turns a note into a false green:
+
+- `stripSqlComments` handles neither nested block comments nor dollar-quoting. The migrations contain
+  zero block comments; `0001_init.sql`'s `DO $$` block is quote-balanced by luck.
+- `stripTsComments` would treat a regex literal containing `/*` as opening a block comment. Neither
+  scanned file has a regex literal, and `/a/*b/` is not valid TypeScript.
+
+## The duplicated `stripTsComments`
+
+Re-assessed: two byte-identical copies, each consumed by one gate. Drift would mean a missed
+improvement, not a false green, since neither copy is load-bearing for the other's assertion. Cheaper
+than a shared test package, and much cheaper than pushing a test helper into `packages/api-types`,
+whose contract (C39) is that it holds nothing but the domain. A third call site is the trigger.
+
+## Recurring Issue Check — Round 4
+
+- **RT7 (gate proves it can fail)** — FINDING(R4-1), then closed by a direct scanner table rather than
+  another end-to-end probe.
+- **R3 (incomplete pattern propagation)** — FINDING(R4-1). This is the rule that actually names the
+  defect: the fix was applied to the reported instance, not to the stated rule. The round-4 response
+  (one shared constant + a case table) is the propagation fix.
+- **R2 (duplication)** — PASS with the recorded exception above.
+- **False-green blindness** — FINDING(R4-1).
+- **Comment matches behaviour** — PASS. Both scanners now state their unhandled cases.
+- **Mutation hygiene** — PASS. Main-repo mutations from backups; tree clean, five migrations.
+
+## Final verification — Round 4
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **277 / 29** (baseline 241 / 25) |
+| `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
+| `pnpm test:e2e` | exit 0 — 43, unchanged |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+## Four-round assessment
+
+Rounds 2–4 found ten issues, **every one in a gate, none in the derivation**. The derivation has been
+correct since Phase 2.
+
+The single recurring defect, stated plainly: hand-written text scanners assuming whitespace a
+tokenizer does not require, fixed one instance at a time. Round 3 diagnosed the general rule and
+applied it to one keyword; round 4 found the neighbouring one. The break was not another
+one-character patch but three structural changes — one shared pattern instead of two literals, `\s*`
+at every boundary in a single pass, and a direct test table for the scanner instead of validating it
+only through the gate that consumes it. The extraction's own regression, caught immediately by that
+new table, is the evidence the table was the missing piece.

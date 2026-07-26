@@ -10,6 +10,12 @@
  * String-literal awareness matters in both directions: a `//` inside a string
  * is not a comment, and treating it as one swallows real code and reds the gate
  * for a reason unrelated to what it asserts.
+ *
+ * Not handled: a regex literal containing `/*`, which would open a phantom
+ * block comment. Unreachable in the scanned files — neither contains a regex
+ * literal, and `/a/*b/` is not valid TypeScript anyway — but stated rather
+ * than assumed, since the next regex added to a scanned file is what would
+ * turn this note into a false green.
  */
 export function stripTsComments(source: string): string {
   let out = '';

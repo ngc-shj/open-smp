@@ -17,6 +17,15 @@ import {
  * real `ADD VALUE` or even the `CREATE TYPE` itself and red the gate for a
  * reason unrelated to what it asserts. So this walks the text and only treats a
  * comment marker as one when it is outside a literal.
+ *
+ * Two things it does NOT handle, stated because they are unreachable by the
+ * current corpus rather than by design — the next person to add one turns a
+ * note into a false green:
+ * - **Nested block comments.** Postgres nests `/* ... /* ... *\/ ... *\/`; this
+ *   stops at the first `*\/`. The migrations contain zero block comments.
+ * - **Dollar-quoting.** `$$ ... $$` bodies are walked as ordinary text.
+ *   `0001_init.sql` has a `DO $$` block whose literals happen to be
+ *   quote-balanced, so the walk stays in sync — by luck, not by design.
  */
 function stripSqlComments(sql: string): string {
   let out = '';
@@ -41,6 +50,59 @@ function stripSqlComments(sql: string): string {
   }
   return out;
 }
+
+/**
+ * `ALTER TYPE link_status ADD VALUE` up to (not including) the new label's
+ * opening quote.
+ *
+ * One source for both the positional detector and the replay, because the two
+ * were written separately and drifted: a fix for "a string literal is its own
+ * token, so no whitespace is required before it" was applied to `BEFORE/AFTER`
+ * and not to `VALUE`, two tokens to the left in the same pattern. Postgres
+ * accepts `ADD VALUE'x'`, which the `\s+` form silently missed — a false green
+ * letting the database hold a status the domain does not list.
+ *
+ * Hence `\s*` at every keyword-to-literal boundary, once.
+ */
+const ADD_VALUE =
+  `ALTER\\s+TYPE\\s+(?:\\w+\\.)?"?link_status"?\\s+ADD\\s+VALUE\\s*(?:IF\\s+NOT\\s+EXISTS\\s*)?`;
+
+// The scanners get their own table rather than being validated only through
+// the gates that consume them. Four review rounds found the same class of bug
+// — a keyword-to-literal boundary assuming whitespace Postgres does not
+// require — each time in a different spot, because the only way to notice was
+// to run the gate end to end against a hand-built migration. A direct table
+// makes the next spelling a one-line addition.
+describe('the migration scanner accepts what Postgres accepts', () => {
+  const ADDS = new RegExp(`${ADD_VALUE}'([^']+)'`, 'gi');
+
+  it.each([
+    ['canonical', "ALTER TYPE link_status ADD VALUE 'x';"],
+    ['no space before the literal', "ALTER TYPE link_status ADD VALUE'x';"],
+    ['IF NOT EXISTS', "ALTER TYPE link_status ADD VALUE IF NOT EXISTS 'x';"],
+    ['IF NOT EXISTS, no space', "ALTER TYPE link_status ADD VALUE IF NOT EXISTS'x';"],
+    ['lowercase', "alter type link_status add value 'x';"],
+    ['quoted identifier', `ALTER TYPE "link_status" ADD VALUE 'x';`],
+    ['schema-qualified', "ALTER TYPE public.link_status ADD VALUE 'x';"],
+    ['multiline', "ALTER TYPE  link_status\n  ADD VALUE\n  'x';"],
+  ])('finds the added value: %s', (_label, sql) => {
+    expect([...stripSqlComments(sql).matchAll(ADDS)].map((m) => m[1])).toEqual(['x']);
+  });
+
+  it.each([
+    ['line comment', "-- ALTER TYPE link_status ADD VALUE 'x';"],
+    ['block comment', "/* ALTER TYPE link_status ADD VALUE 'x'; */"],
+  ])('ignores a commented-out statement: %s', (_label, sql) => {
+    expect([...stripSqlComments(sql).matchAll(ADDS)]).toEqual([]);
+  });
+
+  it.each([
+    ['-- inside a literal', "ALTER TABLE t ALTER COLUMN c SET DEFAULT 'a--b'; ALTER TYPE link_status ADD VALUE 'x';"],
+    ['/* inside a literal', "ALTER TABLE t ALTER COLUMN c SET DEFAULT 'a/*b'; ALTER TYPE link_status ADD VALUE 'x';"],
+  ])('does not let a comment marker in a literal eat real DDL: %s', (_label, sql) => {
+    expect([...stripSqlComments(sql).matchAll(ADDS)].map((m) => m[1])).toEqual(['x']);
+  });
+});
 
 describe('enum value sets', () => {
   it('identity_status matches the C1 contract', () => {
@@ -84,23 +146,13 @@ describe('enum value sets', () => {
     // append-only replay would get wrong — and getting the ORDER wrong is the
     // one thing this test exists to prevent, so it refuses to guess rather
     // than asserting a sequence that disagrees with the database.
-    //
-    // `\s*` before the quote, not `\s`: a string literal is its own token, so
-    // `AFTER'matched'` is valid and Postgres inserts positionally. Requiring
-    // whitespace there made this detector miss that form — and then the
-    // append-only replay asserted the wrong order, passing a sequence that
-    // disagrees with the database and failing the one that matches it.
-    const positional = sql.match(
-      /ALTER\s+TYPE\s+(?:\w+\.)?"?link_status"?\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?'[^']+'\s*(BEFORE|AFTER)\s*'/i,
-    );
+    const positional = sql.match(new RegExp(`${ADD_VALUE}'[^']+'\\s*(BEFORE|AFTER)\\s*'`, 'i'));
     expect(
       positional,
       'positional ADD VALUE ... BEFORE/AFTER is not replayed here; teach this test the ordering rule before using it',
     ).toBeNull();
 
-    for (const added of sql.matchAll(
-      /ALTER\s+TYPE\s+(?:\w+\.)?"?link_status"?\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?'([^']+)'/gi,
-    )) {
+    for (const added of sql.matchAll(new RegExp(`${ADD_VALUE}'([^']+)'`, 'gi'))) {
       declared.push(added[1]);
     }
 
