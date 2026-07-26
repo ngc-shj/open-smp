@@ -1,7 +1,12 @@
 # Manual Test: UI HR import (C12)
 
-E2E automation is deferred (SC8); this script is the manual verification path
-for the `/import` page against the seeded docker-compose stack.
+**Automated by `e2e/specs/import.spec.ts` and `e2e/specs/session-expiry.spec.ts`**
+(plan `e2e-playwright-bootstrap`): happy-path upload + re-upload idempotency,
+row-error table, Shift_JIS rejection, oversized (~11MB) rejection, and
+`Run matching` (steps 3–7) are covered by `import.spec.ts`; the 401
+mid-upload/mid-match redirect (step 8) is covered by
+`session-expiry.spec.ts`. This script remains the reference for
+exploratory/manual verification; nothing here is manual-only.
 
 ## Pre-conditions
 

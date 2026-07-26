@@ -1,8 +1,11 @@
 # Manual Test: UI account labeling (C14)
 
-E2E automation is deferred (SC8); this script is the manual verification path
-for the accounts-page labeling UI against the seeded docker-compose stack.
-Cross-checks C10's survival-through-re-match guarantee end-to-end.
+**Automated by `e2e/specs/labeling.spec.ts`** (plan `e2e-playwright-bootstrap`):
+set/edit-note/clear, CSV-injection neutralization, and survival across a
+`Run matching` re-match (steps 1–8 below) are all covered. This script
+remains the reference for exploratory/manual verification; nothing here is
+manual-only. Cross-checks C10's survival-through-re-match guarantee
+end-to-end.
 
 ## Pre-conditions
 

@@ -5,9 +5,15 @@ import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redi
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { Pool } from 'pg';
+// The sweeps now cover PATCH and DELETE too, so the cast cannot stay
+// 'GET' | 'POST' — that asserted something false about its own input. This
+// is the narrow literal union app.inject accepts (fastify's HTTPMethods is
+// widened with string and does not resolve inject's overload).
+type SweepMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
+import { decryptCredentials } from '@open-smp/crypto';
 import { SYNC_QUEUE, MATCH_QUEUE, type SyncJobData, type MatchJobData } from '@open-smp/queues';
 import { buildApp } from '../src/app.js';
 import { ARGON2ID_OPTIONS, type Hasher } from '../src/auth.js';
@@ -129,6 +135,34 @@ beforeEach(async () => {
   await app.ready();
 });
 
+describe('error-shape acceptance: framework-generated responses stay flat and opaque', () => {
+  it('an unmatched route returns the flat not-found shape, not Fastify\'s default', async () => {
+    // An unmatched route never reaches setErrorHandler, so without an explicit
+    // not-found handler Fastify's default body survives — it carries `message`
+    // and echoes the requested route back. Deep-equal rather than a status
+    // check: the status was already 404 before the fix, so only the shape
+    // falsifies its removal.
+    const res = await app.inject({ method: 'GET', url: '/api/no-such-route' });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('a malformed JSON body is answered without naming the framework', async () => {
+    // Reflecting the error's own `code` sent FST_ERR_CTP_INVALID_JSON_BODY to
+    // callers, making Fastify's internal taxonomy part of the public contract.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: { origin: APP_ORIGIN, 'content-type': 'application/json' },
+      payload: '{ not json',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).not.toMatch(/FST_ERR/);
+  });
+});
+
 describe('C6 acceptance: 401 sweep over every non-login route', () => {
   it('unauthenticated request to every non-login route returns 401', async () => {
     const nonLoginRoutes = app.apiRoutes.filter(
@@ -137,9 +171,9 @@ describe('C6 acceptance: 401 sweep over every non-login route', () => {
     expect(nonLoginRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonLoginRoutes) {
-      const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
+      const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({
-        method: route.method as 'GET' | 'POST',
+        method: route.method as SweepMethod,
         url,
         headers: route.method === 'GET' ? {} : { origin: APP_ORIGIN },
       });
@@ -154,7 +188,7 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
-      const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
+      const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({ method: route.method as 'POST', url });
       expect(res.statusCode, `${route.method} ${route.url} should 403 with missing Origin`).toBe(403);
     }
@@ -165,7 +199,7 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
-      const url = route.url.replace(':saasAppId', randomUUID()).replace(':jobId', 'x');
+      const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({
         method: route.method as 'POST',
         url,
@@ -199,6 +233,7 @@ describe('C6 acceptance: login rate limit', () => {
   it('returns 429 on the 6th login attempt within a minute', async () => {
     const payload = { tenantSlug: 'no-such-tenant-rl', email: 'nobody@example.com', password: 'wrong' };
     let lastStatus = 0;
+    let lastBody = '';
     for (let i = 0; i < 6; i += 1) {
       const res = await app.inject({
         method: 'POST',
@@ -207,8 +242,13 @@ describe('C6 acceptance: login rate limit', () => {
         payload,
       });
       lastStatus = res.statusCode;
+      lastBody = res.body;
     }
     expect(lastStatus).toBe(429);
+    // The body, not only the status: throttling reported as a generic client
+    // error hides an abuse signal from callers and log pipelines, and the
+    // status-only assertion cannot see that regression.
+    expect(JSON.parse(lastBody)).toEqual({ error: 'too_many_requests' });
   });
 });
 
@@ -358,6 +398,21 @@ describe('C6 acceptance: hr-import', () => {
     return cookie;
   }
 
+  it('rejects an over-limit (~11MB) upload with 400, not a stream error', async () => {
+    // Regression for the 500 "Premature close" the e2e tier surfaced:
+    // @fastify/multipart v10 rejects toBuffer() with FST_REQ_FILE_TOO_LARGE
+    // at the fileSize limit; the route must map it to the documented 400.
+    const cookie = await loggedInCookie();
+    const header = 'employee_id,email,name,status,left_at\n';
+    const row = 'E999,oversize@example.com,Oversize Row,active,\n';
+    const csv = header + row.repeat(Math.ceil((11 * 1024 * 1024) / row.length));
+
+    const res = await importCsv(cookie, csv);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'file exceeds 10MB limit' });
+  });
+
   it('(a) duplicate employee_id rows: second upserts over first, warning present', async () => {
     const cookie = await loggedInCookie();
     const csv =
@@ -453,6 +508,100 @@ describe('C6/S5 acceptance: events payload projection', () => {
     expect(JSON.stringify(body)).not.toContain('rawAccounts');
     expect(JSON.stringify(body)).not.toContain('ssn');
     expect(body.items[0].payload).toEqual({ counts: { upserted: 3 }, runId: 'run-1' });
+  });
+
+  // C21 makes the projection kind-aware, which turns the `kind` value into a
+  // load-bearing input the test above does not vary — it inserts
+  // 'sync_completed'. sync_raw is the kind that actually carries provider PII
+  // (sole writer: apps/worker/src/sync.ts), so it needs its own case, using
+  // the payload shape that writer really emits: { runId, accounts }.
+  it('sync_raw serves only {counts, runId} — the provider blob never reaches the wire', async () => {
+    const tenantId = await seedTenant(`tenant-rawproj-${randomUUID()}`, 'Raw Projection Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'google-workspace', 'sync_raw', $2::jsonb)`,
+        [
+          tenantId,
+          JSON.stringify({
+            runId: 'run-raw-1',
+            accounts: [
+              { email: 'leaked@example.com', phone: '090-0000-0000', orgUnit: '/engineering' },
+            ],
+          }),
+        ],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/events', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('leaked@example.com');
+    expect(serialized).not.toContain('090-0000-0000');
+    expect(serialized).not.toContain('/engineering');
+    expect(serialized).not.toContain('accounts');
+    expect(body.items[0].payload).toEqual({ runId: 'run-raw-1' });
+  });
+
+  it('an unknown kind falls through to the restrictive default, not passthrough', async () => {
+    const tenantId = await seedTenant(`tenant-unkproj-${randomUUID()}`, 'Unknown Kind Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'future-source', 'some_future_kind', $2::jsonb)`,
+        [tenantId, JSON.stringify({ secret: 'do-not-serialize', counts: { n: 1 } })],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/events', headers: { cookie } });
+    const body = res.json();
+    expect(JSON.stringify(body)).not.toContain('do-not-serialize');
+    expect(body.items[0].payload).toEqual({ counts: { n: 1 } });
+  });
+
+  it('label audit events serve their own four fields', async () => {
+    const tenantId = await seedTenant(`tenant-auditproj-${randomUUID()}`, 'Audit Projection Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    const actorUserId = randomUUID();
+    const saasAccountId = randomUUID();
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'label', 'label_set', $2::jsonb)`,
+        [
+          tenantId,
+          JSON.stringify({
+            actorUserId,
+            saasAccountId,
+            before: null,
+            after: { kind: 'known_shared', note: 'why' },
+          }),
+        ],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/events', headers: { cookie } });
+    expect(res.json().items[0].payload).toEqual({
+      actorUserId,
+      saasAccountId,
+      before: null,
+      after: { kind: 'known_shared', note: 'why' },
+    });
   });
 });
 
@@ -1133,6 +1282,205 @@ describe('C11 acceptance: account labeling', () => {
     });
   });
 
+  // ---- C19: label audit trail ----
+
+  async function auditRows(
+    tenantId: string,
+  ): Promise<{ kind: string; source: string; payload: Record<string, unknown> }[]> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query(
+        `SELECT kind, source, payload FROM discovery_events
+         WHERE tenant_id = $1 AND source = 'label'
+         ORDER BY created_at, id`,
+        [tenantId],
+      );
+      return result.rows;
+    });
+  }
+
+  async function eventCount(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ n: string }>(
+        'SELECT count(*) AS n FROM discovery_events WHERE tenant_id = $1',
+        [tenantId],
+      );
+      return Number(result.rows[0]!.n);
+    });
+  }
+
+  describe('T-A1: PUT on an unlabeled account emits label_set with before:null', () => {
+    it('writes exactly one audit row naming the actor and the new label', async () => {
+      const { tenantId, slug, userId, accountId } = await seedTenantWithAccount('a1');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'shared mailbox' },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const events = await auditRows(tenantId);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.kind).toBe('label_set');
+      expect(events[0]!.source).toBe('label');
+      expect(events[0]!.payload).toEqual({
+        actorUserId: userId,
+        saasAccountId: accountId,
+        before: null,
+        after: { kind: 'known_shared', note: 'shared mailbox' },
+      });
+    });
+  });
+
+  describe('T-A2: re-labelling captures the prior state as `before`', () => {
+    it('second PUT emits before = the previous {kind, note}', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('a2');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const headers = { origin: APP_ORIGIN, cookie: cookie! };
+
+      await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+        payload: { kind: 'known_shared', note: 'first' },
+      });
+      await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+        payload: { kind: 'service_account' },
+      });
+
+      const events = await auditRows(tenantId);
+      expect(events).toHaveLength(2);
+      expect(events[1]!.payload).toMatchObject({
+        before: { kind: 'known_shared', note: 'first' },
+        after: { kind: 'service_account', note: null },
+      });
+    });
+  });
+
+  describe('T-A3: DELETE emits label_cleared carrying the removed label', () => {
+    it('before deep-equals the label that was removed, after is null', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('a3');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const headers = { origin: APP_ORIGIN, cookie: cookie! };
+
+      await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+        payload: { kind: 'external_collaborator', note: 'contractor' },
+      });
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}/label`,
+        headers,
+      });
+      expect(res.statusCode).toBe(204);
+
+      const events = await auditRows(tenantId);
+      expect(events).toHaveLength(2);
+      expect(events[1]!.kind).toBe('label_cleared');
+      expect(events[1]!.payload).toMatchObject({
+        before: { kind: 'external_collaborator', note: 'contractor' },
+        after: null,
+      });
+    });
+  });
+
+  describe('T-A4: DELETE on an unlabeled account writes no audit row', () => {
+    it('returns 204 and the event count is unchanged', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('a4');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const before = await eventCount(tenantId);
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+      });
+
+      expect(res.statusCode).toBe(204);
+      expect(await eventCount(tenantId)).toBe(before);
+    });
+  });
+
+  describe('T-A5: a failed PUT writes no audit row', () => {
+    it('404 on an unknown account leaves discovery_events unchanged', async () => {
+      const { tenantId, slug } = await seedTenantWithAccount('a5');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      const before = await eventCount(tenantId);
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${randomUUID()}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(await eventCount(tenantId)).toBe(before);
+    });
+  });
+
+  // ---- C24/I24.1: note newline rejection ----
+
+  describe('T-N1: notes containing line breaks are rejected at the boundary', () => {
+    it.each(['a\r\nb', 'a\nb', 'a\rb'])('rejects note %j with 400 and writes no label', async (note) => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('n1');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(await labelRow(tenantId, accountId)).toHaveLength(0);
+      expect(await eventCount(tenantId)).toBe(0);
+    });
+  });
+
+  describe('T-N2: ordinary notes and absent notes both still succeed', () => {
+    it('accepts a note containing a plain space', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('n2a');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared', note: 'a b' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((await labelRow(tenantId, accountId))[0]!.note).toBe('a b');
+    });
+
+    // Guards the regression where adding .regex(...) drops .optional() and
+    // makes `note` required on a shipped endpoint — every other criterion in
+    // this file supplies a note, so nothing else would catch it.
+    it('accepts a body with no note at all', async () => {
+      const { tenantId, slug, accountId } = await seedTenantWithAccount('n2b');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/accounts/${accountId}/label`,
+        headers: { origin: APP_ORIGIN, cookie: cookie! },
+        payload: { kind: 'known_shared' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((await labelRow(tenantId, accountId))[0]!.note).toBeNull();
+    });
+  });
+
   describe('T-L9: rate-limit config sweep (RT7-proven via captured field)', () => {
     it('every /api route carries a truthy object rate-limit config', () => {
       // The `onRoute` hook in app.ts computes hasRateLimit from
@@ -1146,7 +1494,35 @@ describe('C11 acceptance: account labeling', () => {
       // removing the DELETE label route's `config` made this test fail with
       // "DELETE /api/accounts/:saasAccountId/label should carry a
       // rate-limit config: expected false to be true".
-      expect(app.apiRoutes.length).toBeGreaterThan(0);
+      // An exact count, not a floor: every sweep in this file iterates whatever
+      // registered, so a route dropped from app.ts leaves all of them green and
+      // surfaces later as a confusing 404 in an unrelated test. The number is
+      // the assertion that names the cause.
+      expect(app.apiRoutes.map((route) => `${route.method} ${route.url}`).sort()).toEqual([
+        'DELETE /api/accounts/:saasAccountId/label',
+        'DELETE /api/saas-apps/:saasAppId',
+        'GET /api/accounts',
+        'GET /api/events',
+        'GET /api/identities/:identityId',
+        'GET /api/jobs/:jobId',
+        'GET /api/saas-apps',
+        // Fastify registers a HEAD companion for every GET; they are listed so
+        // the count stays exact rather than approximately right.
+        'HEAD /api/accounts',
+        'HEAD /api/events',
+        'HEAD /api/identities/:identityId',
+        'HEAD /api/jobs/:jobId',
+        'HEAD /api/saas-apps',
+        'PATCH /api/saas-apps/:saasAppId',
+        'POST /api/accounts/labels/bulk',
+        'POST /api/auth/login',
+        'POST /api/auth/logout',
+        'POST /api/hr-import',
+        'POST /api/match',
+        'POST /api/saas-apps',
+        'POST /api/sync/:saasAppId',
+        'PUT /api/accounts/:saasAccountId/label',
+      ]);
       for (const route of app.apiRoutes) {
         expect(route.hasRateLimit, `${route.method} ${route.url} should carry a rate-limit config`).toBe(
           true,
@@ -1203,5 +1579,1032 @@ describe('C13 acceptance: saas-apps duplicate key', () => {
       expect(JSON.stringify(body)).not.toContain('credentials');
       expect(JSON.stringify(body)).not.toContain('client_email');
     });
+  });
+});
+
+describe('C18 acceptance: identity detail', () => {
+  async function seedIdentity(
+    tenantId: string,
+    opts: { employeeId: string; status: 'active' | 'left'; displayName: string; email: string },
+  ): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO identities
+           (tenant_id, employee_id, primary_email, secondary_emails, display_name, status, left_at)
+         VALUES ($1, $2, $3, '{}', $4, $5, $6)
+         RETURNING id`,
+        [
+          tenantId,
+          opts.employeeId,
+          opts.email,
+          opts.displayName,
+          opts.status,
+          opts.status === 'left' ? '2024-03-31T00:00:00.000Z' : null,
+        ],
+      );
+      return result.rows[0]!.id;
+    });
+  }
+
+  async function seedLinkedAccount(
+    tenantId: string,
+    saasAppId: string,
+    identityId: string | null,
+    opts: { externalId: string; email: string; linkStatus: string; confidence: string },
+  ): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const account = await tx.query<{ id: string }>(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, $3, $4, $5, 'active', false)
+         RETURNING id`,
+        [tenantId, saasAppId, opts.externalId, opts.email, `Display ${opts.externalId}`],
+      );
+      const accountId = account.rows[0]!.id;
+      await tx.query(
+        `INSERT INTO account_links
+           (tenant_id, saas_account_id, identity_id, status, confidence, rule_id)
+         VALUES ($1, $2, $3, $4, $5, 'exactEmail')`,
+        [tenantId, accountId, identityId, opts.linkStatus, opts.confidence],
+      );
+      return accountId;
+    });
+  }
+
+  async function seedApp(tenantId: string, key: string): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name) VALUES ($1, $2, $3) RETURNING id`,
+        [tenantId, key, 'Google Workspace'],
+      );
+      return result.rows[0]!.id;
+    });
+  }
+
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Identity Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    const saasAppId = await seedApp(tenantId, 'google-workspace');
+    return { tenantId, cookie, saasAppId };
+  }
+
+  it('an active identity with one matched account returns that account and no leftAt', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt1');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E100',
+      status: 'active',
+      displayName: 'Active Person',
+      email: 'active@example.com',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, identityId, {
+      externalId: 'gws-1',
+      email: 'active@example.com',
+      linkStatus: 'matched',
+      confidence: '0.95',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.status).toBe('active');
+    expect(body.leftAt).toBeNull();
+    expect(body.displayName).toBe('Active Person');
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0].linkStatus).toBe('matched');
+    expect(body.accountsTruncated).toBe(false);
+    // numeric(3,2) arrives as a string from the driver (D9) — the route must
+    // coerce, and asserting the value alone would pass on "0.95".
+    expect(typeof body.accounts[0].confidence).toBe('number');
+    expect(body.accounts[0].confidence).toBeCloseTo(0.95);
+  });
+
+  it('a left identity returns status left, a non-null leftAt, and its ghost account', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt2');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E200',
+      status: 'left',
+      displayName: 'Departed Person',
+      email: 'gone@example.com',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, identityId, {
+      externalId: 'gws-2',
+      email: 'gone@example.com',
+      linkStatus: 'ghost',
+      confidence: '0.90',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.status).toBe('left');
+    expect(body.leftAt).not.toBeNull();
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0].linkStatus).toBe('ghost');
+  });
+
+  it('an identity with no accounts returns an empty list, not an error', async () => {
+    const { tenantId, cookie } = await setup('idt3');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E300',
+      status: 'active',
+      displayName: 'Unattributed',
+      email: 'none@example.com',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().accounts).toEqual([]);
+  });
+
+  it('a foreign-tenant identity returns 404 with no row disclosure', async () => {
+    const { cookie } = await setup('idt4');
+    const otherTenantId = await seedTenant(`tenant-idt4other-${randomUUID()}`, 'Other Tenant');
+    const foreignIdentityId = await seedIdentity(otherTenantId, {
+      employeeId: 'E400',
+      status: 'active',
+      displayName: 'Someone Else',
+      email: 'other@example.com',
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${foreignIdentityId}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.body).not.toContain('Someone Else');
+  });
+
+  it('a non-uuid identityId returns 400', async () => {
+    const { cookie } = await setup('idt5');
+    const res = await app.inject({ method: 'GET', url: '/api/identities/not-a-uuid', headers: { cookie } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('orphan and ambiguous accounts never appear (identity_id IS NULL by schema check)', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt6');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E600',
+      status: 'active',
+      displayName: 'Has One Match',
+      email: 'match@example.com',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, identityId, {
+      externalId: 'gws-6a',
+      email: 'match@example.com',
+      linkStatus: 'matched',
+      confidence: '1.00',
+    });
+    await seedLinkedAccount(tenantId, saasAppId, null, {
+      externalId: 'gws-6b',
+      email: 'orphan@example.com',
+      linkStatus: 'orphan',
+      confidence: '0.00',
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0].email).toBe('match@example.com');
+  });
+
+  it('caps the account list at PAGE_SIZE and reports accountsTruncated', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt7');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E700',
+      status: 'active',
+      displayName: 'Over Capped',
+      email: 'many@example.com',
+    });
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         SELECT $1, $2, 'bulk-' || g, 'bulk' || g || '@example.com', 'Bulk ' || g, 'active', false
+         FROM generate_series(1, 60) AS g`,
+        [tenantId, saasAppId],
+      );
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence, rule_id)
+         SELECT $1, sa.id, $2, 'matched', 0.80, 'exactEmail'
+         FROM saas_accounts sa
+         WHERE sa.tenant_id = $1 AND sa.external_id LIKE 'bulk-%'`,
+        [tenantId, identityId],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.accounts).toHaveLength(50);
+    expect(body.accountsTruncated).toBe(true);
+  });
+
+  it('exactly PAGE_SIZE accounts reports accountsTruncated false', async () => {
+    const { tenantId, cookie, saasAppId } = await setup('idt8');
+    const identityId = await seedIdentity(tenantId, {
+      employeeId: 'E800',
+      status: 'active',
+      displayName: 'Exactly Fifty',
+      email: 'fifty@example.com',
+    });
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         SELECT $1, $2, 'fifty-' || g, 'fifty' || g || '@example.com', 'Fifty ' || g, 'active', false
+         FROM generate_series(1, 50) AS g`,
+        [tenantId, saasAppId],
+      );
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence, rule_id)
+         SELECT $1, sa.id, $2, 'matched', 0.80, 'exactEmail'
+         FROM saas_accounts sa
+         WHERE sa.tenant_id = $1 AND sa.external_id LIKE 'fifty-%'`,
+        [tenantId, identityId],
+      );
+    });
+
+    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const body = res.json();
+    expect(body.accounts).toHaveLength(50);
+    // This is the case that distinguishes "capped" from "happens to be 50" —
+    // an implementation computing the flag from accounts.length > PAGE_SIZE
+    // after slicing would report true here.
+    expect(body.accountsTruncated).toBe(false);
+  });
+});
+
+describe('C22 acceptance: SaaS app management', () => {
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'App Mgmt Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    return { tenantId, cookie, headers: { origin: APP_ORIGIN, cookie } };
+  }
+
+  async function registerApp(headers: Record<string, string>): Promise<string> {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers,
+      payload: {
+        key: 'google-workspace',
+        displayName: 'GWS Original',
+        credentials: { serviceAccountJson: '{"client_email":"a@b.c"}', impersonateAdminEmail: 'a@b.c' },
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    return res.json().id as string;
+  }
+
+  async function readCredentials(
+    tenantId: string,
+    saasAppId: string,
+  ): Promise<{ blob: Buffer; keyVersion: number; displayName: string }> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{
+        credentials_enc: Buffer;
+        credentials_key_version: number;
+        display_name: string;
+      }>(
+        'SELECT credentials_enc, credentials_key_version, display_name FROM saas_apps WHERE id = $1',
+        [saasAppId],
+      );
+      const row = result.rows[0]!;
+      return {
+        blob: row.credentials_enc,
+        keyVersion: row.credentials_key_version,
+        displayName: row.display_name,
+      };
+    });
+  }
+
+  it('rename changes display_name and leaves the ciphertext byte-identical', async () => {
+    const { tenantId, headers } = await setup('c22a');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: { displayName: 'GWS Renamed' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ id: saasAppId, key: 'google-workspace', displayName: 'GWS Renamed' });
+
+    const after = await readCredentials(tenantId, saasAppId);
+    expect(after.displayName).toBe('GWS Renamed');
+    // A rename must not re-encrypt. Asserting only "the name changed" would
+    // pass against an implementation that rewrote the credential blob too.
+    expect(after.blob.equals(before.blob)).toBe(true);
+    expect(after.keyVersion).toBe(before.keyVersion);
+  });
+
+  it('credential replacement re-encrypts and decrypts back to the submitted plaintext', async () => {
+    const { tenantId, headers } = await setup('c22b');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+
+    const replacement = { serviceAccountJson: '{"client_email":"new@example.com"}', impersonateAdminEmail: 'new@example.com' };
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: { credentials: replacement },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(res.json())).not.toContain('client_email');
+
+    const after = await readCredentials(tenantId, saasAppId);
+    expect(after.blob.equals(before.blob)).toBe(false);
+
+    // Decrypt with the version READ BACK FROM THE ROW, not the one the test
+    // would have encrypted with: that is what proves credentials_key_version
+    // travelled with the ciphertext. Passing a locally-chosen version would
+    // pass against a row left on a stale version.
+    const plaintext = decryptCredentials(
+      after.blob,
+      after.keyVersion,
+      { tenantId, saasAppId },
+      deps.encryptionKeys,
+    );
+    expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual(replacement);
+  });
+
+  it('replacement under a two-version key map lands on the newer version and still decrypts', async () => {
+    const { tenantId, headers, cookie } = await setup('c22c');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+    expect(before.keyVersion).toBe(1);
+
+    // The shared app is built with a single-version key map, so "1 stays 1"
+    // would be unfalsifiable there. A second instance with versions 1 and 2
+    // is what makes the version-column assertion mean anything.
+    const twoVersionKeys = new Map([
+      [1, Buffer.alloc(32, 7)],
+      [2, Buffer.alloc(32, 9)],
+    ]);
+    const rolloutApp = buildApp({ ...deps, encryptionKeys: twoVersionKeys });
+    await rolloutApp.ready();
+    try {
+      const replacement = { serviceAccountJson: '{"client_email":"rolled@example.com"}' };
+      const res = await rolloutApp.inject({
+        method: 'PATCH',
+        url: `/api/saas-apps/${saasAppId}`,
+        headers: { origin: APP_ORIGIN, cookie },
+        payload: { credentials: replacement },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const after = await readCredentials(tenantId, saasAppId);
+      expect(after.keyVersion).toBe(2);
+      const plaintext = decryptCredentials(
+        after.blob,
+        after.keyVersion,
+        { tenantId, saasAppId },
+        twoVersionKeys,
+      );
+      expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual(replacement);
+    } finally {
+      await rolloutApp.close();
+    }
+  });
+
+  it('PATCH with an empty body returns 400 rather than a silent no-op 200', async () => {
+    const { headers } = await setup('c22d');
+    const saasAppId = await registerApp(headers);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('DELETE removes an app that has no accounts', async () => {
+    const { tenantId, headers } = await setup('c22e');
+    const saasAppId = await registerApp(headers);
+
+    const res = await app.inject({ method: 'DELETE', url: `/api/saas-apps/${saasAppId}`, headers });
+    expect(res.statusCode).toBe(204);
+
+    const remaining = await withTenant(appPool, tenantId, async (tx) =>
+      tx.query('SELECT id FROM saas_apps WHERE id = $1', [saasAppId]),
+    );
+    expect(remaining.rows).toHaveLength(0);
+  });
+
+  it('DELETE refuses an app with accounts and mutates nothing', async () => {
+    const { tenantId, headers } = await setup('c22f');
+    const saasAppId = await registerApp(headers);
+
+    const accountId = await withTenant(appPool, tenantId, async (tx) => {
+      const account = await tx.query<{ id: string }>(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         VALUES ($1, $2, 'ext-1', 'held@example.com', 'Held', 'active', false)
+         RETURNING id`,
+        [tenantId, saasAppId],
+      );
+      const id = account.rows[0]!.id;
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence)
+         VALUES ($1, $2, NULL, 'orphan', 0.00)`,
+        [tenantId, id],
+      );
+      await tx.query(
+        `INSERT INTO account_labels (tenant_id, saas_account_id, kind) VALUES ($1, $2, 'known_shared')`,
+        [tenantId, id],
+      );
+      return id;
+    });
+
+    const res = await app.inject({ method: 'DELETE', url: `/api/saas-apps/${saasAppId}`, headers });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: 'app_has_accounts', accountCount: 1 });
+
+    // The refusal must leave every related table untouched — a partial cascade
+    // would destroy match evidence and label history that nothing reproduces.
+    await withTenant(appPool, tenantId, async (tx) => {
+      for (const [table, column, value] of [
+        ['saas_apps', 'id', saasAppId],
+        ['saas_accounts', 'id', accountId],
+        ['account_links', 'saas_account_id', accountId],
+        ['account_labels', 'saas_account_id', accountId],
+      ] as const) {
+        const rows = await tx.query(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [value]);
+        expect(rows.rows, `${table} must be unchanged`).toHaveLength(1);
+      }
+    });
+  });
+
+  it('PATCH and DELETE on another tenant\'s app return 404, not 403', async () => {
+    const { headers } = await setup('c22g');
+    const otherSlug = `tenant-c22other-${randomUUID()}`;
+    const otherTenantId = await seedTenant(otherSlug, 'Other Tenant');
+    const foreignAppId = await withTenant(appPool, otherTenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name) VALUES ($1, 'google-workspace', 'Theirs')
+         RETURNING id`,
+        [otherTenantId],
+      );
+      return result.rows[0]!.id;
+    });
+
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${foreignAppId}`,
+      headers,
+      payload: { displayName: 'Hijacked' },
+    });
+    expect(patched.statusCode).toBe(404);
+
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/saas-apps/${foreignAppId}`,
+      headers,
+    });
+    expect(deleted.statusCode).toBe(404);
+
+    const survived = await withTenant(appPool, otherTenantId, async (tx) =>
+      tx.query<{ display_name: string }>('SELECT display_name FROM saas_apps WHERE id = $1', [foreignAppId]),
+    );
+    expect(survived.rows[0]!.display_name).toBe('Theirs');
+  });
+});
+
+describe('C23 acceptance: label filtering and bulk labeling', () => {
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Bulk Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+
+    const saasAppId = await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name)
+         VALUES ($1, 'google-workspace', 'Google Workspace') RETURNING id`,
+        [tenantId],
+      );
+      return result.rows[0]!.id;
+    });
+
+    return { tenantId, cookie, headers: { origin: APP_ORIGIN, cookie }, saasAppId };
+  }
+
+  async function seedAccounts(tenantId: string, saasAppId: string, count: number): Promise<string[]> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_accounts
+           (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
+         SELECT $1, $2, 'bulk-' || g, 'bulk' || g || '@example.com', 'Bulk ' || g, 'active', false
+         FROM generate_series(1, $3) AS g
+         RETURNING id`,
+        [tenantId, saasAppId, count],
+      );
+      return result.rows.map((row) => row.id);
+    });
+  }
+
+  async function labelCount(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ n: string }>(
+        'SELECT count(*) AS n FROM account_labels WHERE tenant_id = $1',
+        [tenantId],
+      );
+      return Number(result.rows[0]!.n);
+    });
+  }
+
+  async function auditCount(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ n: string }>(
+        `SELECT count(*) AS n FROM discovery_events WHERE tenant_id = $1 AND source = 'label'`,
+        [tenantId],
+      );
+      return Number(result.rows[0]!.n);
+    });
+  }
+
+  it('labels every supplied account and emits one audit row per account', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23a');
+    const ids = await seedAccounts(tenantId, saasAppId, 3);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'service_account', note: 'batch' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ updated: 3 });
+    expect(await labelCount(tenantId)).toBe(3);
+    // Per-account, not per-request: a single "bulk" record would erase every
+    // account's individual before-state.
+    expect(await auditCount(tenantId)).toBe(3);
+  });
+
+  it('an unknown id fails the whole batch, writing no labels and no audit rows', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23b');
+    const ids = await seedAccounts(tenantId, saasAppId, 2);
+    const ghostId = randomUUID();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [...ids, ghostId], kind: 'known_shared' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: 'not_found', missing: [ghostId] });
+    expect(await labelCount(tenantId)).toBe(0);
+    expect(await auditCount(tenantId)).toBe(0);
+  });
+
+  it('another tenant\'s account is indistinguishable from an absent one', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23c');
+    const ids = await seedAccounts(tenantId, saasAppId, 1);
+
+    const otherTenantId = await seedTenant(`tenant-c23other-${randomUUID()}`, 'Other');
+    const otherAppId = await withTenant(appPool, otherTenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO saas_apps (tenant_id, key, display_name)
+         VALUES ($1, 'google-workspace', 'Theirs') RETURNING id`,
+        [otherTenantId],
+      );
+      return result.rows[0]!.id;
+    });
+    const [foreignAccountId] = await seedAccounts(otherTenantId, otherAppId, 1);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [...ids, foreignAccountId!], kind: 'known_shared' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().missing).toEqual([foreignAccountId]);
+    expect(await labelCount(tenantId)).toBe(0);
+  });
+
+  it('re-labelling in bulk records each account\'s prior state', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23d');
+    const ids = await seedAccounts(tenantId, saasAppId, 2);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'known_shared', note: 'first' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'service_account' },
+    });
+
+    expect(await labelCount(tenantId)).toBe(2);
+    expect(await auditCount(tenantId)).toBe(4);
+
+    const second = await withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM discovery_events
+         WHERE tenant_id = $1 AND source = 'label'
+         ORDER BY created_at DESC, id DESC LIMIT 2`,
+        [tenantId],
+      );
+      return result.rows;
+    });
+    for (const row of second) {
+      expect(row.payload).toMatchObject({
+        before: { kind: 'known_shared', note: 'first' },
+        after: { kind: 'service_account', note: null },
+      });
+    }
+  });
+
+  it('rejects an over-cap batch, a duplicated id, and a note containing a line break', async () => {
+    const { tenantId, headers, saasAppId } = await setup('c23e');
+    const ids = await seedAccounts(tenantId, saasAppId, 2);
+
+    const overCap = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: Array.from({ length: 101 }, () => randomUUID()), kind: 'known_shared' },
+    });
+    expect(overCap.statusCode).toBe(400);
+
+    const duplicated = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [ids[0]!, ids[0]!], kind: 'known_shared' },
+    });
+    expect(duplicated.statusCode).toBe(400);
+
+    // R42-C: the note guard covers BOTH endpoints that accept a note, not just
+    // the per-account one.
+    const newline = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: ids, kind: 'known_shared', note: 'a\r\nb' },
+    });
+    expect(newline.statusCode).toBe(400);
+
+    expect(await labelCount(tenantId)).toBe(0);
+    expect(await auditCount(tenantId)).toBe(0);
+  });
+
+  it('?label= filters the list and composes with the status tab', async () => {
+    const { tenantId, cookie, headers, saasAppId } = await setup('c23f');
+    const ids = await seedAccounts(tenantId, saasAppId, 4);
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence)
+         SELECT $1, account_id, NULL, 'orphan', 0.00 FROM unnest($2::uuid[]) AS account_id`,
+        [tenantId, ids],
+      );
+    });
+
+    const listWith = async (query: string) => {
+      const res = await app.inject({ method: 'GET', url: `/api/accounts?${query}`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      return res.json().items as { accountId: string }[];
+    };
+
+    expect(await listWith('label=none')).toHaveLength(4);
+    expect(await listWith('label=any')).toHaveLength(0);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: [ids[0]!], kind: 'known_shared' },
+    });
+
+    expect(await listWith('label=none')).toHaveLength(3);
+    expect(await listWith('label=any')).toHaveLength(1);
+    expect(await listWith('label=known_shared')).toHaveLength(1);
+    expect(await listWith('label=service_account')).toHaveLength(0);
+    // The pre-existing status filter must keep working alongside it.
+    expect(await listWith('status=orphan&label=none')).toHaveLength(3);
+
+    const bogus = await app.inject({
+      method: 'GET',
+      url: '/api/accounts?label=bogus',
+      headers: { cookie },
+    });
+    expect(bogus.statusCode).toBe(400);
+  });
+
+  it('nextCursor is derived from the filtered set, not the unfiltered one', async () => {
+    const { tenantId, cookie, headers, saasAppId } = await setup('c23g');
+    const ids = await seedAccounts(tenantId, saasAppId, 70);
+
+    // Label the first 10 by id order, so an unfiltered cursor would skip past
+    // unlabeled rows when resuming. 60 unlabeled accounts remain, which is what
+    // makes hasMore true on the filtered page — with exactly PAGE_SIZE left the
+    // cursor is legitimately null and the test would prove nothing.
+    const sorted = [...ids].sort();
+    await app.inject({
+      method: 'POST',
+      url: '/api/accounts/labels/bulk',
+      headers,
+      payload: { accountIds: sorted.slice(0, 10), kind: 'known_shared' },
+    });
+
+    const page1 = await app.inject({
+      method: 'GET',
+      url: '/api/accounts?label=none',
+      headers: { cookie },
+    });
+    const body1 = page1.json();
+    expect(body1.items).toHaveLength(50);
+    expect(body1.nextCursor).not.toBeNull();
+
+    const page2 = await app.inject({
+      method: 'GET',
+      url: `/api/accounts?label=none&cursor=${encodeURIComponent(body1.nextCursor)}`,
+      headers: { cookie },
+    });
+    const body2 = page2.json();
+
+    const seen = [...body1.items, ...body2.items].map((item: { accountId: string }) => item.accountId);
+    const labeled = new Set(sorted.slice(0, 10));
+    // All 60 unlabeled accounts across the two pages, none missing and none
+    // repeated, and no labeled account leaking through — the clause that
+    // falsifies a cursor derived from the unfiltered ordering, which would skip
+    // ahead by the filtered-out rows and silently drop results.
+    expect(new Set(seen).size).toBe(60);
+    expect(seen.filter((id) => labeled.has(id))).toHaveLength(0);
+  });
+});
+
+describe('C20 acceptance: chronological events with a filter-bound cursor', () => {
+  async function setup(prefix: string) {
+    const slug = `tenant-${prefix}-${randomUUID()}`;
+    const tenantId = await seedTenant(slug, 'Events Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed in test setup');
+    return { tenantId, cookie };
+  }
+
+  async function insertEvent(tenantId: string, source: string, createdAt: string): Promise<string> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const result = await tx.query<{ id: string }>(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         VALUES ($1, $2, 'sync_completed', '{}'::jsonb, $3)
+         RETURNING id`,
+        [tenantId, source, createdAt],
+      );
+      return result.rows[0]!.id;
+    });
+  }
+
+  async function listEvents(
+    cookie: string,
+    query = '',
+  ): Promise<{ items: { id: string; createdAt: string }[]; nextCursor: string | null }> {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/events${query ? `?${query}` : ''}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    return res.json();
+  }
+
+  it('returns newest first, asserted on the exact id sequence', async () => {
+    const { tenantId, cookie } = await setup('c20a');
+    const oldest = await insertEvent(tenantId, 'matcher', '2026-07-01T00:00:00.000Z');
+    const middle = await insertEvent(tenantId, 'matcher', '2026-07-02T00:00:00.000Z');
+    const newest = await insertEvent(tenantId, 'matcher', '2026-07-03T00:00:00.000Z');
+
+    const { items } = await listEvents(cookie);
+    expect(items.map((item) => item.id)).toEqual([newest, middle, oldest]);
+  });
+
+  it('breaks a created_at tie by id, descending', async () => {
+    const { tenantId, cookie } = await setup('c20b');
+    // now() is transaction-constant, so a tie must be written explicitly — it
+    // cannot simply be "seeded at the same moment".
+    const tie = '2026-07-04T00:00:00.000Z';
+    const ids = [
+      await insertEvent(tenantId, 'matcher', tie),
+      await insertEvent(tenantId, 'matcher', tie),
+      await insertEvent(tenantId, 'matcher', tie),
+    ];
+
+    const { items } = await listEvents(cookie);
+    expect(items.map((item) => item.id)).toEqual([...ids].sort().reverse());
+  });
+
+  it('pages across a tie at the boundary with no gap and no duplicate', async () => {
+    const { tenantId, cookie } = await setup('c20c');
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         SELECT $1, 'matcher', 'sync_completed', '{}'::jsonb,
+                timestamptz '2026-07-05T00:00:00.000Z' + (g || ' seconds')::interval
+         FROM generate_series(1, 49) AS g`,
+        [tenantId],
+      );
+      // Two rows sharing an exact timestamp, positioned to straddle the page
+      // boundary once the 49 above are ordered ahead of them.
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         SELECT $1, 'matcher', 'sync_completed', '{}'::jsonb, timestamptz '2026-07-05T00:00:00.000Z'
+         FROM generate_series(1, 2)`,
+        [tenantId],
+      );
+    });
+
+    const page1 = await listEvents(cookie);
+    expect(page1.items).toHaveLength(50);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await listEvents(cookie, `cursor=${encodeURIComponent(page1.nextCursor!)}`);
+    const all = [...page1.items, ...page2.items].map((item) => item.id);
+
+    // Set equality falsifies both a skipped row and a repeated one; a bare
+    // count would pass against either.
+    expect(all).toHaveLength(51);
+    expect(new Set(all).size).toBe(51);
+
+    // Set equality cannot see an inverted tie-break that preserves the row set:
+    // the tied members would come back in the wrong relative order with every id
+    // still present. Ordering across the seam is what this case is named for, so
+    // it is asserted directly (C20, round-2 TEST-F5).
+    const ordered = [...page1.items, ...page2.items];
+    for (let i = 1; i < ordered.length; i += 1) {
+      const prev = ordered[i - 1]!;
+      const cur = ordered[i]!;
+      const prevKey = `${prev.createdAt}|${prev.id}`;
+      const curKey = `${cur.createdAt}|${cur.id}`;
+      expect(prevKey >= curKey).toBe(true);
+    }
+  });
+
+  it('resumes at microsecond precision, not the millisecond a JS Date can hold', async () => {
+    const { tenantId, cookie } = await setup('c20b2');
+    // timestamptz stores microseconds; a JS Date holds milliseconds. Encoding
+    // the cursor from the driver's Date truncates, which moves the keyset
+    // boundary EARLIER and drops every row in the gap — silently, with no error
+    // and no duplicate. The other boundary fixtures all land on exact
+    // milliseconds, so this defect is invisible to them by construction.
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         SELECT $1, 'matcher', 'sync_completed', '{}'::jsonb,
+                timestamptz '2026-07-09T00:00:00.000Z' + (g || ' seconds')::interval
+         FROM generate_series(1, 49) AS g`,
+        [tenantId],
+      );
+      // Row 50 (the page-1 boundary) carries .500900; row 51 sits at .500400 —
+      // inside the same millisecond, so a truncated .500 cursor excludes it.
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+         VALUES ($1, 'matcher', 'sync_completed', '{}'::jsonb, timestamptz '2026-07-09T00:00:00.500900Z'),
+                ($1, 'matcher', 'sync_completed', '{}'::jsonb, timestamptz '2026-07-09T00:00:00.500400Z')`,
+        [tenantId],
+      );
+    });
+
+    const page1 = await listEvents(cookie);
+    expect(page1.items).toHaveLength(50);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await listEvents(cookie, `cursor=${encodeURIComponent(page1.nextCursor!)}`);
+    const all = [...page1.items, ...page2.items].map((item) => item.id);
+    expect(new Set(all).size).toBe(51);
+  });
+
+  it('filters by source, and an unknown source is an empty page rather than an error', async () => {
+    const { tenantId, cookie } = await setup('c20d');
+    await insertEvent(tenantId, 'label', '2026-07-06T00:00:00.000Z');
+    await insertEvent(tenantId, 'google-workspace', '2026-07-06T00:00:01.000Z');
+
+    expect((await listEvents(cookie, 'source=label')).items).toHaveLength(1);
+    // 400 here would leak which sources exist in this tenant.
+    expect((await listEvents(cookie, 'source=nonexistent')).items).toHaveLength(0);
+  });
+
+  it('rejects a cursor replayed under a dropped or changed filter', async () => {
+    const { tenantId, cookie } = await setup('c20e');
+    await withTenant(appPool, tenantId, async (tx) => {
+      for (const source of ['label', 'google-workspace']) {
+        await tx.query(
+          `INSERT INTO discovery_events (tenant_id, source, kind, payload, created_at)
+           SELECT $1, $2, 'sync_completed', '{}'::jsonb,
+                  timestamptz '2026-07-07T00:00:00.000Z' + (g || ' seconds')::interval
+           FROM generate_series(1, 51) AS g`,
+          [tenantId, source],
+        );
+      }
+    });
+
+    const page1 = await listEvents(cookie, 'source=label');
+    expect(page1.nextCursor).not.toBeNull();
+    const cursor = encodeURIComponent(page1.nextCursor!);
+
+    const sameFilter = await app.inject({
+      method: 'GET',
+      url: `/api/events?source=label&cursor=${cursor}`,
+      headers: { cookie },
+    });
+    expect(sameFilter.statusCode).toBe(200);
+
+    // Without the binding these would return a silently unfiltered page that
+    // omits every non-label row newer than the cursor position.
+    for (const url of [`/api/events?cursor=${cursor}`, `/api/events?source=matcher&cursor=${cursor}`]) {
+      const res = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(res.statusCode, url).toBe(400);
+    }
+  });
+
+  it('rejects malformed cursors and treats an empty one as no cursor', async () => {
+    const { cookie } = await setup('c20f');
+
+    const malformed = [
+      'not-a-cursor',
+      Buffer.from('plain text').toString('base64url'),
+      Buffer.from(JSON.stringify({ t: '2026-07-01T00:00:00.000Z' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ t: '2026-07-01T00:00:00.000Z', id: 'nope', s: null })).toString(
+        'base64url',
+      ),
+      Buffer.from(
+        JSON.stringify({ t: '2026-07-01T00:00:00.000Z', id: randomUUID(), s: null, extra: 1 }),
+      ).toString('base64url'),
+      // Date.parse accepts '0'; timestamptz does not. Before the format check
+      // this reached the query and came back as a 500 quoting the driver's
+      // "date/time field value out of range" — a 500 where the decoder promises
+      // a 400, with database internals in the body.
+      Buffer.from(JSON.stringify({ t: '0', id: randomUUID(), s: null })).toString('base64url'),
+      // Shape-valid but calendar-invalid. Both were measured returning 500 at
+      // the live API before the calendar and year-zero checks landed: Date.parse
+      // rolls Feb 30 forward instead of failing, and JS numbers years
+      // astronomically so year 0 survives a field-by-field round-trip.
+      Buffer.from(JSON.stringify({ t: '2026-02-30T00:00:00Z', id: randomUUID(), s: null })).toString(
+        'base64url',
+      ),
+      Buffer.from(JSON.stringify({ t: '0000-01-01T00:00:00Z', id: randomUUID(), s: null })).toString(
+        'base64url',
+      ),
+    ];
+    for (const cursor of malformed) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/events?cursor=${encodeURIComponent(cursor)}`,
+        headers: { cookie },
+      });
+      expect(res.statusCode, cursor).toBe(400);
+      // The status alone would not catch a rejection that answers correctly
+      // while quoting the driver: assert the body is the flat error shape and
+      // carries no database text.
+      expect(res.json()).toEqual({ error: 'invalid_query' });
+      expect(res.body).not.toMatch(/date\/time|timestamptz|out of range/i);
+    }
+
+    const empty = await app.inject({ method: 'GET', url: '/api/events?cursor=', headers: { cookie } });
+    expect(empty.statusCode).toBe(200);
+  });
+
+  it('a well-formed cursor from another tenant returns an empty page, not an error', async () => {
+    const { tenantId: theirTenant } = await setup('c20g-them');
+    const theirEventId = await insertEvent(theirTenant, 'matcher', '2026-07-08T00:00:00.000Z');
+    const { cookie: ourCookie } = await setup('c20g-us');
+
+    const foreignCursor = Buffer.from(
+      JSON.stringify({ t: '2026-07-08T00:00:00.000Z', id: theirEventId, s: null }),
+    ).toString('base64url');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/events?cursor=${encodeURIComponent(foreignCursor)}`,
+      headers: { cookie: ourCookie },
+    });
+
+    // Indistinguishable from an exhausted cursor: 400 would confirm the cursor
+    // is syntactically well-formed but belongs to someone else.
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toHaveLength(0);
   });
 });

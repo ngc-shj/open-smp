@@ -14,7 +14,11 @@ import { ARGON2ID_OPTIONS } from './auth.js';
 
 // Demo credentials are duplicated as a raw curl payload in
 // .github/workflows/ci.yml (compose-smoke) — YAML cannot import these
-// constants, so keep both sites in sync when changing any of them.
+// constants, so keep both sites in sync when changing any of them. The
+// e2e tier reads the same values via env vars with in-code defaults in
+// e2e/fixtures/auth.ts (and re-states the facts in e2e/fixtures/seed-facts.ts);
+// ci.yml also exports them as job-level env for both the curl step and the
+// Playwright step — keep all these sites in sync too.
 const TENANT_SLUG = 'demo';
 const TENANT_NAME = 'Demo Corp';
 const ADMIN_EMAIL = 'admin@demo.example';

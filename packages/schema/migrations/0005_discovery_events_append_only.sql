@@ -1,0 +1,14 @@
+-- Schema-enforced append-only audit trail (C27).
+--
+-- 0001_init.sql grants SELECT/INSERT/UPDATE/DELETE on a seven-table group that
+-- includes discovery_events. Once label mutations are recorded there (C19), the
+-- table holds evidence of who suppressed which account from review — and an
+-- audit trail the application role can rewrite is not evidence. Every write in
+-- the tree is an INSERT (verified: 7 sites, no UPDATE, no DELETE), so revoking
+-- costs nothing operationally.
+--
+-- Note the ACL check fires BEFORE row-level security, so this denies the write
+-- even for a caller whose tenant GUC would have filtered every row away. That
+-- is what makes it stronger than the route-level guard it backs up: it holds
+-- for a code path that sets no tenant context at all.
+REVOKE UPDATE, DELETE ON discovery_events FROM opensmp_app;

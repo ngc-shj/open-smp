@@ -7,6 +7,12 @@ import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
 import type { HrImportResponse } from '@/lib/api-types';
 
+// Keep in sync with apps/api/src/routes/hr-import.ts MAX_UPLOAD_BYTES —
+// api-types is type-only (C8), so the value cannot be imported at runtime.
+// Checked client-side because an over-limit upload aborted mid-stream by the
+// server does not reliably deliver its 400 through the Next proxy.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
 // Maps known API error strings (hr-import.ts) to friendlier copy; the raw
 // string is always shown alongside in smaller print for support purposes.
 const UPLOAD_ERROR_MESSAGES: Record<string, string> = {
@@ -36,6 +42,11 @@ export default function ImportPage() {
     e.preventDefault();
     const file = fileInputRef.current?.files?.[0];
     if (!file) return;
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setState({ phase: 'upload-failed', rawMessage: 'file exceeds 10MB limit' });
+      return;
+    }
 
     setState({ phase: 'uploading' });
 

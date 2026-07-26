@@ -4,18 +4,23 @@ import { withTenant } from '@open-smp/schema';
 import type { AccountListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
+import { PAGE_SIZE } from '../page-size.js';
+import { LABEL_FILTERS } from '../label-kinds.js';
 
 const LINK_STATUSES = ['matched', 'orphan', 'ghost', 'ambiguous'] as const;
 
+// 'none' and 'any' let an operator ask "what have I not triaged yet" without a
+// second endpoint; both are predicates on the account_labels LEFT JOIN the
+// query already performs, so neither costs an extra round trip.
 const accountsQuerySchema = z
   .object({
     status: z.enum(LINK_STATUSES).optional(),
     app: z.string().min(1).optional(),
+    label: z.enum(LABEL_FILTERS).optional(),
     cursor: z.string().uuid().optional(),
   })
   .strict();
 
-const PAGE_SIZE = 50;
 
 type AccountRow = {
   account_id: string;
@@ -82,7 +87,7 @@ export function registerAccountsRoute(app: FastifyInstance, deps: AppDeps): void
       if (!parsedQuery.success) {
         return reply.code(400).send({ error: 'invalid_query' });
       }
-      const { status, app: appKey, cursor } = parsedQuery.data;
+      const { status, app: appKey, label, cursor } = parsedQuery.data;
       const { tenantId } = req.sessionContext;
 
       const conditions: string[] = ['sa.tenant_id = $1'];
@@ -95,6 +100,17 @@ export function registerAccountsRoute(app: FastifyInstance, deps: AppDeps): void
       if (appKey) {
         values.push(appKey);
         conditions.push(`sap.key = $${values.length}`);
+      }
+      // Predicates over the account_labels LEFT JOIN the query already
+      // performs, so filtering adds no round trip — and nextCursor is derived
+      // from the filtered row set by construction rather than by care.
+      if (label === 'none') {
+        conditions.push('lbl.kind IS NULL');
+      } else if (label === 'any') {
+        conditions.push('lbl.kind IS NOT NULL');
+      } else if (label !== undefined) {
+        values.push(label);
+        conditions.push(`lbl.kind = $${values.length}`);
       }
       if (cursor) {
         values.push(cursor);

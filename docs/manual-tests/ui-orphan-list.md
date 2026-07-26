@@ -1,7 +1,11 @@
 # Manual Test: UI orphan/ghost list (C8, V4)
 
-E2E automation is deferred (SC8); this script is the manual verification path
-for the accounts UI against the seeded docker-compose stack.
+**Automated by `e2e/specs/accounts.spec.ts` and `e2e/specs/sync.spec.ts`**
+(plan `e2e-playwright-bootstrap`): steps 1–7 below (login, tab statuses,
+evidence popover, ambiguous candidates, column/freshness smoke, CSV export +
+injection neutralization) are covered by `accounts.spec.ts`; step 8 (sync
+failure + match gating) is covered by `sync.spec.ts`. This script remains the
+reference for exploratory/manual verification; nothing here is manual-only.
 
 ## Pre-conditions
 

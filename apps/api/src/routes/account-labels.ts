@@ -4,8 +4,10 @@ import { withTenant } from '@open-smp/schema';
 import type { AccountLabelResponse } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
+import { noteSchema } from '../label-note.js';
+import { LABEL_KINDS } from '../label-kinds.js';
+import { recordLabelAudit, type LabelAuditSnapshot } from '../audit.js';
 
-const LABEL_KINDS = ['known_shared', 'service_account', 'external_collaborator'] as const;
 
 const paramsSchema = z
   .object({
@@ -16,7 +18,7 @@ const paramsSchema = z
 const putBodySchema = z
   .object({
     kind: z.enum(LABEL_KINDS),
-    note: z.string().min(1).max(500).optional(),
+    note: noteSchema,
   })
   .strict();
 
@@ -43,6 +45,15 @@ export function registerAccountLabelsRoute(app: FastifyInstance, deps: AppDeps):
           return null;
         }
 
+        // The upsert below RETURNs the post-update values, so the prior state
+        // has to be read first — and inside this same transaction, or a
+        // concurrent relabel would race the audit's `before` (C19/I19.2).
+        const prior = await tx.query<{ kind: string; note: string | null }>(
+          'SELECT kind, note FROM account_labels WHERE tenant_id = $1 AND saas_account_id = $2',
+          [tenantId, saasAccountId],
+        );
+        const priorRow = prior.rows[0];
+
         // created_by is deliberately absent from DO UPDATE SET: it preserves
         // the original setter's attribution; only updated_at tracks edits.
         const upserted = await tx.query<{ kind: string; note: string | null }>(
@@ -57,6 +68,16 @@ export function registerAccountLabelsRoute(app: FastifyInstance, deps: AppDeps):
         if (!row) {
           throw new Error('account_labels upsert returned no row');
         }
+
+        await recordLabelAudit(tx, tenantId, 'label_set', {
+          actorUserId: userId,
+          saasAccountId,
+          before: priorRow
+            ? { kind: priorRow.kind as LabelAuditSnapshot['kind'], note: priorRow.note }
+            : null,
+          after: { kind: row.kind as LabelAuditSnapshot['kind'], note: row.note },
+        });
+
         return row;
       });
 
@@ -82,7 +103,7 @@ export function registerAccountLabelsRoute(app: FastifyInstance, deps: AppDeps):
         return reply.code(400).send({ error: 'invalid_params' });
       }
       const { saasAccountId } = parsedParams.data;
-      const { tenantId } = req.sessionContext;
+      const { tenantId, userId } = req.sessionContext;
 
       const found = await withTenant(deps.pool, tenantId, async (tx) => {
         const existing = await tx.query('SELECT id FROM saas_accounts WHERE id = $1', [saasAccountId]);
@@ -90,10 +111,27 @@ export function registerAccountLabelsRoute(app: FastifyInstance, deps: AppDeps):
           return false;
         }
 
-        await tx.query('DELETE FROM account_labels WHERE tenant_id = $1 AND saas_account_id = $2', [
-          tenantId,
-          saasAccountId,
-        ]);
+        // RETURNING supplies the audit's `before` — the only content a clear
+        // record carries — and rowCount distinguishes a real clear from the
+        // idempotent no-op. Emitting on a no-op would record a suppression
+        // that never happened (C19/I19.2).
+        const deleted = await tx.query<{ kind: string; note: string | null }>(
+          `DELETE FROM account_labels
+           WHERE tenant_id = $1 AND saas_account_id = $2
+           RETURNING kind, note`,
+          [tenantId, saasAccountId],
+        );
+
+        const removed = deleted.rows[0];
+        if (removed) {
+          await recordLabelAudit(tx, tenantId, 'label_cleared', {
+            actorUserId: userId,
+            saasAccountId,
+            before: { kind: removed.kind as LabelAuditSnapshot['kind'], note: removed.note },
+            after: null,
+          });
+        }
+
         return true;
       });
 

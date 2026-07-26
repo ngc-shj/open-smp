@@ -1,9 +1,14 @@
 # Manual Test: UI SaaS app registration (C13)
 
-E2E automation is deferred (SC8); this script is the manual verification path
-for the `/apps` page against the seeded docker-compose stack. Live sync with
-real Google Workspace credentials remains `blocked-deferred` (VE1);
-registration itself is `verifiable-local` since `POST /api/saas-apps`
+**Automated by `e2e/specs/apps.spec.ts`** (plan `e2e-playwright-bootstrap`):
+list rendering, duplicate-409 (step 7), the two client-validation failure
+shapes with a zero-request proof (steps 5–6), and the credential-leak
+DOM/console check (step 8) are all covered. **Steps 3–4 (happy-path 201
+registration) remain manual-only** — SC17: impossible against the seeded
+stack (the seed already registers `google-workspace`, `UNIQUE(tenant_id,
+key)`, no delete API yet); covered instead by API integration test T-S1.
+Live sync with real Google Workspace credentials remains `blocked-deferred`
+(VE1); registration itself is `verifiable-local` since `POST /api/saas-apps`
 encrypts and stores without contacting Google.
 
 ## Pre-conditions

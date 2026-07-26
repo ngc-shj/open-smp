@@ -3,16 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AccountLabel, AccountLabelKind } from '@/lib/api-types';
-
-// Single source for label-kind display strings (R2) — used for both the
-// chip text and the select options.
-export const LABEL_KIND_NAMES: Record<AccountLabelKind, string> = {
-  known_shared: 'Known shared',
-  service_account: 'Service account',
-  external_collaborator: 'External collaborator',
-};
-
-const LABEL_KINDS = Object.keys(LABEL_KIND_NAMES) as AccountLabelKind[];
+import { LABEL_KIND_NAMES, LABEL_KINDS } from '@/lib/label-kinds';
 
 export function LabelControl({ accountId, label }: { accountId: string; label: AccountLabel | null }) {
   const router = useRouter();
@@ -108,7 +99,7 @@ export function LabelControl({ accountId, label }: { accountId: string; label: A
         value={kind}
         disabled={busy}
         onChange={(e) => setKind(e.target.value as AccountLabelKind)}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none"
+        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
       >
         {LABEL_KINDS.map((k) => (
           <option key={k} value={k}>
@@ -124,7 +115,7 @@ export function LabelControl({ accountId, label }: { accountId: string; label: A
         disabled={busy}
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none"
+        className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
       />
 
       {error && <p className="text-red-700">{error}</p>}

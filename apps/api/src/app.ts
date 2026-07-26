@@ -11,6 +11,8 @@ import { registerSaasAppsRoute } from './routes/saas-apps.js';
 import { registerSyncMatchRoutes } from './routes/sync-match.js';
 import { registerAccountsRoute } from './routes/accounts.js';
 import { registerAccountLabelsRoute } from './routes/account-labels.js';
+import { registerAccountLabelsBulkRoute } from './routes/account-labels-bulk.js';
+import { registerIdentitiesRoute } from './routes/identities.js';
 import { registerEventsRoute } from './routes/events.js';
 
 export type RegisteredRoute = { method: string; url: string; hasRateLimit: boolean };
@@ -81,18 +83,61 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         registerSyncMatchRoutes(authenticated, deps);
         registerAccountsRoute(authenticated, deps);
         registerAccountLabelsRoute(authenticated, deps);
+        registerAccountLabelsBulkRoute(authenticated, deps);
+        registerIdentitiesRoute(authenticated, deps);
         registerEventsRoute(authenticated, deps);
       });
     },
     { prefix: '/api' },
   );
 
-  app.setErrorHandler((error, _req, reply) => {
+  app.setErrorHandler((error, req, reply) => {
     if (error instanceof UnauthorizedError) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    throw error;
+
+    // Fastify's default serializer puts `message` in the body, so rethrowing
+    // here shipped driver text to the client — a bad cursor answered with
+    // `date/time field value out of range`, naming the column type and the
+    // failing value.
+    //
+    // The body comes from a status-keyed table rather than from the error's own
+    // `code`: reflecting `code` sent framework internals
+    // (FST_ERR_CTP_INVALID_JSON_BODY) to callers and made them a de-facto part
+    // of the contract, and it also mislabelled throttling — @fastify/rate-limit
+    // carries no string code, so every 429 came back as `bad_request`, which
+    // hides an abuse signal behind what reads as a client mistake.
+    //
+    // Routes that answer 4xx themselves never reach here; they `reply.send`
+    // their own documented bodies.
+    const details = error as { statusCode?: unknown };
+    const declared = typeof details.statusCode === 'number' ? details.statusCode : 500;
+    const status = reply.statusCode >= 400 ? reply.statusCode : declared;
+    if (status < 500) {
+      const CLIENT_ERRORS: Record<number, string> = {
+        400: 'bad_request',
+        403: 'forbidden',
+        404: 'not_found',
+        413: 'payload_too_large',
+        415: 'unsupported_media_type',
+        429: 'too_many_requests',
+      };
+      // A status with no entry falls back to a neutral label rather than to
+      // 'bad_request': claiming the caller sent a bad request is a statement
+      // about a status we have not classified, and mislabelling is what made
+      // the 429 regression invisible.
+      return reply.code(status).send({ error: CLIENT_ERRORS[status] ?? 'client_error' });
+    }
+
+    req.log.error({ err: error }, 'unhandled error');
+    return reply.code(500).send({ error: 'internal_error' });
   });
+
+  // An unmatched route never reaches the error handler, so Fastify's default
+  // body survived it: `{"message":"Route GET:/nope not found","error":"Not
+  // Found","statusCode":404}`, which echoes the requested route back. Nothing
+  // sensitive, but the flat shape is what every other error path now sends.
+  app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not_found' }));
 
   return app;
 }

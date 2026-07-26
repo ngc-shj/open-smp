@@ -9,3 +9,11 @@ coverage/
 
 # Claude Code local config — never commit (session-scoped permission grants leak here)
 .claude/
+
+# e2e/.auth/state.json holds a LIVE session cookie from global-setup's login
+# (T-E4 asserts `git ls-files e2e/.auth/` is empty).
+e2e/.auth/
+
+# Playwright run artifacts (e2e tier)
+e2e/playwright-report/
+e2e/test-results/
