@@ -72,7 +72,7 @@ describe('C39 acceptance: api-types stays a data-only leaf', () => {
   // The property C8 actually protects: what crosses at RUNTIME. Types erase, so
   // they are irrelevant here — every runtime export must be a frozen array of
   // strings, or a guard over one.
-  it('exports only frozen string arrays and predicates over them', () => {
+  it('exports only primitive constants and predicates over them', () => {
     const runtimeExports = Object.entries(apiTypes);
     expect(runtimeExports.length).toBeGreaterThan(0);
 
@@ -85,16 +85,33 @@ describe('C39 acceptance: api-types stays a data-only leaf', () => {
         continue;
       }
 
-      expect(Array.isArray(value), `${name} must be an array or a guard`).toBe(true);
+      // A bare primitive is permitted. The invariant reads "primitive domain
+      // constants", and SC37 — moving MAX_UPLOAD_BYTES into this package so
+      // apps/web stops hand-syncing it — is exactly a scalar. An earlier
+      // version of this gate accepted only arrays, which would have rejected
+      // the next thing the plan already schedules for here.
+      if (value === null || typeof value !== 'object') {
+        expect(
+          ['string', 'number', 'boolean'].includes(typeof value),
+          `${name} must be a string, number, or boolean`,
+        ).toBe(true);
+        continue;
+      }
+
+      expect(Array.isArray(value), `${name} must be a primitive, an array, or a guard`).toBe(true);
       // Through `unknown`: the freeze narrows these to readonly tuples, which
       // do not overlap a mutable array type. The gate inspects them at runtime,
       // so the static shape is not what is being checked here.
       const array = value as unknown as readonly unknown[];
-      expect(array.every((v) => typeof v === 'string'), `${name} must hold only strings`).toBe(true);
+      expect(
+        array.every((v) => v !== null && typeof v !== 'object' && typeof v !== 'function'),
+        `${name} must hold only primitives`,
+      ).toBe(true);
       // I39.3: `as const` is erased at runtime, so without the freeze the
       // domain can be widened in place — and isAccountLabelKind, which guards
       // the audit projection against out-of-domain kinds, would start
-      // accepting whatever was pushed.
+      // accepting whatever was pushed. A scalar needs no freeze: a `const`
+      // binding cannot be reassigned across a module boundary.
       expect(Object.isFrozen(array), `${name} must be frozen, not merely 'as const'`).toBe(true);
     }
   });
