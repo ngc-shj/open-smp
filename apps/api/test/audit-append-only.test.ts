@@ -96,17 +96,22 @@ describe('C19/I19.4 acceptance: no apps/api source mutates discovery_events', ()
     const files = await collectSourceFiles(srcDir);
     expect(files.length).toBeGreaterThan(0);
 
+    // One entry per OCCURRENCE, not per file. A boolean test per file would
+    // pass with two INSERTs inside audit.ts — which is the drift the comment
+    // above claims to catch, so the assertion has to count what it says it
+    // counts.
     const sites: string[] = [];
     for (const file of files) {
       const source = normalizeSource(await readFile(file, 'utf8'));
-      if (/INSERT INTO discovery_events/i.test(source)) {
+      for (const _ of source.matchAll(/INSERT INTO discovery_events/gi)) {
         sites.push(path.relative(srcDir, file));
       }
     }
 
-    expect(sites, `audit INSERT must exist in exactly one file, found: ${sites.join(', ')}`).toEqual(
-      ['audit.ts'],
-    );
+    expect(
+      sites,
+      `audit INSERT must occur exactly once, found: ${sites.join(', ')}`,
+    ).toEqual(['audit.ts']);
   });
 
   it('does not fire on the INSERT and SELECT paths the audit trail depends on', () => {

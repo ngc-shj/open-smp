@@ -17,7 +17,7 @@ import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import { decryptCredentials } from '@open-smp/crypto';
 import { SYNC_QUEUE, MATCH_QUEUE, type SyncJobData, type MatchJobData } from '@open-smp/queues';
 import { buildApp } from '../src/app.js';
-import { ARGON2ID_OPTIONS, type Hasher } from '../src/auth.js';
+import { ARGON2ID_OPTIONS, UnauthorizedError, type Hasher } from '../src/auth.js';
 import type { AppDeps } from '../src/deps.js';
 
 // C6/C7 acceptance criteria, verified end to end against real Postgres 16 +
@@ -166,6 +166,14 @@ describe('error-shape acceptance: framework-generated responses stay flat and op
       probe.get('/test-throw/internal', async () => {
         throw new Error('boom');
       });
+      probe.get('/test-throw/forbidden', async () => {
+        const error = new Error('nope') as Error & { statusCode?: number };
+        error.statusCode = 403;
+        throw error;
+      });
+      probe.get('/test-throw/unauthorized', async () => {
+        throw new UnauthorizedError('no session');
+      });
       await probe.ready();
       return probe;
     }
@@ -198,6 +206,26 @@ describe('error-shape acceptance: framework-generated responses stay flat and op
         // internal taxonomy.
         expect(res.body).not.toMatch(/boom/);
         expect(res.body).not.toMatch(/FST_ERR/);
+      } finally {
+        await probe.close();
+      }
+    });
+
+    // The suite asserts 401 and 403 statuses in several sweeps but never their
+    // bodies, so renaming 'unauthorized', or dropping the 403 table entry and
+    // letting it fall through to the neutral 'client_error', would leave every
+    // test green. These two are the branches an operator's client actually
+    // keys on.
+    it.each([
+      ['a tabled 403', '/test-throw/forbidden', 403, 'forbidden'],
+      ['an UnauthorizedError', '/test-throw/unauthorized', 401, 'unauthorized'],
+    ])('answers %s with its documented body', async (_label, url, status, error) => {
+      const probe = await appWithThrowingRoutes();
+      try {
+        const res = await probe.inject({ method: 'GET', url });
+
+        expect(res.statusCode).toBe(status);
+        expect(res.json()).toEqual({ error });
       } finally {
         await probe.close();
       }

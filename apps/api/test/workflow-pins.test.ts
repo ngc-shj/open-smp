@@ -18,7 +18,19 @@ import { describe, expect, it } from 'vitest';
 // [\w.-]+ rather than \d+ because Dependabot writes the resolved tag, which is
 // commonly dotted (# v5.0.1) — requiring bare digits would have failed the gate
 // on every bump PR, i.e. broken the update path this pin depends on.
+// Deliberately anchored to the block-sequence form. A YAML flow mapping
+// (`- {uses: ...}`) is detected by the collector above but cannot satisfy this,
+// even when correctly pinned — so the gate demands block form. That is
+// fail-closed and intentional: `#` inside a flow mapping is not a comment (YAML
+// 1.2 §6.6 requires preceding whitespace, and `}` would end up inside the
+// scalar), so there is no way to carry the mandatory version comment in that
+// form. Forcing the one shape the comment can live in is the point.
 const PINNED = /^[ \t]*(-[ \t]+)?uses:[ \t]*[\w.-]+\/[\w.-]+(\/[\w.-]+)*@[0-9a-f]{40}[ \t]+#[ \t]*v[\w.-]+[ \t]*$/;
+
+// What counts as a line to check. Kept separate from PINNED because the two
+// fail differently: a line PINNED rejects fails loudly, a line this misses is
+// never examined at all.
+const USES_LINE = /(^|[\s{,])uses[ \t]*:/;
 
 async function workflowFiles(): Promise<string[]> {
   const dir = path.join(import.meta.dirname, '..', '..', '..', '.github', 'workflows');
@@ -35,7 +47,13 @@ describe('C32 acceptance: every GitHub Action is pinned to a commit SHA', () => 
     for (const file of files) {
       const source = await readFile(file, 'utf8');
       for (const line of source.split('\n')) {
-        if (/^[ \t]*(-[ \t]+)?uses:/.test(line)) {
+        // Any `uses:` key, wherever it sits on the line — not only the
+        // block-sequence form. YAML flow mappings are valid GitHub Actions
+        // syntax (`- {uses: actions/checkout@v5}`), and an anchored detector
+        // never collects them, so such a step would escape the allowlist
+        // entirely rather than failing it. The non-zero count guard does not
+        // help: the ten block-form lines keep it satisfied.
+        if (USES_LINE.test(line)) {
           usesLines.push({ file: path.basename(file), line });
         }
       }
@@ -73,8 +91,25 @@ describe('C32 acceptance: every GitHub Action is pinned to a commit SHA', () => 
       'uppercase hex',
       '      - uses: actions/checkout@FBC6F3992D24B796D5A048FF273F7FCC4A7B6C09 # v5',
     ],
+    // Flow-mapping steps are valid Actions syntax. An anchored detector never
+    // collected them, so one would have escaped the allowlist entirely rather
+    // than failing it.
+    ['a flow-mapping step', '      - {uses: actions/checkout@v5}'],
+    ['a flow mapping with more keys', '      - { uses: actions/checkout@v5, with: {ref: main} }'],
   ])('rejects %s', (_label, line) => {
     expect(PINNED.test(line)).toBe(false);
+  });
+
+  // The detector is half the control: a line it does not collect is never
+  // checked against PINNED at all, and the non-zero count guard stays satisfied
+  // by the block-form lines around it.
+  it.each([
+    ['a block-form step', '      - uses: actions/checkout@v5'],
+    ['a flow-mapping step', '      - {uses: actions/checkout@v5}'],
+    ['a flow mapping with more keys', '      - { uses: actions/checkout@v5, with: {ref: main} }'],
+    ['a step-level uses', '        uses: actions/upload-artifact@v4'],
+  ])('collects %s so it cannot escape the allowlist unseen', (_label, line) => {
+    expect(USES_LINE.test(line)).toBe(true);
   });
 
   it.each([

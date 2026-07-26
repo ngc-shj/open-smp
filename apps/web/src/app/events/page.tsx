@@ -42,6 +42,20 @@ function labelSnapshot(snapshot: DiscoveryEventPayload['before']): string {
 }
 
 /**
+ * `undefined` and `null` mean different things here and must not be collapsed.
+ *
+ * `null` is a real state: the account carried no label, which is what a genuine
+ * `label_set` on an unlabelled account records. `undefined` means the API
+ * declined to serve the field because the stored kind was outside the domain
+ * (C29) — and rendering that as "none" would put back exactly the forgery the
+ * API refused to emit, on the one surface an operator reviews the trail from.
+ */
+function labelSide(snapshot: DiscoveryEventPayload['before'] | undefined): string {
+  if (snapshot === undefined) return 'unavailable';
+  return labelSnapshot(snapshot);
+}
+
+/**
  * The audit column answers "what changed", which for a label is the transition
  * rather than either end of it: a `label_set` on an already-labelled account is
  * a different act from one on an unlabelled account, and only the pair shows it.
@@ -54,7 +68,7 @@ function labelSnapshot(snapshot: DiscoveryEventPayload['before']): string {
  */
 function auditTransition(payload: DiscoveryEventPayload): string {
   if (payload.before === undefined && payload.after === undefined) return '—';
-  return `${labelSnapshot(payload.before ?? null)} → ${labelSnapshot(payload.after ?? null)}`;
+  return `${labelSide(payload.before)} → ${labelSide(payload.after)}`;
 }
 
 // The API constrains `source` to a slug and 400s anything else, and a non-ok
