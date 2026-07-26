@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { withTenant } from '@open-smp/schema';
-import { defaultRules, matchAccounts, type AccountView, type IdentityView } from '@open-smp/matcher';
+import {
+  defaultRules,
+  matchAccounts,
+  type AccountView,
+  type IdentityView,
+  type LinkResult,
+} from '@open-smp/matcher';
 import type { MatchJobData, MatchJobResult } from '@open-smp/queues';
 
 export interface MatchDeps {
@@ -57,12 +63,10 @@ async function loadAccounts(tx: PoolClient): Promise<AccountView[]> {
 async function upsertLink(
   tx: PoolClient,
   tenantId: string,
-  link: {
-    saasAccountId: string;
-    identityId: string | null;
-    status: 'matched' | 'orphan' | 'ghost' | 'ambiguous';
-    confidence: number;
-    ruleId: string | null;
+  // Derived from the matcher's own result shape rather than re-spelled: this
+  // is the last type-level checkpoint before the value reaches the link_status
+  // enum column, so a domain widening must reach it.
+  link: Pick<LinkResult, 'saasAccountId' | 'identityId' | 'status' | 'confidence' | 'ruleId'> & {
     evidence: unknown;
   },
   computedAt: Date,

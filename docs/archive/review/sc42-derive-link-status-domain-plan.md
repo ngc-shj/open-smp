@@ -578,3 +578,60 @@ consecutive cycle where the plan's member-set was incomplete at first draft. The
 narrower than "grep harder": site 9 was a scope blind spot with a mechanical fix (criterion 1's
 three-form rule), while **site 8 was in the grep output and read past**. Only the first is fixable by
 a better search.
+
+---
+
+## Implementation Checklist
+
+Derived at Phase 2 Step 2-1 by executing the three grep forms acceptance criterion 1 mandates.
+**Result: the plan's nine sites are confirmed exactly — no tenth site.** The forms and their hits:
+
+| Form | What it found |
+|---|---|
+| quoted literals, src only | sites 2, 3, 4, 5, 6, 8 + the two single-value predicates (out of scope) |
+| object keys | site 7, `seed.ts:353-356` (SC44), `e2e/fixtures/seed-facts.ts` (SC46) |
+| non-`.ts` filetypes | site 9, `0001_init.sql:7` + `:67`, and `ci.yml:101-135` |
+
+**New observation — `ci.yml:101-135`** hardcodes `?status=orphan` and `?status=ghost` in the
+compose-smoke assertions. Classified **out of scope**: these are single-value smoke assertions of the
+same shape as `EvidencePopover.tsx:23`, not member-set declarations. A fifth status does not make them
+wrong. Recorded here because the grep found them and silence would be indistinguishable from a miss.
+
+### Files to modify
+
+| File | Change | Contract |
+|---|---|---|
+| `packages/api-types/src/index.ts` | add frozen `LINK_STATUSES`; derive `LinkStatus` from it | C40/I40.1 |
+| `apps/api/src/routes/accounts.ts:10` | delete local `LINK_STATUSES`, import from domain | C40, site 2 |
+| `apps/web/src/lib/api-types.ts` | re-export `LINK_STATUSES` as a value | C40, barrel |
+| `apps/web/src/app/accounts/page.tsx:16` | `TABS` moves out; import it | C40, site 3 |
+| `apps/web/src/lib/link-statuses.ts` *(new)* | `ACCOUNT_TABS` + chip-class map, unit-reachable | C40/VE7, sites 3+7 |
+| `apps/web/src/components/StatusChip.tsx` | read the map from the `.ts` module | C40/I40.5, site 7 |
+| `packages/schema/src/tables.ts:33-38` | derive `linkStatusEnum` from the domain | C40, site 6 |
+| `packages/schema/test/tables.test.ts:17` | assert against the domain, not a self-copy | C41/I41.1 |
+| `packages/matcher/src/types.ts:25` | `status: LinkStatus` | C42/I42.1, site 4 |
+| `packages/matcher/package.json` | declare the `api-types` edge | C42/I42.3, VE8 |
+| `apps/worker/src/match.ts:63` | derive `upsertLink`'s `status` | C42/I42.4, site 8 |
+| `apps/web/src/app/globals.css` | unchanged — gated, not derived | C40/I40.6, site 9 |
+
+### Reuse obligations (no new helpers)
+
+- `apps/web/src/lib/label-filters.ts` is the **precedent** for the new `.ts` module: relative imports
+  (no `@/` alias — VE7), a `readonly` typed export, and the comment explaining why it is not `.tsx`.
+- `apps/api/src/label-kinds.ts` is the precedent for the API-side re-export (`export { X as Y } from`
+  plus a separate value import when the local scope needs it).
+- `packages/schema/test/tables.test.ts:29-31` is the precedent for C41's assertion shape.
+- `apps/api/test/api-types-boundary.test.ts` already gates the freeze — no new freeze gate needed.
+
+### CI gate parity
+
+`extract-ci-checks.sh` extracts `pnpm lint` and `pnpm typecheck`; it reports the multi-line `run:`
+blocks in `ci.yml` need manual review. Manually derived, CI runs three jobs:
+
+- `checks`: `pnpm lint`, `pnpm typecheck`, `pnpm test:unit`
+- `integration`: `pnpm test:integration` (Testcontainers)
+- `compose-smoke`: stack boot, `assert-seed-preserved.sh`, `pnpm test:e2e`
+
+The repo has **no `scripts/pre-pr.sh`**, so there is no local aggregate to diff against — the parity
+obligation is discharged by running all three job sets locally before Phase 3. No CI-only gate exists
+that a local run cannot reproduce (VE2/VE3/VE4 govern the stack-dependent ones).

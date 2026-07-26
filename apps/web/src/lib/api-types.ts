@@ -12,8 +12,9 @@
 // lets the events page tell a sync event's missing audit fields apart from an
 // audit event whose fields the API withheld as corrupt; ACCOUNT_LABEL_KINDS is
 // what the accounts filter bar derives its options from instead of re-listing
-// them.
-export { ACCOUNT_LABEL_KINDS, isLabelAuditKind } from '@open-smp/api-types';
+// them; LINK_STATUSES is what the chip-class map is keyed by, so a status with
+// no chip class is a compile error rather than a grey fallback chip.
+export { ACCOUNT_LABEL_KINDS, LINK_STATUSES, isLabelAuditKind } from '@open-smp/api-types';
 
 export type {
   LinkStatus,

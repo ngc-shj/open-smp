@@ -1,3 +1,5 @@
+import type { LinkStatus } from '@open-smp/api-types';
+
 export type IdentityView = {
   id: string;
   primaryEmail: string;
@@ -22,7 +24,7 @@ export type MatchRule = {
 export type LinkResult = {
   saasAccountId: string;
   identityId: string | null; // ALWAYS null for status 'orphan' and 'ambiguous'
-  status: 'matched' | 'orphan' | 'ghost' | 'ambiguous';
+  status: LinkStatus;
   confidence: number; // 0 when orphan
   ruleId: string | null;
   evidence: {

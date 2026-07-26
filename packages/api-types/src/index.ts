@@ -8,7 +8,24 @@
 // data, not a path. It was previously stated as "type-only, no runtime
 // exports", which C29 makes false: ACCOUNT_LABEL_KINDS below is a value.
 
-export type LinkStatus = 'matched' | 'orphan' | 'ghost' | 'ambiguous';
+// Declaration order is the Postgres enum's order (migration 0001_init.sql:7),
+// not the accounts page's tab order — the two differ, and the migration's has
+// shipped, so a Postgres enum's declaration order IS its sort order and cannot
+// be changed. The tab order stays a separate hand-written list in apps/web.
+//
+// Frozen for the same reason as ACCOUNT_LABEL_KINDS below: `as const` is erased
+// at runtime, and the C39 boundary gate requires every array this package
+// exports to be frozen. Note the freeze does NOT protect z.enum() — that
+// snapshots its members at construction — but it is what keeps a live-read
+// guard (isAccountLabelKind's shape) honest if one is added here later.
+export const LINK_STATUSES = Object.freeze([
+  'matched',
+  'orphan',
+  'ghost',
+  'ambiguous',
+] as const);
+
+export type LinkStatus = (typeof LINK_STATUSES)[number];
 
 export type AccountLink = {
   status: string;
