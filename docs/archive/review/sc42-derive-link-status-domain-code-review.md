@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review round: 1
+Review rounds: 2 (round 1 below; round 2 appended at the end)
 
 ## Changes from Previous Round
 
@@ -270,3 +270,134 @@ Mutation residue: none (`git status` shows only intended changes).
 signature of a cycle whose subject is gates. The one worth carrying forward is TEST-2's failed first
 fix: a behavioural assertion could not observe a property that exists only in the source text, and it
 took executing the revert to see that. The same lesson as SEC-1 in plan review, one layer down.
+
+---
+
+# Round 2
+
+Date: 2026-07-27
+Scope: verify the round-1 fixes are correct and complete, and check for regressions.
+
+## Changes from Previous Round
+
+All five round-1 findings were applied in commit `9a1a2e6`. Round 2 re-derived each fix by executing
+the mutation it claims to catch, rather than reading it.
+
+**Six findings — 3 Major, 3 Minor. All applied. Every one is a defect in a gate written or amended in
+round 1; no production code was touched by this round.**
+
+## Findings
+
+### R2-1 [Major, continuing from TEST-2] — the site-8 gate was a false green for its own target
+
+`apps/worker/test/upsert-link-domain.test.ts` was a runtime witness. Re-inlining `UpsertLinkInput`
+with the **same four members** left typecheck at 0 errors and the suite at 264 passed.
+
+Round 1 had *already established by execution* that only a source-text assertion can see this — that
+is exactly why site 2's gate was rewritten. The site-8 gate was written in the same commit and did not
+get the same treatment. D8 recorded the lesson and it was not applied one file over.
+
+Compounding it: the narrowing case the witness *did* catch was already caught without it — a narrowed
+union reds at the production call site regardless. The test contributed no detection at all.
+
+**Applied**: reads `match.ts`'s source for `Pick<LinkResult`, plus the absence of any quoted status
+literal. Red-proven (M13). The runtime witness is kept alongside, since it pins that the derived type
+admits the whole domain.
+
+### R2-2 [Major, new] — the migration replay false-redded on five valid SQL forms
+
+`ADD VALUE IF NOT EXISTS` (the idiomatic re-runnable form), a quoted identifier, a schema-qualified
+name, lowercase keywords, and extra whitespace/newlines all missed the regex — each producing a red on
+a **correct** migration.
+
+This is TEST-1's own failure mode recurring inside TEST-1's fix. A gate that reds on correct work is
+how the next author is pressured into deleting it.
+
+**Applied**: the pattern now tolerates all five. Verified case by case (all five PASS).
+
+### R2-3 [Major, new] — positional `ADD VALUE BEFORE/AFTER` made the gate assert a wrong order
+
+Postgres supports positional enum insertion. With `ADD VALUE 'quarantined' BEFORE 'orphan'` the real
+sort order is `matched, quarantined, orphan, ghost, ambiguous`; the append-only replay computed
+`…ambiguous, quarantined`. The test's entire purpose is pinning sort order against the deployed
+database, and it got that backwards precisely where the order is non-obvious.
+
+**Applied**: the gate now **refuses to guess** — positional forms are detected and fail with a message
+saying the ordering rule must be taught to the test first. A gate that says "I cannot evaluate this"
+is honest; one that asserts a wrong order is worse than no gate. Verified FAIL.
+
+### R2-4 [Minor, new] — a commented-out `ADD VALUE` counted as applied
+
+`-- ALTER TYPE link_status ADD VALUE 'quarantined';` plus a domain listing `quarantined` passed — the
+domain claiming a status the database lacks, which fails on insert.
+
+**Applied**: comments stripped before scanning. `api-types-boundary.test.ts:35` already had a
+`stripComments` helper as precedent. Verified FAIL.
+
+### R2-5 [Minor, continuing from TEST-3] — the CSS gate still missed a commented-out rule
+
+Round 1's `@apply` requirement caught the emptied body but not a commented-out rule, because the
+`@apply` sits inside the comment text — so the gate's own comment named two shapes and caught one.
+D3 was amended in round 1 to record that limit honestly; round 2 closed it.
+
+**Applied**: CSS comments stripped before matching. Verified red. The comment now matches behaviour.
+
+### R2-6 [Minor, new] — the site-2 source assertion was brittle on two correct refactors
+
+An aliased import and a reformatted `z.enum(...).optional()` chain both keep the derivation intact yet
+failed.
+
+**Applied**: the positive pattern is whitespace-tolerant (reflow verified green), and the negative
+assertion broadened from `z.enum([...])` to any quoted status literal — which also closes an
+indirection the narrow form missed (`const LOCAL = [...]` fed to `z.enum`, verified red).
+
+## Regression checks (all clear)
+
+- **`accountsQuerySchema` export** — consumed only by the new test; `app.ts:12` still imports only
+  `registerAccountsRoute`. Never mutated post-construction. No cycle, no bundling concern.
+- **`UpsertLinkInput` export** — type-only, fully erased at runtime.
+- **New `apps/worker` → `@open-smp/api-types` edge** — `api-types` is a dependency-free leaf, so no
+  cycle is possible; `api-types-boundary.test.ts` passes.
+- **`@ts-expect-error` pinning** — verified it suppresses exactly one `TS2322` on a one-line
+  declaration and reds as `TS2578` when the domain widens. Not over-broad.
+- **R43 (fix-induced boundary widening)** — the only delta to the validation boundary between
+  `5e57200` and `HEAD` is the `export` keyword. `.strict()`, `z.enum(LINK_STATUSES)`, and all four
+  fields byte-identical. **No widening.**
+
+## Recurring Issue Check — Round 2
+
+- **R43 (fix-induced boundary widening)** — PASS. Diffed the round-1 fix range; the sole change to
+  `accounts.ts` is the `export` keyword.
+- **RT7 (gate proves it can fail)** — FINDING(R2-1). The site-8 gate was verified green under its
+  target mutation. R2-2/3/4/5/6 were all found by mutating and running rather than reading.
+- **False-red pressure on correct code** — FINDING(R2-2, R2-3, R2-6). Same class as the resolved
+  TEST-1: a gate that reds on legitimate work invites its own deletion.
+- **False-green blindness** — FINDING(R2-1, R2-4, R2-5). Three gates passed states they claimed to
+  reject.
+- **Comment matches behaviour** — FINDING(R2-5). Comment named two shapes; the regex caught one.
+- **Module boundary / cycles** — PASS. `api-types` remains a dependency-free leaf.
+- **Export surface creep** — PASS. Both new exports have test-only consumers; the type erases, the
+  value is server-side and immutable.
+- **Mutation hygiene** — PASS. All mutations run in the main repo from backups; tree and migration
+  directory confirmed clean afterwards.
+
+## Final verification — Round 2
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **265 / 29** (baseline 241 / 25) |
+| `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
+| `pnpm test:e2e` | exit 0 — 43, unchanged |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+Migration directory verified intact (five files, no stray test artifacts). No mutation residue.
+
+**Round assessment, and the honest version of it.** Round 2 found more Majors than round 1, and all of
+them were in round 1's own fixes. The recurring shape across both rounds: a gate is easy to write so it
+passes today and hard to write so it fails tomorrow, and the only way to tell those apart is to run
+the mutation. Round 1 ran mutations for the gates it doubted and reasoned about the ones it did not —
+R2-1 is what that costs, and it is the same mistake twice in one commit, since the lesson was written
+down in D8 while the sibling gate went unproven.

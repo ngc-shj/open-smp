@@ -79,7 +79,12 @@ describe('C40/I40.6: every chip class has a rule in globals.css', () => {
   // `@apply` needs literal class names — so the agreement is gated instead. A
   // class name with no rule is neither a compile error nor a render error: the
   // chip loses its colour and nothing fails.
-  const css = readFileSync(new URL('../src/app/globals.css', import.meta.url), 'utf8');
+  // Comments stripped: a rule commented out but left in place renders exactly
+  // as a deleted one does, and matching raw text would count it as present.
+  const css = readFileSync(new URL('../src/app/globals.css', import.meta.url), 'utf8').replace(
+    /\/\*[\s\S]*?\*\//g,
+    '',
+  );
 
   it('reads a non-empty stylesheet', () => {
     expect(css.length).toBeGreaterThan(0);
@@ -87,9 +92,9 @@ describe('C40/I40.6: every chip class has a rule in globals.css', () => {
   });
 
   // Requires a rule that actually applies something, not merely a selector
-  // token that appears somewhere. Matching the selector alone passes on two
-  // shapes that both render a colourless chip: a rule commented out but left
-  // in place, and a rule whose body has been emptied.
+  // token that appears somewhere. Both shapes that render a colourless chip
+  // now fail: a rule whose body has been emptied (the `@apply` requirement),
+  // and a rule commented out but left in place (comments stripped above).
   it('defines a non-empty rule for each status-specific class', () => {
     const missing = Object.values(CHIP_CLASSES)
       .flatMap((className) => className.split(/\s+/))

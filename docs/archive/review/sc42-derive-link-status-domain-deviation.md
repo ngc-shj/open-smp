@@ -166,6 +166,62 @@ class. Fixed by declaring `@open-smp/api-types` in `apps/worker/package.json`, m
 for the matcher. Worth recording because the failure was loud only after the test existed — the
 production code never needed the direct import, so nothing had surfaced it.
 
+## D10 — Code review round 2: the round-1 fixes were themselves defective
+
+Six findings, three Major. Every one is a defect in a gate written or amended in round 1, which makes
+this round the more instructive of the two.
+
+**F1 — the site-8 gate was a false green for the exact revert it names.** Round 1 established, by
+execution, that a re-inlined union with the same four members is invisible to any *structural*
+assertion — that is why site 2's gate reads its route's source text. The site-8 gate written in the
+same commit was a runtime witness, and re-inlining `UpsertLinkInput` with the same members left
+typecheck at 0 and the suite at 264 passed. The lesson was written down in D8 and then not applied
+one file over.
+
+Worse, the narrowing case the witness *did* catch was already caught without it: a narrowed union
+reds at the production call site regardless. So the test contributed no detection at all. It now reads
+`match.ts`'s source for `Pick<LinkResult`, plus the absence of any quoted status literal. Red-proven
+(M13).
+
+**F2 — the migration replay false-redded on five valid SQL forms.** `IF NOT EXISTS` (the idiomatic
+re-runnable form), a quoted identifier, a schema-qualified name, lowercase keywords, and extra
+whitespace or a newline all missed the regex — each producing a red on a *correct* migration. This is
+TEST-1's own failure mode recurring inside TEST-1's fix: a gate that reds on correct work pressures
+the next author to delete it. All five now pass; verified case by case.
+
+**F3 — positional `ADD VALUE ... BEFORE/AFTER` made the gate assert an order the database does not
+have.** Postgres supports inserting an enum member at a position; the replay was append-only, so with
+`ADD VALUE 'quarantined' BEFORE 'orphan'` the real sort order is
+`matched, quarantined, orphan, ghost, ambiguous` while the replay computed `…ambiguous, quarantined`.
+The test's entire purpose is pinning sort order against the deployed database, and it got that
+backwards precisely where the order is non-obvious.
+
+Fixed by **refusing to guess**: positional forms are detected and fail with a message saying the
+ordering rule must be taught to the test before such a migration is used. A gate that says "I cannot
+evaluate this" is honest; one that asserts a wrong order is worse than none.
+
+**F4 — a commented-out `ADD VALUE` counted as applied.** The scan was textual, so
+`-- ALTER TYPE link_status ADD VALUE 'quarantined';` plus a domain listing `quarantined` passed — the
+domain claiming a status the database lacks, which fails on insert. Comments are now stripped first.
+Same class as F5, and `api-types-boundary.test.ts:35` already had a `stripComments` helper as
+precedent.
+
+**F5 — the CSS gate still missed one of the two shapes its own comment claimed.** Round 1 tightened it
+to require `@apply`, which caught the emptied body but not a rule commented out — the `@apply` sits
+inside the comment text. D3 was amended in round 1 to record that residual limit honestly; round 2
+closed it instead, by stripping comments. The comment now matches the behaviour.
+
+**F6 — the site-2 source assertion was brittle in two ways that would red a correct refactor.** An
+aliased import and a reformatted `z.enum(...).optional()` chain both keep the derivation intact yet
+failed. The pattern is now whitespace-tolerant (reflow verified green), and the negative assertion was
+broadened from `z.enum([...])` to any quoted status literal — which also closes an indirection the
+narrow form missed, a local `const LOCAL = [...]` fed to `z.enum`. Both verified.
+
+**What round 2 says about round 1.** All six findings are in gates, not in the derivation; the
+production code was untouched by this round. The recurring shape is that a gate is easy to write so it
+passes today and hard to write so it fails tomorrow — and the only way to tell them apart is to run
+the mutation. Round 1 ran mutations for the gates it doubted and reasoned about the ones it did not.
+
 ---
 
 ## NFR3 — mutation proofs
@@ -187,6 +243,23 @@ domain mutations ran **in the main repository from a backup**, never in a worktr
 | M10 | add `0006_…ALTER TYPE…` + the domain member | migration-order gate **green** (was red before the F1 fix — a correct schema must pass) |
 | M11 | empty the `.status-chip-ghost` rule body | `defines a non-empty rule for each status-specific class` red — added in review |
 | M12 | widen `LinkResult['status']` to bare `string` | typecheck red — `TS2578: Unused '@ts-expect-error' directive`, added in review to close the direction the assignment witness cannot see |
+| M13 | re-inline `UpsertLinkInput` with the **same** four members | site-8 gate red — **round 2; this was a false green until then** |
+
+**Round 2's migration-replay cases**, each run as a real migration file plus the matching domain
+member. `want` is what a correct gate must do; all seven matched:
+
+| Case | Want | Got |
+|---|---|---|
+| `ADD VALUE IF NOT EXISTS 'x'` | PASS | PASS |
+| `ALTER TYPE "link_status" ADD VALUE 'x'` | PASS | PASS |
+| `ALTER TYPE public.link_status ADD VALUE 'x'` | PASS | PASS |
+| `alter type … add value 'x'` (lowercase) | PASS | PASS |
+| multiline / extra whitespace | PASS | PASS |
+| `-- ALTER TYPE … ADD VALUE 'x'` (commented out) | FAIL | FAIL |
+| `ADD VALUE 'x' BEFORE 'orphan'` (positional) | FAIL | FAIL |
+
+Plus, for the other round-2 gates: a commented-out CSS rule now reds; a reflowed `z.enum(...)` chain
+stays green (correct refactor); a `const LOCAL = [...]` indirection reds.
 
 **M1's outcome, recorded as the plan required.** The expectation spanned more than one tree state:
 

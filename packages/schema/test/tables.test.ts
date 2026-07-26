@@ -36,16 +36,36 @@ describe('enum value sets', () => {
   // satisfy a 0001-only assertion are to edit history or delete the test.
   it('link_status order matches the shipped migrations', () => {
     const dir = new URL('../migrations/', import.meta.url);
+    // Comments are stripped first: the scan is textual, so a commented-out
+    // ADD VALUE would otherwise count as applied and let the domain claim a
+    // status the database does not have — a value that fails on insert.
     const sql = readdirSync(dir)
       .filter((name) => name.endsWith('.sql'))
       .sort()
       .map((name) => readFileSync(new URL(name, dir), 'utf8'))
-      .join('\n');
+      .join('\n')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/--[^\n]*/g, '');
 
-    const created = sql.match(/CREATE TYPE link_status AS ENUM \(([^)]*)\)/);
+    const created = sql.match(/CREATE\s+TYPE\s+(?:\w+\.)?"?link_status"?\s+AS\s+ENUM\s*\(([^)]*)\)/i);
     expect(created, 'migrations must declare the link_status enum').not.toBeNull();
     const declared = [...created![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
-    for (const added of sql.matchAll(/ALTER TYPE link_status ADD VALUE '([^']+)'/g)) {
+
+    // Postgres also accepts BEFORE/AFTER positional insertion, which this
+    // append-only replay would get wrong — and getting the ORDER wrong is the
+    // one thing this test exists to prevent, so it refuses to guess rather
+    // than asserting a sequence that disagrees with the database.
+    const positional = sql.match(
+      /ALTER\s+TYPE\s+(?:\w+\.)?"?link_status"?\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?'[^']+'\s+(BEFORE|AFTER)\s/i,
+    );
+    expect(
+      positional,
+      'positional ADD VALUE ... BEFORE/AFTER is not replayed here; teach this test the ordering rule before using it',
+    ).toBeNull();
+
+    for (const added of sql.matchAll(
+      /ALTER\s+TYPE\s+(?:\w+\.)?"?link_status"?\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?'([^']+)'/gi,
+    )) {
       declared.push(added[1]);
     }
 

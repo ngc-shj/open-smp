@@ -19,10 +19,14 @@ import { accountsQuerySchema } from '../src/routes/accounts.js';
 describe('C40: the accounts status filter derives from the domain', () => {
   it('builds its status enum from LINK_STATUSES, not a local literal', () => {
     const source = readFileSync(new URL('../src/routes/accounts.ts', import.meta.url), 'utf8');
-    expect(source).toMatch(/status:\s*z\.enum\(LINK_STATUSES\)/);
+    // Whitespace-tolerant so a formatter reflowing the `z.enum(...).optional()`
+    // chain does not red a derivation that is still intact.
+    expect(source).toMatch(/status:\s*z\s*\.\s*enum\(\s*LINK_STATUSES\s*\)/);
     // The failure this exists to catch: a re-inlined union. Any quoted status
-    // literal in the file is one, since the domain is imported by name.
-    expect(source).not.toMatch(/z\.enum\(\s*\[\s*'(matched|orphan|ghost|ambiguous)'/);
+    // literal in the file is one, since the domain is imported by name — this
+    // is broader than matching `z.enum([...])`, which a local `const` would
+    // slip past.
+    expect(source).not.toMatch(/'(matched|orphan|ghost|ambiguous)'/);
   });
 
   it('accepts exactly the domain, in the domain order', () => {
