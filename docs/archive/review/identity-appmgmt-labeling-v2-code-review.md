@@ -129,6 +129,29 @@ handles `23505`/`23503` and sends its own bodies.)
 
 # Round 3
 
+## Termination — converged at round 3
+
+**Stop condition met.** Round 3 returned zero security findings, and the functionality/testing
+findings it did return were confined to test code: one Major (the membership guard, fixed and now
+self-tested), two Minors fixed in the same edits, and one Minor recorded as a deferral with a full
+Anti-Deferral entry. **Round 3's fix commit changes no production code** — only
+`api.integration.test.ts`, `page-spec-membership.test.ts`, `events.spec.ts`, and this document.
+
+The tightening-only skip in the skill's Step 3-8 is not claimed, because strengthening a guard does
+change that guard's behavior and the honest reading of "inline minor" does not cover it. The stop is
+instead the ordinary one: the round produced no unresolved Critical or Major, and every finding is
+either applied or carries a deferral entry naming its worst case, likelihood, cost, and trigger.
+
+Round-over-round: 2 Critical / 12 Major / 8 Minor → 1 Critical / 2 Major / 5 Minor → 0 Critical /
+1 Major / 4 Minor. The Criticals stopped after round 2, and round 3's only Major was in a test guard
+rather than in shipped behavior.
+
+**What this review actually cost, recorded plainly:** of the 14 findings across rounds 2 and 3, **six
+were defects I introduced or left incomplete while fixing round 1** — the shape-only calendar check,
+the year-zero gap, the 429 mislabelling, the leaked Fastify codes, the source-without-cursor half-fix,
+and the membership guard's second failure. Each was found because a reviewer executed a mutation
+rather than reading the code. That ratio, not the finding count, is the useful number here.
+
 ## Security Findings (round 3) — **No findings**
 
 All three round-2 security findings resolved. The expert's verification is worth recording
@@ -659,7 +682,9 @@ and three of the Minors arrived with executed reproductions.
 
 ## Environment Verification Report
 
-The plan declared VE1–VE5. Classification for this round:
+The plan declared VE1–VE5. Classification below is **final (round 3)**; the counts cited are the
+round-1 figures where the classification did not change, and the final figures are in the gate
+table above.
 
 - **VE1** (no live Google Workspace tenant) — `blocked-deferred`. C22 asserts *storage*
   properties, not provider-accepted ones, by design; the E2E credential prohibition holds
@@ -676,21 +701,39 @@ The plan declared VE1–VE5. Classification for this round:
   claim remains parity-by-construction: the same five commands were run locally. Links to plan
   VE5.
 
-## Gate state after fixes (all executed this round)
+**No `blocked-deferred` path lacks a Phase-1 constraint link**, so this section records no process
+failure. VE1 and VE5 are the only two, both predicted in Phase 1 and both cited above.
+
+## Gate state — FINAL (round 3, all executed)
 
 | Gate | Result |
 |---|---|
 | `pnpm lint` | 0 |
 | `pnpm typecheck` | 0 |
-| `pnpm test:unit` | 144 passed / 16 files |
-| `pnpm test:integration` | 133 passed / 5 files |
-| `pnpm test:e2e` | 37 passed |
+| `pnpm test:unit` | **164 passed / 16 files** |
+| `pnpm test:integration` | **135 passed / 5 files** |
+| `pnpm test:e2e` | **43 passed** |
 | `bash e2e/scripts/assert-seed-preserved.sh` | exit 0 |
 
-Deltas from the pre-review state (133 / 132 / 37): unit +11 (4 hostile-cursor cases, 1
-microsecond round-trip, 3 audit-guard self-tests, 1 `\n` neutralization case, 1 page↔spec
-membership, 1 `23503` discharge), integration +1 (microsecond boundary), E2E unchanged in
-count with two specs strengthened.
+Deltas from the pre-review state (133 / 132 / 37, measured in the real tree before round 1):
+**unit +31, integration +3, E2E +6.**
+
+Each figure above was read from a full-suite run in the working tree at that point; the per-round
+totals were recorded the same way as each round closed (round 1: 144 / 133 / 37; round 2:
+152 / 133 / 43; round 3: 164 / 135 / 43).
+
+> Attempting to re-derive the historical counts from a detached worktree returned 107 for the
+> pre-review commit — an artifact, not a measurement: the workspace packages (`@open-smp/schema`,
+> `zod`) do not resolve through a symlinked `node_modules`, so several files fail to load and their
+> tests are never collected. Recorded because a number produced that way looks exactly like a real
+> regression, and the counts above deliberately come from real-tree runs instead.
+
+### Gate-state caveat recorded rather than smoothed over
+Twice during this review the integration gate reported red for a reason unrelated to the branch:
+once from a leftover in-repo `git worktree` (mine, round 1) that Vitest collected twice, and once
+from a reviewer's stray probe file that broke `typecheck`. Both were diagnosed to their real cause
+rather than worked around. Red-proofing worktrees belong under the scratchpad, never inside the
+repository — the working directory is part of the gate's input.
 
 ## Orchestrator notes
 
