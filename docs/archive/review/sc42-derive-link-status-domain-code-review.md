@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review rounds: 5 (each appended in order below)
+Review rounds: 6 (each appended in order below)
 
 ## Changes from Previous Round
 
@@ -387,7 +387,7 @@ indirection the narrow form missed (`const LOCAL = [...]` fed to `z.enum`, verif
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -491,7 +491,7 @@ because it strips *SQL*, a different language with different rules.
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -606,7 +606,7 @@ whose contract (C39) is that it holds nothing but the domain. A third call site 
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -692,7 +692,7 @@ unparseable label reds. Twelve rounds-2-through-4 regression cases re-run, all u
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **284 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -725,3 +725,94 @@ arrived in order of increasing generality: one shared pattern (round 4), a direc
 and finally an assertion that the scanner must parse everything it can see (round 5). Only the last
 one is closed against spellings nobody has thought of — which is the argument for reaching for it
 first the next time a gate parses text.
+
+---
+
+# Round 6
+
+Date: 2026-07-27
+Scope: does the parse-completeness assertion converge the cycle, or is there a spelling that escapes
+even the "seen" counter?
+
+## Changes from Previous Round
+
+Round 5 replaced enumeration with a parse-completeness assertion: count statements seen against
+statements parsed, fail on a discrepancy.
+
+**One Critical, one Major, one Minor. The assertion was a genuine structural improvement and closed
+the entire label-spelling axis — but it was scoped to `ADD_VALUE`, so it inherited that prefix as its
+own blind spot.**
+
+## Findings
+
+### R6-1 [Critical, new] — three-part qualification escapes both counters
+
+`ADD_VALUE` allowed one qualifier; Postgres accepts `database.schema.type`. A statement failing the
+prefix is invisible to the "seen" counter *and* the replay, so the assertion compared 0 to 0 and
+passed. Executed false green: a migration adding `'sneaky'` gave 284/284.
+
+### R6-2 [Major, new] — `RENAME VALUE` changes the label set and is invisible
+
+The counter only knew `ADD VALUE`. `ALTER TYPE ... RENAME VALUE 'old' TO 'new'` (PG 10+) mutates the
+label set without adding one — verified working on an enum in use by a table with rows, so not a
+statement an author would avoid. Executed false green: 284/284.
+
+### R6-3 [Minor, new] — the site-2 gate reds on a formatter's trailing comma
+
+Round 4's comment claimed formatter tolerance. The chain break was handled; an argument-list break was
+not, and prettier follows one with a trailing comma. This repo uses trailing commas throughout. A
+false red on an intact derivation.
+
+## Disposition
+
+**Fixed at the statement level, where round 5's assertion should have been scoped.** The counter is now
+`ALTER TYPE <any qualification of link_status> <anything but RENAME TO>` — everything aimed at the
+type, refusing anything it cannot replay, rather than only the verb it already knew. `RENAME TO` is
+excluded deliberately (renames the type, not a label). `TYPE_REF` takes `{0,2}` qualifiers and is
+shared with the `CREATE TYPE` extraction. R6-3 fixed with `,?`.
+
+**One new test case was itself wrong and caught itself.** After widening `TYPE_REF`, three-part
+qualification became *replayable*, so leaving it in the "sees but cannot replay" table failed on the
+first run. The case table catching an error in the case table is the argument for having one.
+
+## Verification
+
+Sixteen migration cases executed: both escapes now red when the domain lacks the status, the
+three-part form passes when it lists it, `RENAME TO` correctly does not red, and all eleven
+rounds-2-through-5 cases unchanged. R6-3 verified both directions (trailing-comma reflow green,
+re-inline still red).
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
+| `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
+| `pnpm test:e2e` | exit 0 — 43, unchanged |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+## Recurring Issue Check — Round 6
+
+- **RT7** — PASS for the label axis (round 5's assertion verified non-vacuous by two independent
+  mutations). FINDING(R6-1, R6-2) for the statement axis: an assertion cannot fire for statements it
+  never sees.
+- **False-green blindness** — FINDING(R6-1, R6-2). Two executed false greens.
+- **R3 (incomplete pattern propagation)** — FINDING. `ADD_VALUE` was widened for quoted qualification
+  in round 5 without asking how many qualifiers Postgres permits; the neighbouring generalisation was
+  one quantifier away.
+- **Comment matches behaviour** — FINDING(R6-3), fixed. The counter's comment said "whatever follows",
+  accurate about what follows and silently untrue about what precedes.
+- **R2 (duplication)** — PASS. `TYPE_REF`, `ADD_VALUE`, `LABEL`, `ALTERS_TYPE` are single sources.
+- **Derivation** — PASS, sixth consecutive round.
+
+## Six-round assessment
+
+Fourteen findings across rounds 2–6, **every one in a gate, none in the derivation**, which has now
+been independently traced clean six times.
+
+The axis moved every round: whitespace (2–4), lexical form of the label (5), the statement prefix and
+verb (6). Each fix was correct for the axis it targeted and inherited the next one's blind spot. What
+generalises is not a wider pattern but the *shape* of the assertion — count what you can see, refuse
+what you cannot replay — applied to the whole statement rather than to the fragment already
+understood. That is the transferable lesson from six rounds of chasing one class of defect.

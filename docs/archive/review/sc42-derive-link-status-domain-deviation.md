@@ -371,6 +371,46 @@ and fixing each silence one instance at a time. The structural answers came late
 Of those, only the last one closes spellings nobody has thought of yet — which is why it is the one
 that should have come first.
 
+## D14 — Code review round 6: the counter had inherited its own blind spot
+
+One Critical, one Major, one Minor. The Critical is the sharpest structural finding of the six rounds.
+
+**R6-1/R6-2 — the parse-completeness assertion protected the label but not the statement.** Round 5's
+counter was `ADD_VALUE + \S`, so it inherited `ADD_VALUE`'s prefix as its own blind spot. Anything
+failing that prefix was invisible to *both* counters, the assertion compared 0 to 0, and passed. Two
+such escapes, both valid Postgres 16, both executed as end-to-end false greens:
+
+```text
+ALTER TYPE opensmp.public.r6z ADD VALUE 'threepart';   -> ALTER TYPE   (db.schema.type)
+ALTER TYPE r6z RENAME VALUE 'ghost' TO 'spook';        -> ALTER TYPE   (changes the label set)
+enumsortorder                                          -> a,spook,threepart
+```
+
+`RENAME VALUE` was verified on an enum **in use by a table with rows**, so it is not a statement a
+migration author would avoid.
+
+**Fixed at the statement level, which is where it should have been in round 5.** The counter is now
+`ALTER TYPE <any qualification of link_status> <anything except RENAME TO>` — it counts everything
+aimed at this type and refuses to proceed on anything it cannot replay, rather than counting only the
+verb it already knew. `RENAME TO` is excluded deliberately: it renames the type, not a label.
+`TYPE_REF` also became `{0,2}` qualifiers, and is now shared by the `CREATE TYPE` extraction.
+
+**R6-3 — the site-2 gate redded on a trailing comma.** Round 4's comment claimed formatter tolerance;
+the chain break was handled but not an argument-list break, which prettier follows with a trailing
+comma — and this repo uses them throughout, including in the round-5 diff. A false red on an intact
+derivation. Fixed with `,?`, and the detection re-proven to still fire.
+
+**One of my new test cases was wrong, and it caught itself.** After widening `TYPE_REF`, I left
+three-part qualification in the "sees but cannot replay" table — but it is now replayable, so the case
+failed on the first run. The right home was the "can read" table, where it also already sat. The case
+table catching an error in the case table is the argument for having one.
+
+**Six rounds, fourteen findings, still none in the derivation.** The axis moved every round: whitespace
+(2–4), lexical form of the label (5), the statement prefix and verb (6). Each fix was correct for the
+axis it targeted and inherited the next one's blind spot. What finally generalises is not a wider
+pattern but the shape of the assertion — *count what you can see, refuse what you cannot replay* —
+applied at the level of the whole statement rather than the fragment previously understood.
+
 ---
 
 ## NFR3 — mutation proofs

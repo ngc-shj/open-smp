@@ -64,8 +64,13 @@ function stripSqlComments(sql: string): string {
  *
  * Hence `\s*` at every keyword-to-literal boundary, once.
  */
-const ADD_VALUE =
-  `ALTER\\s+TYPE\\s+(?:"?\\w+"?\\.)?"?link_status"?\\s+ADD\\s+VALUE\\s*(?:IF\\s+NOT\\s+EXISTS\\s*)?`;
+// `{0,2}` qualifiers, not `?`: Postgres accepts db.schema.type, and allowing
+// only one made `ALTER TYPE opensmp.public.link_status ADD VALUE 'x'` match
+// nothing at all — invisible to the parse-completeness counter below, which is
+// the one blind spot that counter cannot see past.
+const TYPE_REF = `(?:"?\\w+"?\\.){0,2}"?link_status"?`;
+
+const ADD_VALUE = `ALTER\\s+TYPE\\s+${TYPE_REF}\\s+ADD\\s+VALUE\\s*(?:IF\\s+NOT\\s+EXISTS\\s*)?`;
 
 /**
  * The new label. Postgres accepts more spellings than a plain `'x'`.
@@ -80,16 +85,20 @@ const ADD_VALUE =
 const LABEL = `(?:(?:E|U&)?'((?:[^']|'')*)'|\\$\\$([^$]*)\\$\\$)`;
 
 /**
- * Every `ALTER TYPE ... link_status ... ADD VALUE`, whatever follows.
+ * Every `ALTER TYPE` that touches `link_status`, whatever it does to it.
  *
- * The anti-blindness half of the pair. Five review rounds each found a spelling
- * the scanner did not know about, and each time it failed *silently* — the
- * statement simply did not match and the replay carried on. So the gate now
- * counts the statements it can see at all and refuses to proceed when any of
- * them has a label it could not parse. An unanticipated spelling becomes a loud
- * red instead of a sixth false green.
+ * The anti-blindness half of the pair, and it is deliberately scoped to the
+ * *statement* rather than to `ADD VALUE`. The first version counted
+ * `ADD_VALUE + \S`, which inherited that prefix as its own blind spot: a
+ * three-part-qualified name and `RENAME VALUE` both failed the prefix, so they
+ * were invisible to the counter *and* to the replay, and the completeness
+ * assertion compared 0 to 0 and passed. Six review rounds have each found one
+ * more spelling the scanner did not know; the only durable answer is to count
+ * everything aimed at this type and refuse to proceed on anything unrecognised.
+ *
+ * `RENAME TO` is excluded on purpose — it renames the type, not a label.
  */
-const ADD_VALUE_ANY = `${ADD_VALUE}\\S`;
+const ALTERS_TYPE = `ALTER\\s+TYPE\\s+${TYPE_REF}\\s+(?!RENAME\\s+TO\\b)\\S`;
 
 // The scanners get their own table rather than being validated only through
 // the gates that consume them. Four review rounds found the same class of bug
@@ -140,22 +149,36 @@ describe('the migration scanner accepts what Postgres accepts', () => {
     expect([...stripSqlComments(sql).matchAll(ADDS)].map(labelOf)).toEqual(['x']);
   });
 
-  // The property that matters more than any individual spelling. Five rounds
+  // The property that matters more than any individual spelling. Six rounds
   // each found a form the scanner did not know, and each failed silently by
   // simply not matching. The gate compares "statements seen" against
-  // "statements parsed", so an unknown label reds instead of vanishing — this
-  // asserts the two counts genuinely diverge for something unparseable.
-  it('counts a statement whose label it cannot parse', () => {
-    const sql = 'ALTER TYPE link_status ADD VALUE ??unparseable??;';
-    const seen = [...sql.matchAll(new RegExp(ADD_VALUE_ANY, 'gi'))].length;
-    const parsed = [...sql.matchAll(ADDS)].length;
+  // "statements replayed", so anything unrecognised reds instead of vanishing.
+  // These pin that the counts genuinely diverge — including for the two shapes
+  // that escaped the first version of this counter, because it was scoped to
+  // ADD VALUE rather than to the statement.
+  it.each([
+    ['an unparseable label', 'ALTER TYPE link_status ADD VALUE ??unparseable??;'],
+    ['RENAME VALUE, which changes the label set', "ALTER TYPE link_status RENAME VALUE 'a' TO 'b';"],
+  ])('sees but cannot replay: %s', (_label, sql) => {
+    const seen = [...sql.matchAll(new RegExp(ALTERS_TYPE, 'gi'))].length;
     expect(seen).toBe(1);
-    expect(parsed).toBe(0);
+    expect([...sql.matchAll(ADDS)].length).toBeLessThan(seen);
   });
 
-  it('does not attribute another enum\'s ADD VALUE to link_status', () => {
+  it('replays a three-part-qualified ADD VALUE it can read', () => {
+    const sql = "ALTER TYPE db.public.link_status ADD VALUE 'x';";
+    expect([...stripSqlComments(sql).matchAll(ADDS)].map(labelOf)).toEqual(['x']);
+  });
+
+  // Renaming the type is not a change to its labels, so it must not red.
+  it('ignores RENAME TO, which renames the type rather than a label', () => {
+    const sql = 'ALTER TYPE link_status RENAME TO link_state;';
+    expect([...sql.matchAll(new RegExp(ALTERS_TYPE, 'gi'))]).toEqual([]);
+  });
+
+  it("does not attribute another enum's ALTER TYPE to link_status", () => {
     const sql = "ALTER TYPE account_status ADD VALUE 'x';";
-    expect([...sql.matchAll(new RegExp(ADD_VALUE_ANY, 'gi'))]).toEqual([]);
+    expect([...sql.matchAll(new RegExp(ALTERS_TYPE, 'gi'))]).toEqual([]);
     expect([...stripSqlComments(sql).matchAll(ADDS)]).toEqual([]);
   });
 });
@@ -202,15 +225,17 @@ describe('enum value sets', () => {
       m[1]!.replace(/''/g, "'"),
     );
 
-    // Every ADD VALUE statement, then every one whose label this test can
-    // actually read. A statement in the first set but not the second is a
-    // spelling the scanner does not know — and the previous five review rounds
-    // each found one, every time failing silently. So it fails loudly instead.
-    const seen = [...sql.matchAll(new RegExp(ADD_VALUE_ANY, 'gi'))].length;
+    // Every ALTER TYPE aimed at link_status, then every one this test can
+    // actually read. A statement in the first set but not the second is one the
+    // scanner does not understand — an unknown label spelling, or an unknown
+    // verb like RENAME VALUE, which changes the label set without adding to it.
+    // Six review rounds each found one more, every time failing silently. So
+    // anything unrecognised fails loudly instead of passing unseen.
+    const seen = [...sql.matchAll(new RegExp(ALTERS_TYPE, 'gi'))].length;
     const parsed = [...sql.matchAll(new RegExp(`${ADD_VALUE}${LABEL}`, 'gi'))];
     expect(
       parsed.length,
-      `every ALTER TYPE ... link_status ... ADD VALUE must have a label this test can parse (saw ${seen}, parsed ${parsed.length}); teach it the spelling rather than letting the statement pass unseen`,
+      `every ALTER TYPE on link_status must be one this test can replay (saw ${seen}, replayed ${parsed.length}); teach it the statement rather than letting it pass unseen`,
     ).toBe(seen);
 
     // Postgres also accepts BEFORE/AFTER positional insertion, which this

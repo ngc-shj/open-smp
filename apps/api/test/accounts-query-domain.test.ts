@@ -20,9 +20,12 @@ import { stripTsComments } from './strip-ts-comments.js';
 describe('C40: the accounts status filter derives from the domain', () => {
   it('builds its status enum from LINK_STATUSES, not a local literal', () => {
     const source = readFileSync(new URL('../src/routes/accounts.ts', import.meta.url), 'utf8');
-    // Whitespace-tolerant so a formatter reflowing the `z.enum(...).optional()`
-    // chain does not red a derivation that is still intact.
-    expect(source).toMatch(/status:\s*z\s*\.\s*enum\(\s*LINK_STATUSES\s*\)/);
+    // Tolerant of anything a formatter does: whitespace between every token,
+    // a broken `.enum(...).optional()` chain, and a trailing comma — prettier
+    // emits one when it breaks the argument list, and the repo uses trailing
+    // commas throughout, so omitting `,?` here was a red waiting to happen on
+    // an intact derivation.
+    expect(source).toMatch(/status:\s*z\s*\.\s*enum\(\s*LINK_STATUSES\s*,?\s*\)/);
     // The failure this exists to catch: a re-inlined union. Any quoted status
     // literal in the *code* is one, since the domain is imported by name — this
     // is broader than matching `z.enum([...])`, which a local `const` would slip
