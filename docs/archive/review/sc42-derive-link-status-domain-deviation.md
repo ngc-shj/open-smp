@@ -1,0 +1,577 @@
+# Coding Deviation Log: sc42-derive-link-status-domain
+
+The plan deliberately left gate spellings, regexes, and file placement to be settled by execution.
+This log is where those decisions are recorded, along with anything that departed from the plan.
+
+---
+
+## D1 — Where the web-side module landed, and what it holds
+
+**Plan**: VE7 required both `TABS` and `CHIP_CLASSES` to become reachable from the unit tier, and
+explicitly left the arrangement to implementation.
+
+**Decided by execution**: one new module, `apps/web/src/lib/link-statuses.ts`, holding both —
+`ACCOUNT_TABS` (the tab order), `CHIP_CLASSES` (the domain-keyed declaration), `CHIP_CLASS_FALLBACK`,
+and `chipClassFor` (the string-indexed read). It follows `label-filters.ts`'s precedent exactly:
+relative imports, no `@/` alias, a `.ts` module rather than `.tsx`.
+
+Both `.tsx` consumers now import from it — `StatusChip.tsx` takes `chipClassFor`, `accounts/page.tsx`
+takes `ACCOUNT_TABS` — so the test asserts against the same module production renders from (RT5).
+Neither `.tsx` file retains a copy.
+
+`TABS` was renamed `ACCOUNT_TABS` on the move. The bare name was fine as a file-local const; as a
+shared export it says nothing about which page's tabs it is.
+
+## D2 — The I40.5 split, concretely
+
+**Plan**: stated that a domain-keyed declaration and a string-indexed read need to be two different
+types, and that `Record<LinkStatus, string>` alone is TS7053 under `strict`.
+
+**Decided by execution**: the declaration is `Record<LinkStatus, string>`; the read is a
+`chipClassFor(status: string): string` helper that casts internally. The cast is confined to one
+function rather than appearing at each call site, so the permissive direction has exactly one place
+to audit.
+
+## D3 — I40.6's gate is a text read of `globals.css`
+
+**Plan**: left the form unspecified, requiring only that map↔stylesheet agreement be gated.
+
+**Decided by execution**: the test reads `globals.css` and asserts every status-specific class token
+has a matching rule.
+
+**Tightened in code review (F3).** The first form matched `.<token> {` — the selector alone — which
+review proved blind to *two* shapes, not the one this log first recorded: a rule commented out, and a
+rule whose body has been emptied. Both render a colourless chip, which is exactly what the gate exists
+to catch. The assertion now requires a non-empty body containing `@apply`, which closes the
+emptied-body mode (proven: it goes red).
+
+**Residual limit, stated accurately**: a rule commented out but left in place still passes, because
+the `@apply` sits inside the comment text. Deleting a rule — the realistic failure — fires (M3), and
+so does emptying one. Closing the comment case needs comment-aware parsing, which is a large step up
+in machinery for a case SC45 already accepts as underivable. The first draft of this entry framed the
+limit as narrower than it was; that framing is what review corrected.
+
+## D4 — C41 gained a second test the plan did not name
+
+**Plan**: I41.2 required the domain's order to agree with the shipped Postgres enum, "asserted by
+something executable rather than in a comment", without saying how.
+
+**Decided by execution**: a second test in `tables.test.ts` reads `migrations/0001_init.sql`, extracts
+the `CREATE TYPE link_status AS ENUM (...)` member list, and compares it to the domain.
+
+This turned out to be load-bearing in a way worth recording. Under M1 (a fifth status added to the
+domain alone), the *drizzle* assertion `link_status derives from the shared link-status domain`
+**passes** — correctly, since `linkStatusEnum` now derives from the domain and follows it wherever it
+goes. Deriving site 6 removed that test's ability to catch a domain change. The migration-order test
+is what replaces it, and without it M1 would have produced no schema-side failure at all.
+
+## D5 — Site 8 derives via the matcher, not via `api-types`
+
+**Plan**: C42/I42.4 required `upsertLink`'s `link.status` to track `LinkResult`/`LinkStatus`, noting
+`apps/worker` already declares `@open-smp/matcher` so no new package edge is needed.
+
+**Decided by execution**: `Pick<LinkResult, 'saasAccountId' | 'identityId' | 'status' | 'confidence'
+| 'ruleId'> & { evidence: unknown }`, named `UpsertLinkInput` and exported (the export came later, in
+review — see D8). This tracks the matcher's result shape structurally rather than naming `LinkStatus`
+directly, so the parameter follows `LinkResult` on any future field change, not only on a status
+widening.
+
+The production code needed no manifest edit, as the plan predicted — but the *gate* for this site did.
+See D9.
+
+## D6 — `chipClassFor` had a prototype-key bug, found by the self-R-check
+
+**Not a plan deviation — a defect introduced in this cycle and fixed within it.** Recorded because the
+first implementation shipped a contract its own test did not cover.
+
+The first draft read `(CHIP_CLASSES as Record<string, string | undefined>)[status] ?? FALLBACK`. A
+bare index reaches the prototype, so five inputs returned a non-`string` despite the declared return
+type — verified by execution:
+
+```text
+chipClassFor('constructor')    -> function Object() { [native code] }
+chipClassFor('toString')       -> function toString() { [native code] }
+chipClassFor('valueOf')        -> function valueOf() { [native code] }
+chipClassFor('hasOwnProperty') -> function hasOwnProperty() { [native code] }
+chipClassFor('__proto__')      -> [object Object]
+chipClassFor('not_a_status')   -> status-chip bg-neutral-100 text-neutral-700   (correct)
+```
+
+Not exploitable: the value originates in the `link_status` enum column, and the sink is React's
+`className`. But this cycle's whole point was promoting that fallback from an inline expression into a
+named, tested contract — and the test asserted only `'not_a_status'` and `''`, both of which pass
+under the broken form. The gate looked like coverage and was not.
+
+Fixed with `Object.hasOwn`, and the five keys added to the test as an `it.each`. Red-proven (M7):
+reverting to the `??` form fails all five, passes the rest.
+
+The pre-existing `StatusChip.tsx` had the same `?? fallback` shape, so this is inherited rather than
+newly introduced — but it is fixed here rather than deferred, because the diff is what made it a
+claimed guarantee.
+
+## D7 — One dead re-export removed after the self-R-check flagged it
+
+`link-statuses.ts` initially ended with `export { LINK_STATUSES }`. No consumer imported it: the two
+`.tsx` files take `ACCOUNT_TABS` / `chipClassFor`, and the test imports the domain from
+`@open-smp/api-types` directly. It also opened a second web-side path for a value that
+`apps/web/src/lib/api-types.ts` documents itself as the single crossing point for.
+
+Removed. That left the `LINK_STATUSES` value import unused, which failed `pnpm lint` and `pnpm build`
+(`@typescript-eslint/no-unused-vars`) while `pnpm typecheck` and `pnpm test:unit` both stayed green —
+the same lint-red/tests-green split cycle 4 recorded. The import is now type-only, which VE7 permits.
+
+## D8 — Code review round 1: two Majors, both real gate defects
+
+**F1 — the migration-order gate blocked the operation it exists to protect.** The first form read
+`0001_init.sql` alone. But `migrate.ts:26-27` applies *every* `migrations/*.sql` in filename order, and
+Postgres widens an enum with `ALTER TYPE ... ADD VALUE`, which by definition lands in a *later* file —
+`0001` is immutable once shipped, which is the gate's own stated premise. So a **correctly migrated**
+schema failed it, and the only ways to satisfy it were to edit shipped history or delete the test.
+
+Reproduced before fixing: adding `0006_link_status_quarantined.sql` with the `ALTER TYPE` plus the
+matching domain member turned it red. The gate now reads the whole migration directory and replays the
+enum's evolution (CREATE TYPE, then each ADD VALUE in filename order). Verified both directions: the
+`ALTER TYPE` path is green, and M2's reorder is still red.
+
+This was the sharpest finding of the cycle. D4 named this test as the sole replacement for coverage the
+`linkStatusEnum` derivation removed — so it was load-bearing precisely when someone adds a status, and
+that is exactly when it would have blocked them.
+
+**F2 — sites 2 and 8 had no gate at all.** Review executed both reverts: re-inlining the union in
+`routes/accounts.ts` and in `upsertLink`'s parameter left `test:unit` at 258 passed, typecheck at 0
+errors, and lint clean. Nothing anywhere noticed. The central invariant of this change was ungated at
+two of its six derived sites, and `apps/api/test/label-kinds.test.ts` was already the precedent for
+gating exactly this — it just was not applied.
+
+Fixed by exporting `accountsQuerySchema` and naming `UpsertLinkInput`, then gating both.
+
+**The first fix for site 2 did not work, and the failed attempt is the useful part.** It asserted the
+schema's members equal `LINK_STATUSES` — which stays green under the revert, because `z.enum` snapshots
+its members at construction, so a hand-written union with the same four members builds a byte-identical
+validator. A behavioural assertion structurally cannot distinguish them. The gate now reads the route's
+source text for `z.enum(LINK_STATUSES)` and for the absence of an inlined literal; the behavioural
+assertions are kept alongside, since they pin what the route accepts. Red-proven as M8.
+
+Site 8's gate is a type-level witness (M9), which fires at typecheck in two places — the call site and
+the test — rather than at runtime. That is the right tier for a type-level invariant.
+
+## D9 — The site-8 gate needed a manifest edge the worker did not declare
+
+Adding `apps/worker/test/upsert-link-domain.test.ts` broke typecheck and the unit run with
+`Cannot find package '@open-smp/api-types'`. `apps/worker` reaches the domain transitively through
+`@open-smp/matcher` and had never declared the direct edge.
+
+This is the same undeclared-edge class I42.3 exists to catch, hit while writing a test *for* that
+class. Fixed by declaring `@open-smp/api-types` in `apps/worker/package.json`, matching what C42 did
+for the matcher. Worth recording because the failure was loud only after the test existed — the
+production code never needed the direct import, so nothing had surfaced it.
+
+## D10 — Code review round 2: the round-1 fixes were themselves defective
+
+Six findings, three Major. Every one is a defect in a gate written or amended in round 1, which makes
+this round the more instructive of the two.
+
+**F1 — the site-8 gate was a false green for the exact revert it names.** Round 1 established, by
+execution, that a re-inlined union with the same four members is invisible to any *structural*
+assertion — that is why site 2's gate reads its route's source text. The site-8 gate written in the
+same commit was a runtime witness, and re-inlining `UpsertLinkInput` with the same members left
+typecheck at 0 and the suite at 264 passed. The lesson was written down in D8 and then not applied
+one file over.
+
+Worse, the narrowing case the witness *did* catch was already caught without it: a narrowed union
+reds at the production call site regardless. So the test contributed no detection at all. It now reads
+`match.ts`'s source for `Pick<LinkResult`, plus the absence of any quoted status literal. Red-proven
+(M13).
+
+**F2 — the migration replay false-redded on five valid SQL forms.** `IF NOT EXISTS` (the idiomatic
+re-runnable form), a quoted identifier, a schema-qualified name, lowercase keywords, and extra
+whitespace or a newline all missed the regex — each producing a red on a *correct* migration. This is
+TEST-1's own failure mode recurring inside TEST-1's fix: a gate that reds on correct work pressures
+the next author to delete it. All five now pass; verified case by case.
+
+**F3 — positional `ADD VALUE ... BEFORE/AFTER` made the gate assert an order the database does not
+have.** Postgres supports inserting an enum member at a position; the replay was append-only, so with
+`ADD VALUE 'quarantined' BEFORE 'orphan'` the real sort order is
+`matched, quarantined, orphan, ghost, ambiguous` while the replay computed `…ambiguous, quarantined`.
+The test's entire purpose is pinning sort order against the deployed database, and it got that
+backwards precisely where the order is non-obvious.
+
+Fixed by **refusing to guess**: positional forms are detected and fail with a message saying the
+ordering rule must be taught to the test before such a migration is used. A gate that says "I cannot
+evaluate this" is honest; one that asserts a wrong order is worse than none.
+
+**F4 — a commented-out `ADD VALUE` counted as applied.** The scan was textual, so
+`-- ALTER TYPE link_status ADD VALUE 'quarantined';` plus a domain listing `quarantined` passed — the
+domain claiming a status the database lacks, which fails on insert. Comments are now stripped first.
+Same class as F5, and `api-types-boundary.test.ts:35` already had a `stripComments` helper as
+precedent.
+
+**F5 — the CSS gate still missed one of the two shapes its own comment claimed.** Round 1 tightened it
+to require `@apply`, which caught the emptied body but not a rule commented out — the `@apply` sits
+inside the comment text. D3 was amended in round 1 to record that residual limit honestly; round 2
+closed it instead, by stripping comments. The comment now matches the behaviour.
+
+**F6 — the site-2 source assertion was brittle in two ways that would red a correct refactor.** An
+aliased import and a reformatted `z.enum(...).optional()` chain both keep the derivation intact yet
+failed. The pattern is now whitespace-tolerant (reflow verified green), and the negative assertion was
+broadened from `z.enum([...])` to any quoted status literal — which also closes an indirection the
+narrow form missed, a local `const LOCAL = [...]` fed to `z.enum`. Both verified.
+
+**What round 2 says about round 1.** All six findings are in gates, not in the derivation; the
+production code was untouched by this round. The recurring shape is that a gate is easy to write so it
+passes today and hard to write so it fails tomorrow — and the only way to tell them apart is to run
+the mutation. Round 1 ran mutations for the gates it doubted and reasoned about the ones it did not.
+
+## D11 — Code review round 3: the gate repairs carried the bugs a third time
+
+Three findings, two Major, all defects in gates round 2 had just fixed. Round 3 ran specifically
+because rounds 1 and 2 established that pattern — not because anything was outstanding.
+
+**NEW-1 — the positional detector was inverted, not merely blind.** R2-3 chose to *refuse* positional
+`ADD VALUE ... BEFORE/AFTER` rather than replay it, which was right. But the detector required a
+trailing whitespace character (`(BEFORE|AFTER)\s`), and Postgres does not need one: a string literal
+is its own token, so `AFTER'matched'` is valid. Verified against the running Postgres 16:
+
+```text
+ALTER TYPE r3v ADD VALUE 'dormant' AFTER'matched';   -> ALTER TYPE
+enumsortorder                                        -> matched, dormant, orphan
+```
+
+With that form present, the append-only replay took over and the gate **passed the wrong order and
+failed the correct one** — the precise defect R2-3 existed to prevent, reintroduced by an incomplete
+regex. Fixed to `(BEFORE|AFTER)\s*'`. All three spellings now fail loudly.
+
+**NEW-2 — the `--` stripper corrupted SQL string literals.** `replace(/--[^\n]*/g, '')` is not
+literal-aware, so a `--` inside a quoted value (a separator, some default text) swallowed the rest of
+the line — including, in the executed case, a real `ADD VALUE` on the same line, and in another a
+`CREATE TYPE`, producing "migrations must declare the link_status enum" on a file that declares it.
+A gate failing for a reason unrelated to its claim is worse than one that misses.
+
+Replaced with a small tokenizing walk that only treats a comment marker as one outside a literal.
+
+**NEW-3 — the broadened negatives false-redded on ordinary comments.** R2-6 widened the check to *any*
+quoted status literal in the file, which catches a `const LOCAL = [...]` indirection but also reds a
+comment mentioning `'orphan'` or an error message containing `'ghost'`. Both files already carry
+literals of that shape nearby, so this was a matter of when, not if. Comments are now stripped before
+the check — verified both directions: a status-mentioning comment stays green, both re-inline reverts
+still fire.
+
+**On the duplicated stripper.** `stripTsComments` exists twice, in `apps/api/test/` and
+`apps/worker/test/`. That is a knowing choice, not an oversight in a cycle about removing duplication:
+the two packages share no test-utility path, and the alternative considered — putting it in
+`packages/api-types` — would push a test helper into the package whose entire contract (C39) is that
+it holds nothing but the domain. A third copy would be the point to build a shared test package;
+two is cheaper than the boundary erosion. `packages/schema` has its own separate one because it strips
+*SQL*, a different language with different rules.
+
+**What three rounds say.** Every finding in rounds 2 and 3 was in a gate, and every one was found by
+running a mutation rather than reading the code. The derivation itself — the actual subject of the
+cycle — has been correct since Phase 2. What kept being wrong is the machinery asserting it, which is
+worth recording plainly: writing a gate that passes today is easy, and writing one that fails tomorrow
+for the right reason took three rounds of execution to get right.
+
+## D12 — Code review round 4: the class, not the instance
+
+One Major, and the review's diagnosis was better than its finding.
+
+**R4-1 — the same bug R3-1 diagnosed, two tokens to the left.** R3-1 fixed `(BEFORE|AFTER)\s` →
+`\s*` with a comment stating the general rule: *a string literal is its own token, so no whitespace is
+required before it*. The very same pattern contained `ADD\s+VALUE\s+`, and Postgres accepts
+`ADD VALUE'quarantined'` — verified live:
+
+```text
+ALTER TYPE r4v ADD VALUE'c';           -> ALTER TYPE
+ALTER TYPE r4v ADD VALUE'd'AFTER'a';   -> ALTER TYPE   (a,d,b,c)
+```
+
+So the replay missed the value entirely: the database gains a status the domain does not list, and the
+gate whose whole purpose is catching that divergence stayed green. I wrote down the rule and applied
+it to one keyword.
+
+**Fixed by class rather than by instance**, which is what the reviewer actually asked for:
+
+1. The `ALTER TYPE ... ADD VALUE` prefix is now **one** shared constant (`ADD_VALUE`) used by both the
+   positional detector and the replay. The two were separate literals, which is how they drifted.
+2. `\s*` at every keyword-to-literal boundary in it, in one pass.
+3. **The scanner got its own test table** — twelve cases: eight spellings that must parse (canonical,
+   no-space, `IF NOT EXISTS` both ways, lowercase, quoted identifier, schema-qualified, multiline),
+   two commented-out forms that must not, two comment-marker-inside-a-literal forms that must not eat
+   real DDL. Previously the scanner was validated only indirectly, through the gate that consumes it,
+   which is why each spelling took a full round to surface.
+
+**And the extraction immediately broke something, which is the useful part.** Sharing the prefix
+silently changed what the positional detector matched — `ADD_VALUE` stops before the new label, so
+appending `\s*(BEFORE|AFTER)` no longer matched the label in between, and two positional cases flipped
+from FAIL to PASS. The case table caught it on the first run. A refactor of a gate is a change to the
+gate, and it needs the same table the gate does.
+
+**Two hazards recorded rather than fixed**, both unreachable only by accident of current content:
+
+- `stripSqlComments` does not handle nested block comments or dollar-quoting. The migrations contain
+  zero block comments, and `0001_init.sql`'s `DO $$` block happens to be quote-balanced — by luck, not
+  design.
+- `stripTsComments` would treat a regex literal containing `/*` as opening a block comment. Neither
+  scanned file contains a regex literal, and `/a/*b/` is not valid TypeScript anyway.
+
+Both are now stated in the code. The reason to write them down rather than fix them: the next person
+to add a `/* */` block to a migration or a regex to `accounts.ts` is the one who turns a note into a
+false green, and a comment is what tells them.
+
+**The duplicated `stripTsComments` stays duplicated.** Two byte-identical copies, each consumed by one
+gate. Assessed again in round 4: drift would mean a missed improvement in one gate, not a false green,
+since neither copy is load-bearing for the other's assertion. Two is cheaper than either a shared test
+package or pushing a test helper into `packages/api-types`, whose contract (C39) is that it holds
+nothing but the domain. A third call site is the trigger to promote it.
+
+## D13 — Code review round 5: the axis moved, so the gate stopped guessing
+
+One Critical, one Major, and the fix is the one the previous four rounds were circling.
+
+**R5-1/R5-2 — the label has more spellings than a plain literal.** Round 4 generalised across
+*whitespace* and that generalisation held under every probe. It did not generalise across the *lexical
+form of the literal*. `ADD_VALUE` was followed by a hardcoded `'([^']+)'`, and Postgres accepts three
+other label forms plus a fully-quoted schema-qualified type name — verified live:
+
+```text
+ALTER TYPE r5v ADD VALUE $$dq$$;    -> ALTER TYPE
+ALTER TYPE r5v ADD VALUE E'esc';    -> ALTER TYPE
+ALTER TYPE r5v ADD VALUE U&'uni';   -> ALTER TYPE
+enumsortorder                       -> a,dq,esc,uni
+```
+
+Four confirmed false greens, each executed as a real migration adding a status the domain does not
+list — the gate stayed green in every one. That is the exact divergence the gate exists to catch, and
+the positional detector inherited the same assumption, so a positional insert with a non-plain label
+went undetected and the replay asserted an order disagreeing with the database.
+
+**The fix is to stop failing silently, not to enumerate harder.** Every round of this has ended the
+same way: a spelling nobody anticipated simply did not match, and the replay carried on as if the
+statement were not there. Enumerating one more axis would have bought one more round. So the gate now
+counts **statements it can see at all** (`ADD_VALUE_ANY`) against **statements whose label it can
+parse** (`ADD_VALUE + LABEL`), and fails when those differ:
+
+```text
+every ALTER TYPE ... link_status ... ADD VALUE must have a label this test can parse
+(saw 1, parsed 0); teach it the spelling rather than letting the statement pass unseen
+```
+
+An unanticipated spelling is now a loud red naming what to fix. That property is itself asserted —
+one case feeds the scanner `ADD VALUE ??unparseable??` and pins that seen=1, parsed=0.
+
+`LABEL` also became a shared constant beside `ADD_VALUE`, for the same reason the prefix did in round
+4: the two consumers had drifted on the prefix, and leaving the label inline would have let them drift
+again. It handles `''` as an escaped quote rather than as the label's end, and the `CREATE TYPE`
+extraction was fixed to match.
+
+**What five rounds actually cost, stated plainly.** Twelve findings, every one in a gate, none in the
+derivation — which has been correct since Phase 2 and has now been independently traced clean five
+times. The recurring defect was writing scanners that fail silently on input they do not understand,
+and fixing each silence one instance at a time. The structural answers came late: one shared pattern
+(round 4), a direct test table for the scanner (round 4), and a parse-completeness assertion (round 5).
+Of those, only the last one closes spellings nobody has thought of yet — which is why it is the one
+that should have come first.
+
+## D14 — Code review round 6: the counter had inherited its own blind spot
+
+One Critical, one Major, one Minor. The Critical is the sharpest structural finding of the six rounds.
+
+**R6-1/R6-2 — the parse-completeness assertion protected the label but not the statement.** Round 5's
+counter was `ADD_VALUE + \S`, so it inherited `ADD_VALUE`'s prefix as its own blind spot. Anything
+failing that prefix was invisible to *both* counters, the assertion compared 0 to 0, and passed. Two
+such escapes, both valid Postgres 16, both executed as end-to-end false greens:
+
+```text
+ALTER TYPE opensmp.public.r6z ADD VALUE 'threepart';   -> ALTER TYPE   (db.schema.type)
+ALTER TYPE r6z RENAME VALUE 'ghost' TO 'spook';        -> ALTER TYPE   (changes the label set)
+enumsortorder                                          -> a,spook,threepart
+```
+
+`RENAME VALUE` was verified on an enum **in use by a table with rows**, so it is not a statement a
+migration author would avoid.
+
+**Fixed at the statement level, which is where it should have been in round 5.** The counter is now
+`ALTER TYPE <any qualification of link_status> <anything except RENAME TO>` — it counts everything
+aimed at this type and refuses to proceed on anything it cannot replay, rather than counting only the
+verb it already knew. `RENAME TO` is excluded deliberately: it renames the type, not a label.
+`TYPE_REF` also became `{0,2}` qualifiers, and is now shared by the `CREATE TYPE` extraction.
+
+**R6-3 — the site-2 gate redded on a trailing comma.** Round 4's comment claimed formatter tolerance;
+the chain break was handled but not an argument-list break, which prettier follows with a trailing
+comma — and this repo uses them throughout, including in the round-5 diff. A false red on an intact
+derivation. Fixed with `,?`, and the detection re-proven to still fire.
+
+**One of my new test cases was wrong, and it caught itself.** After widening `TYPE_REF`, I left
+three-part qualification in the "sees but cannot replay" table — but it is now replayable, so the case
+failed on the first run. The right home was the "can read" table, where it also already sat. The case
+table catching an error in the case table is the argument for having one.
+
+**Six rounds, fourteen findings, still none in the derivation.** The axis moved every round: whitespace
+(2–4), lexical form of the label (5), the statement prefix and verb (6). Each fix was correct for the
+axis it targeted and inherited the next one's blind spot. What finally generalises is not a wider
+pattern but the shape of the assertion — *count what you can see, refuse what you cannot replay* —
+applied at the level of the whole statement rather than the fragment previously understood.
+
+## D15 — Code review round 7: the text scanner was the wrong instrument, and it is gone
+
+Three findings, two High. The important one is not any single escape but what they proved
+collectively: **the escapes were not running out**, and each patch that widened the scanner admitted
+new false reds needing a hand-maintained exemption list.
+
+**F1 — the escape that defeated the anti-blindness counter through its own prefix.**
+`stripSqlComments` replaced a comment with *nothing*, but Postgres treats a comment as a token
+separator. So `ALTER/*c*/TYPE link_status ADD VALUE 'escaped'` — valid DDL, verified adding the label
+on live Postgres 16 — became the single token `ALTERTYPE` after stripping. Both `ALTERS_TYPE` and
+`ADD_VALUE` share that prefix, so `seen` and `parsed` both went to zero and the completeness assertion
+compared 0 to 0 and passed. The counter built to detect blindness was blinded by the thing it was
+built to detect.
+
+**F2 — a recreate is not an `ALTER TYPE` at all.** `DROP TYPE link_status; CREATE TYPE link_status AS
+ENUM ('totally','different','labels');` replaced the label set wholesale and passed 287/287. The
+`created` match was non-global, so it bound 0001's declaration and ignored the later one; scoping the
+counter to `ALTER TYPE` could never reach this by construction.
+
+**F3 — the widening had started costing false reds.** `OWNER TO` and `SET SCHEMA` are label-neutral
+and both redded. `RENAME TO` had been special-cased in round 6; its two siblings had not. The scanner
+was being asked to know the whole `ALTER TYPE` grammar in both directions, one exemption per round.
+
+### The fix: stop parsing SQL, and let Postgres parse it
+
+`packages/schema/test/link-status-enum.integration.test.ts` runs the migrations against a real
+Postgres via Testcontainers and reads the enum back from `pg_enum` ordered by `enumsortorder`. No
+spelling can escape, because the parser is the one that will execute the migrations in production.
+It also asserts the `account_links.status` column actually uses that type — without which the check
+would still pass if the column were switched to a different enum carrying the same labels — and that
+an out-of-domain value is rejected on cast, which executes the boundary claim rather than asserting it.
+
+**Proven against every escape**, run as real migration files:
+
+| Case | Text scanner (r6) | Database gate | Want |
+|---|---|---|---|
+| `ALTER/*c*/TYPE ... ADD VALUE` (F1) | **green — escaped** | **red** | red |
+| `DROP TYPE` + `CREATE TYPE` recreate (F2) | **green — escaped** | **red** | red |
+| plain `ADD VALUE` | red | red | red |
+| `$$dollar-quoted$$` label | red | red | red |
+| positional `BEFORE` | red | red | red |
+| `RENAME VALUE` | red | red | red |
+| commented-out (a no-op) | green | green | green |
+| `OWNER TO` (label-neutral, F3) | **red — false** | **green** | green |
+| `SET SCHEMA` (label-neutral, F3) | **red — false** | **green** | green |
+
+The database gate is correct on all nine. The text scanner was wrong on four after seven rounds of
+repair.
+
+**What was deleted**: `stripSqlComments`, `TYPE_REF`, `ADD_VALUE`, `LABEL`, `ALTERS_TYPE`, the 23-case
+scanner table, and the migration-replay test — about 170 lines whose entire purpose was approximating
+a SQL parser. `tables.test.ts` keeps the drizzle-mirror assertion, which is a different claim (the ORM
+mirror agrees with the domain) and correctly stays in the unit tier, with a pointer to where the
+deployed-enum question is now answered.
+
+**The cost, stated plainly**: this gate now needs a database, so it runs in the integration tier
+rather than the cheapest CI job. VE3 already governs that tier and CI already runs it. That is the
+trade the previous seven rounds were implicitly refusing to make — and refusing it cost seven rounds
+and four surviving defects, three of which were introduced by the repairs themselves.
+
+**The transferable lesson.** Every round's finding was the same shape: a text scanner failed silently
+on input it did not understand. The structural answers got progressively more general — one shared
+pattern, a direct case table, a parse-completeness assertion, statement-level scoping — and each was
+correct for the axis it targeted while inheriting the next one's blind spot. The one that actually
+converges is not a better parser but *not parsing*: when a real executor for the language is available,
+asking it is the only approach with no blind spot to find.
+
+---
+
+## NFR3 — mutation proofs
+
+Seven mutations, all executed, all confirmed red, all restored. Per the plan's access-mode table,
+domain mutations ran **in the main repository from a backup**, never in a worktree.
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | add a fifth status `quarantined` to `LINK_STATUSES` alone | typecheck `TS2741` on the chip map + 4 unit tests red (tab coverage, chip mapping ×2, migration order) |
+| M2 | reorder `linkStatusEnum` off the domain | `link_status derives from the shared link-status domain` red |
+| M3 | delete `.status-chip-ghost` from `globals.css` | `defines a rule for each status-specific class` red |
+| M4 | remove the `dependencies` block from `packages/matcher/package.json` | `declares @open-smp/api-types as a workspace dependency` red |
+| M5 | reorder `ACCOUNT_TABS` to equal the domain order | 2 tab tests red |
+| M6 | replace the fallback with a real chip class | `falls back for a value outside the domain` red |
+| M7 | revert `chipClassFor` to the `??` form | 5 prototype-key tests red |
+| M8 | re-inline the union in `routes/accounts.ts` (site 2) | `builds its status enum from LINK_STATUSES` red — **added in review; the first version of this gate stayed green** |
+| M9 | re-inline the union in `UpsertLinkInput` (site 8) | typecheck red in 2 places (call site + witness) — added in review |
+| M10 | add `0006_…ALTER TYPE…` + the domain member | migration-order gate **green** (was red before the F1 fix — a correct schema must pass) |
+| M11 | empty the `.status-chip-ghost` rule body | `defines a non-empty rule for each status-specific class` red — added in review |
+| M12 | widen `LinkResult['status']` to bare `string` | typecheck red — `TS2578: Unused '@ts-expect-error' directive`, added in review to close the direction the assignment witness cannot see |
+| M13 | re-inline `UpsertLinkInput` with the **same** four members | site-8 gate red — **round 2; this was a false green until then** |
+
+**Round 2's migration-replay cases**, each run as a real migration file plus the matching domain
+member. `want` is what a correct gate must do; all seven matched:
+
+| Case | Want | Got |
+|---|---|---|
+| `ADD VALUE IF NOT EXISTS 'x'` | PASS | PASS |
+| `ALTER TYPE "link_status" ADD VALUE 'x'` | PASS | PASS |
+| `ALTER TYPE public.link_status ADD VALUE 'x'` | PASS | PASS |
+| `alter type … add value 'x'` (lowercase) | PASS | PASS |
+| multiline / extra whitespace | PASS | PASS |
+| `-- ALTER TYPE … ADD VALUE 'x'` (commented out) | FAIL | FAIL |
+| `ADD VALUE 'x' BEFORE 'orphan'` (positional) | FAIL | FAIL |
+
+Plus, for the other round-2 gates: a commented-out CSS rule now reds; a reflowed `z.enum(...)` chain
+stays green (correct refactor); a `const LOCAL = [...]` indirection reds.
+
+**Round 3's cases**, all executed, all matching `want`:
+
+| Case | Want | Got |
+|---|---|---|
+| `ADD VALUE 'x' AFTER'matched'` (no space) | FAIL | FAIL |
+| `ADD VALUE 'x' BEFORE'orphan'` (no space) | FAIL | FAIL |
+| `ADD VALUE 'x' AFTER 'matched'` (spaced) | FAIL | FAIL |
+| `DEFAULT 'a--b';` on the same line as a real `ADD VALUE` | PASS | PASS |
+| comment mentioning `'orphan'` in `accounts.ts` | PASS | PASS |
+| comment mentioning `'orphan'` in worker `match.ts` | PASS | PASS |
+| site-2 re-inline (round-2 catch must hold) | FAIL | FAIL |
+| site-8 re-inline (round-2 catch must hold) | FAIL | FAIL |
+
+The last two are the regression check that matters: round 3 loosened both negatives by stripping
+comments, so it had to prove the detections they were widened for in round 2 still fire.
+
+**M1's outcome, recorded as the plan required.** The expectation spanned more than one tree state:
+
+- **Fail loudly**: the chip map (compile error), the tab-coverage assertion, the migration-order
+  assertion. `apps/worker` did **not** fail — because I42.4 derived site 8, which is exactly what that
+  invariant was added for. Under the plan's first draft it would have failed here.
+- **Widen silently and correctly**: the API's `z.enum`, as R-C predicted.
+- **Follow the domain**: `linkStatusEnum`, per D4 above.
+
+## Verification
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **264 tests / 29 files** (baseline 241 / 25) |
+| `pnpm test:integration` | exit 0 — 143 / 6 (was 140 / 5; the enum gate moved here) |
+| `pnpm test:e2e` | exit 0 — **43**, unchanged as I40.3 predicted |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+Every gate judged by its own exit status, captured to a file rather than piped (R44).
+
+E2E ran after `docker compose up -d --build api web worker` (VE2 — compose carries no source mount).
+No login was added anywhere (VE6).
+
+## Acceptance criterion 1 — the three-form grep
+
+Run in all three forms. Remaining hits are all in exempt categories, and **no site was added to an
+exclusion list to make the grep pass**:
+
+- the domain declaration itself (`api-types/src/index.ts:22-25`)
+- the retained narrowing, site 5 (`matcher/src/match.ts:11,13,16`) and its single-value assignments
+  (`:53`, `:78`)
+- single-value predicates: `EvidencePopover.tsx:23`, `accounts/page.tsx:58`'s default, the SQL CHECK
+  at `tables.ts:141`
+- `ACCOUNT_TABS` — the deliberately hand-written render order, pinned by test
+- deferred: `seed.ts:353-356` (SC44), `globals.css` (SC45, gated by I40.6), `e2e/fixtures` (SC46)
+
+**New observation, out of scope**: `.github/workflows/ci.yml:101-135` hardcodes `?status=orphan` and
+`?status=ghost` in the compose-smoke assertions. These are single-value smoke checks of the same shape
+as `EvidencePopover.tsx:23`, not member-set declarations — a fifth status does not make them wrong.
+Recorded because the grep surfaced them and silence would be indistinguishable from a miss.

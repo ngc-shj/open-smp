@@ -1,18 +1,22 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
+import { LINK_STATUSES } from '@open-smp/api-types';
 import type { AccountLabelKind, AccountListItem } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
 import { LABEL_FILTERS } from '../label-kinds.js';
 
-const LINK_STATUSES = ['matched', 'orphan', 'ghost', 'ambiguous'] as const;
-
 // 'none' and 'any' let an operator ask "what have I not triaged yet" without a
 // second endpoint; both are predicates on the account_labels LEFT JOIN the
 // query already performs, so neither costs an extra round trip.
-const accountsQuerySchema = z
+//
+// Exported so a unit test can assert the status filter still derives from
+// LINK_STATUSES. Re-inlining the union here is otherwise invisible: the four
+// members happen to match today, so typecheck, lint and every test stay green
+// while the single-source property is quietly gone.
+export const accountsQuerySchema = z
   .object({
     status: z.enum(LINK_STATUSES).optional(),
     app: z.string().min(1).optional(),

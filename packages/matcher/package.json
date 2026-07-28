@@ -8,6 +8,9 @@
     "build": "tsc --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@open-smp/api-types": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^22.20.1",
     "vitest": "^4.1.10"

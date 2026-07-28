@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { withTenant } from '@open-smp/schema';
-import { defaultRules, matchAccounts, type AccountView, type IdentityView } from '@open-smp/matcher';
+import {
+  defaultRules,
+  matchAccounts,
+  type AccountView,
+  type IdentityView,
+  type LinkResult,
+} from '@open-smp/matcher';
 import type { MatchJobData, MatchJobResult } from '@open-smp/queues';
 
 export interface MatchDeps {
@@ -54,17 +60,24 @@ async function loadAccounts(tx: PoolClient): Promise<AccountView[]> {
   }));
 }
 
+/**
+ * What `upsertLink` writes into `account_links`.
+ *
+ * Derived from the matcher's own result shape rather than re-spelled: this is
+ * the last type-level checkpoint before a status reaches the `link_status` enum
+ * column, so a domain widening must reach it. Exported so a unit test can pin
+ * that — re-inlining the union here is otherwise invisible, since the four
+ * members match today and nothing would go red.
+ */
+export type UpsertLinkInput = Pick<
+  LinkResult,
+  'saasAccountId' | 'identityId' | 'status' | 'confidence' | 'ruleId'
+> & { evidence: unknown };
+
 async function upsertLink(
   tx: PoolClient,
   tenantId: string,
-  link: {
-    saasAccountId: string;
-    identityId: string | null;
-    status: 'matched' | 'orphan' | 'ghost' | 'ambiguous';
-    confidence: number;
-    ruleId: string | null;
-    evidence: unknown;
-  },
+  link: UpsertLinkInput,
   computedAt: Date,
 ): Promise<void> {
   await tx.query(

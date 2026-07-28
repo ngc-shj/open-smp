@@ -14,7 +14,7 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
+import { ACCOUNT_LABEL_KINDS, LINK_STATUSES } from '@open-smp/api-types';
 import { sql } from 'drizzle-orm';
 
 const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
@@ -30,12 +30,10 @@ const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
 });
 
 export const identityStatusEnum = pgEnum('identity_status', ['active', 'left']);
-export const linkStatusEnum = pgEnum('link_status', [
-  'matched',
-  'orphan',
-  'ghost',
-  'ambiguous',
-]);
+// Derived from the shared domain, same as accountLabelKindEnum below. The
+// domain declares its members in the migration's order, which is what a
+// Postgres enum's sort order requires.
+export const linkStatusEnum = pgEnum('link_status', LINK_STATUSES);
 export const accountStatusEnum = pgEnum('account_status', [
   'active',
   'suspended',

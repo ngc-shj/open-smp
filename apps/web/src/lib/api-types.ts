@@ -13,7 +13,14 @@
 // audit event whose fields the API withheld as corrupt; ACCOUNT_LABEL_KINDS is
 // what the accounts filter bar derives its options from instead of re-listing
 // them.
-export { ACCOUNT_LABEL_KINDS, isLabelAuditKind } from '@open-smp/api-types';
+//
+// LINK_STATUSES has no runtime consumer in apps/web yet — the chip-class map is
+// keyed by the `LinkStatus` *type*, which crosses in the type block below. It is
+// re-exported here anyway, because the policy above is that a shared value
+// crosses at this one place: a guard like isAccountLabelKind is the consumer
+// this anticipates, and leaving it out is what pushes the next one into
+// importing @open-smp/api-types directly.
+export { ACCOUNT_LABEL_KINDS, LINK_STATUSES, isLabelAuditKind } from '@open-smp/api-types';
 
 export type {
   LinkStatus,

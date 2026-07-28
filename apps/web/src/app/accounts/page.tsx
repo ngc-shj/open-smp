@@ -11,9 +11,8 @@ import { LabelControl } from '@/components/LabelControl';
 import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
 import { LabelFilter } from '@/components/LabelFilter';
 import { LABEL_FILTER_VALUES, type LabelFilterValue } from '@/lib/label-filters';
+import { ACCOUNT_TABS } from '@/lib/link-statuses';
 import { AccountSelectCheckbox, AccountSelectionProvider } from '@/components/AccountSelection';
-
-const TABS: LinkStatus[] = ['orphan', 'ghost', 'ambiguous', 'matched'];
 
 
 async function fetchAccounts(
@@ -56,7 +55,7 @@ export default async function AccountsPage({
   searchParams: Promise<{ status?: string; label?: string; cursor?: string }>;
 }) {
   const params = await searchParams;
-  const status = TABS.includes(params.status as LinkStatus) ? (params.status as LinkStatus) : 'orphan';
+  const status = ACCOUNT_TABS.includes(params.status as LinkStatus) ? (params.status as LinkStatus) : 'orphan';
   const label = LABEL_FILTER_VALUES.includes(params.label as LabelFilterValue)
     ? (params.label as LabelFilterValue)
     : null;
@@ -80,7 +79,7 @@ export default async function AccountsPage({
         </div>
 
         <nav className="mb-4 flex gap-1 border-b border-neutral-200">
-          {TABS.map((tab) => (
+          {ACCOUNT_TABS.map((tab) => (
             <Link
               key={tab}
               // Switching tabs keeps the label filter, the same way the filter
