@@ -7,7 +7,8 @@
     "start": "tsx src/main.ts",
     "rotate-credentials": "tsx src/rotate-credentials.ts",
     "build": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "pnpm -w exec vitest run --project unit apps/worker/",
+    "test:integration": "pnpm -w exec vitest run --project integration apps/worker/"
   },
   "dependencies": {
     "@open-smp/api-types": "workspace:*",

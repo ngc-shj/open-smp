@@ -6,7 +6,7 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "pnpm -w exec vitest run --project unit packages/crypto/"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -8,7 +8,8 @@
     "start": "tsx src/main.ts",
     "seed": "tsx src/seed.ts",
     "build": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "pnpm -w exec vitest run --project unit apps/api/",
+    "test:integration": "pnpm -w exec vitest run --project integration apps/api/"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

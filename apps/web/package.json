@@ -5,7 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest run",
+    "test": "pnpm -w exec vitest run --project unit apps/web/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

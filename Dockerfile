@@ -54,7 +54,10 @@ FROM source AS web-build
 # process.env.API_URL again when the server boots, so the real value wins).
 ARG API_URL=http://localhost:3001
 ENV API_URL=${API_URL}
-RUN pnpm --filter @open-smp/web build
+# -C, not --filter: `pnpm --filter <no-match> …` exits 0 printing "No projects
+# matched the filters", so renaming this package would produce an image with no
+# .next and a green build. `-C` resolves a directory and fails loudly.
+RUN pnpm -C apps/web build
 
 FROM web-build AS web
 WORKDIR /repo/apps/web
