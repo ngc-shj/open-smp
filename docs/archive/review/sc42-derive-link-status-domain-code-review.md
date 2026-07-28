@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review rounds: 7 (each appended in order below)
+Review rounds: 8 (each appended in order below)
 
 ## Changes from Previous Round
 
@@ -918,3 +918,98 @@ targeted while inheriting the next one's blind spot. What converges is not a bet
 parsing*: where a real executor for the language is available, asking it is the only approach with no
 blind spot left to find. The cost is a database and a slower tier, and refusing that cost is what the
 previous six rounds were really doing.
+
+---
+
+# Round 8
+
+Date: 2026-07-28
+Scope: does the database-backed gate converge, or does *it* have a blind spot? It is a new gate in a
+new tier, and every prior structural change introduced a fresh axis of defect.
+
+## Result — the recurring class is closed
+
+**Two findings, both Low, both the same defect in two queries. And for the first time in seven rounds
+the failure direction inverted: this is a false RED, not a false green.**
+
+All four historical escape axes now red, independently re-proven as real migration files — including
+one the reviewer added that no static scanner could ever have reached: a label constructed at runtime
+inside `DO`/`EXECUTE format()`. The parser is now the one that will actually execute the migrations.
+
+| Mutation | Result |
+|---|---|
+| `ALTER/*c*/TYPE ... ADD VALUE` (r7 escape 1) | RED |
+| `DROP TYPE` + `CREATE TYPE` recreate (r7 escape 2) | RED |
+| plain `ADD VALUE` / positional `BEFORE` / `RENAME VALUE` | RED |
+| dollar-quoted label via `DO` / `EXECUTE format()` | RED |
+| `OWNER TO` / `SET SCHEMA` / commented-out | GREEN |
+
+Positional insertion is worth noting: the gate reads true `enumsortorder`, so it sees the label *in
+its actual position*. A replay that appends would have had the position wrong even when it noticed
+the label.
+
+## Findings
+
+### R8-1 / R8-2 [Low, new] — both queries were schema-unqualified
+
+`pg_type.typname` is unique per schema, not globally. A same-named enum in another schema interleaved
+its labels into the ordered result and redded a *correct* `public.link_status`. The same defect
+appeared in the `information_schema.columns` query on `table_name` with no `table_schema`.
+
+**Bounded in two ways the reviewer verified rather than assumed:**
+
+1. **False-red only, never false-green.** Probed directly: a corrupted-and-renamed `public` enum with
+   a correctly-labelled decoy planted in another schema still redded, via the `udt_name` assertion.
+   Duplicates aggregate rather than substitute.
+2. **Latent.** All five migrations are `public`-only; nothing in the repo can currently produce it.
+
+**Applied**: `JOIN pg_namespace` + `n.nspname = 'public'`, and `table_schema = 'public'`. Verified
+both decoy scenarios now pass while every real defect still reds, including a column switched to a
+byte-identically-labelled clone enum — which only the `udt_name` assertion catches.
+
+## Verified by the reviewer, no finding
+
+- **Deletion complete.** Zero references to the removed symbols. Everything deleted was a *self-test
+  of the instrument* (`"reads '' as an escaped quote"`, `'ignores RENAME TO'`, …) — vacuous once the
+  scanner is gone. Exactly one real gate was removed, and that is the one that moved tiers. **No
+  coverage lost**, confirmed by adding a fifth domain member with no migration: the integration gate
+  reds.
+- **Broken migration** → red (fails in `beforeAll`, never silently green).
+- **Idempotent-skip** → not a hazard; a fresh container means `_migrations` is always empty, verified
+  by editing an existing migration in place.
+- **Order dependence** → none; all three `it` blocks are read-only.
+- **CI wiring** → confirmed by execution, not inspection: `vitest list --project integration` lists
+  the file, `ci.yml` runs `pnpm test:integration`. Not the RT7 shape (b) failure.
+- **Cost** → 7.11s before, 7.03s after; the delta is measurement noise (a cached `postgres:16` starts
+  in ~940ms). Recommendation accepted: do **not** share a container with `rls.integration.test.ts`,
+  which manipulates roles and GUCs and would reintroduce exactly the state-leakage class this gate is
+  currently free of.
+- **Derivation** — clean, eighth consecutive round.
+
+## Final verification
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — 264 / 29 |
+| `pnpm test:integration` | exit 0 — 143 / 6 |
+| `pnpm test:e2e` | exit 0 — 43 |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+## Eight-round assessment — converged
+
+Nineteen findings across rounds 2–8. **Every one in a gate. Zero in the derivation**, which has been
+independently traced clean eight times and unchanged since Phase 2.
+
+The meta-pattern ("every structural change introduces a fresh axis") held in *kind* — round 8 did find
+a new defect on a new axis, schema qualification, which simply did not exist when the gate read files
+as text. But it broke in *severity direction*, and that is the result that matters. Rounds 2–7 were
+all false greens: the gate claiming safety it did not have. Round 8's is a false red, which is
+self-announcing. A noisy gate gets investigated; a silent one is what shipped seven rounds of
+undetected drift.
+
+That inversion is the convergence signal. The instrument changed from one that fails silently on
+unknown input to one that cannot have unknown input, and its residual defects are now the kind that
+announce themselves.

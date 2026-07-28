@@ -44,11 +44,15 @@ describe('C41: link_status in the deployed database matches the domain', () => {
     // enumsortorder is what a Postgres enum comparison actually uses, so this
     // reads the property the domain's declaration order is claiming — not the
     // textual order of any migration file.
+    // Schema-qualified: pg_type.typname is unique per schema, not globally, so
+    // a same-named enum elsewhere would interleave its labels into this ordered
+    // result and red a correct public.link_status.
     const { rows } = await pool.query<{ enumlabel: string }>(
       `SELECT enumlabel
          FROM pg_enum e
          JOIN pg_type t ON t.oid = e.enumtypid
-        WHERE t.typname = 'link_status'
+         JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'link_status' AND n.nspname = 'public'
         ORDER BY e.enumsortorder`,
     );
 
@@ -61,7 +65,9 @@ describe('C41: link_status in the deployed database matches the domain', () => {
     const { rows } = await pool.query<{ udt_name: string }>(
       `SELECT udt_name
          FROM information_schema.columns
-        WHERE table_name = 'account_links' AND column_name = 'status'`,
+        WHERE table_schema = 'public'
+          AND table_name = 'account_links'
+          AND column_name = 'status'`,
     );
 
     expect(rows.map((row) => row.udt_name)).toEqual(['link_status']);
