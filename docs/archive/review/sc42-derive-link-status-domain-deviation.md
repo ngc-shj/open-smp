@@ -411,6 +411,73 @@ axis it targeted and inherited the next one's blind spot. What finally generalis
 pattern but the shape of the assertion — *count what you can see, refuse what you cannot replay* —
 applied at the level of the whole statement rather than the fragment previously understood.
 
+## D15 — Code review round 7: the text scanner was the wrong instrument, and it is gone
+
+Three findings, two High. The important one is not any single escape but what they proved
+collectively: **the escapes were not running out**, and each patch that widened the scanner admitted
+new false reds needing a hand-maintained exemption list.
+
+**F1 — the escape that defeated the anti-blindness counter through its own prefix.**
+`stripSqlComments` replaced a comment with *nothing*, but Postgres treats a comment as a token
+separator. So `ALTER/*c*/TYPE link_status ADD VALUE 'escaped'` — valid DDL, verified adding the label
+on live Postgres 16 — became the single token `ALTERTYPE` after stripping. Both `ALTERS_TYPE` and
+`ADD_VALUE` share that prefix, so `seen` and `parsed` both went to zero and the completeness assertion
+compared 0 to 0 and passed. The counter built to detect blindness was blinded by the thing it was
+built to detect.
+
+**F2 — a recreate is not an `ALTER TYPE` at all.** `DROP TYPE link_status; CREATE TYPE link_status AS
+ENUM ('totally','different','labels');` replaced the label set wholesale and passed 287/287. The
+`created` match was non-global, so it bound 0001's declaration and ignored the later one; scoping the
+counter to `ALTER TYPE` could never reach this by construction.
+
+**F3 — the widening had started costing false reds.** `OWNER TO` and `SET SCHEMA` are label-neutral
+and both redded. `RENAME TO` had been special-cased in round 6; its two siblings had not. The scanner
+was being asked to know the whole `ALTER TYPE` grammar in both directions, one exemption per round.
+
+### The fix: stop parsing SQL, and let Postgres parse it
+
+`packages/schema/test/link-status-enum.integration.test.ts` runs the migrations against a real
+Postgres via Testcontainers and reads the enum back from `pg_enum` ordered by `enumsortorder`. No
+spelling can escape, because the parser is the one that will execute the migrations in production.
+It also asserts the `account_links.status` column actually uses that type — without which the check
+would still pass if the column were switched to a different enum carrying the same labels — and that
+an out-of-domain value is rejected on cast, which executes the boundary claim rather than asserting it.
+
+**Proven against every escape**, run as real migration files:
+
+| Case | Text scanner (r6) | Database gate | Want |
+|---|---|---|---|
+| `ALTER/*c*/TYPE ... ADD VALUE` (F1) | **green — escaped** | **red** | red |
+| `DROP TYPE` + `CREATE TYPE` recreate (F2) | **green — escaped** | **red** | red |
+| plain `ADD VALUE` | red | red | red |
+| `$$dollar-quoted$$` label | red | red | red |
+| positional `BEFORE` | red | red | red |
+| `RENAME VALUE` | red | red | red |
+| commented-out (a no-op) | green | green | green |
+| `OWNER TO` (label-neutral, F3) | **red — false** | **green** | green |
+| `SET SCHEMA` (label-neutral, F3) | **red — false** | **green** | green |
+
+The database gate is correct on all nine. The text scanner was wrong on four after seven rounds of
+repair.
+
+**What was deleted**: `stripSqlComments`, `TYPE_REF`, `ADD_VALUE`, `LABEL`, `ALTERS_TYPE`, the 23-case
+scanner table, and the migration-replay test — about 170 lines whose entire purpose was approximating
+a SQL parser. `tables.test.ts` keeps the drizzle-mirror assertion, which is a different claim (the ORM
+mirror agrees with the domain) and correctly stays in the unit tier, with a pointer to where the
+deployed-enum question is now answered.
+
+**The cost, stated plainly**: this gate now needs a database, so it runs in the integration tier
+rather than the cheapest CI job. VE3 already governs that tier and CI already runs it. That is the
+trade the previous seven rounds were implicitly refusing to make — and refusing it cost seven rounds
+and four surviving defects, three of which were introduced by the repairs themselves.
+
+**The transferable lesson.** Every round's finding was the same shape: a text scanner failed silently
+on input it did not understand. The structural answers got progressively more general — one shared
+pattern, a direct case table, a parse-completeness assertion, statement-level scoping — and each was
+correct for the axis it targeted while inheriting the next one's blind spot. The one that actually
+converges is not a better parser but *not parsing*: when a real executor for the language is available,
+asking it is the only approach with no blind spot to find.
+
 ---
 
 ## NFR3 — mutation proofs
@@ -481,7 +548,7 @@ comments, so it had to prove the detections they were widened for in round 2 sti
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
 | `pnpm test:unit` | exit 0 — **264 tests / 29 files** (baseline 241 / 25) |
-| `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
+| `pnpm test:integration` | exit 0 — 143 / 6 (was 140 / 5; the enum gate moved here) |
 | `pnpm test:e2e` | exit 0 — **43**, unchanged as I40.3 predicted |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
 | `pnpm build` | exit 0 |

@@ -1,7 +1,7 @@
 # Code Review: sc42-derive-link-status-domain
 
 Date: 2026-07-27
-Review rounds: 6 (each appended in order below)
+Review rounds: 7 (each appended in order below)
 
 ## Changes from Previous Round
 
@@ -387,7 +387,7 @@ indirection the narrow form missed (`const LOCAL = [...]` fed to `z.enum`, verif
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **264 / 29** (23 scanner-table cases removed with the scanner) (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -491,7 +491,7 @@ because it strips *SQL*, a different language with different rules.
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **264 / 29** (23 scanner-table cases removed with the scanner) (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -606,7 +606,7 @@ whose contract (C39) is that it holds nothing but the domain. A third call site 
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **264 / 29** (23 scanner-table cases removed with the scanner) (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -692,7 +692,7 @@ unparseable label reds. Twelve rounds-2-through-4 regression cases re-run, all u
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **264 / 29** (23 scanner-table cases removed with the scanner) (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -786,7 +786,7 @@ re-inline still red).
 |---|---|
 | `pnpm lint` | exit 0 |
 | `pnpm typecheck` | exit 0 |
-| `pnpm test:unit` | exit 0 — **287 / 29** (baseline 241 / 25) |
+| `pnpm test:unit` | exit 0 — **264 / 29** (23 scanner-table cases removed with the scanner) (baseline 241 / 25) |
 | `pnpm test:integration` | exit 0 — 140 / 5, unchanged |
 | `pnpm test:e2e` | exit 0 — 43, unchanged |
 | `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
@@ -816,3 +816,105 @@ verb (6). Each fix was correct for the axis it targeted and inherited the next o
 generalises is not a wider pattern but the *shape* of the assertion — count what you can see, refuse
 what you cannot replay — applied to the whole statement rather than to the fragment already
 understood. That is the transferable lesson from six rounds of chasing one class of defect.
+
+---
+
+# Round 7
+
+Date: 2026-07-28
+Scope: does the statement-level counter converge, or is there yet another escape?
+
+## Changes from Previous Round
+
+Round 6 scoped the completeness counter to the whole statement.
+
+**Two High, one Medium. It does not converge — and round 7 stops trying.**
+
+## Findings
+
+### R7-1 [High, new] — a stripped comment defeats both counters through their shared prefix
+
+`stripSqlComments` replaced a comment with nothing, but Postgres treats one as a token separator. So
+`ALTER/*c*/TYPE link_status ADD VALUE 'escaped'` — valid DDL, verified adding the label on live
+Postgres 16 — became `ALTERTYPE` after stripping. Both `ALTERS_TYPE` and `ADD_VALUE` share that
+prefix, so seen and parsed both hit zero and the completeness assertion passed 0-to-0. **The
+anti-blindness counter, blinded by exactly what it was built to catch.**
+
+### R7-2 [High, new] — a recreate is not an `ALTER TYPE` at all
+
+`DROP TYPE link_status; CREATE TYPE link_status AS ENUM ('totally','different','labels');` replaced
+the label set wholesale and passed 287/287. `created` used a non-global match, binding 0001's
+declaration and ignoring the later one. Scoping to `ALTER TYPE` cannot reach this by construction.
+
+### R7-3 [Medium, new] — the widening now costs false reds
+
+`OWNER TO` and `SET SCHEMA` are label-neutral and both redded. `RENAME TO` was special-cased in round
+6; its siblings were not. The scanner was being asked to know the full grammar in both directions,
+one exemption per round.
+
+## Disposition — the instrument was wrong
+
+Seven rounds is enough evidence: the escapes are not running out, and each widening admits new false
+reds. So the text scanner is **deleted** — `stripSqlComments`, `TYPE_REF`, `ADD_VALUE`, `LABEL`,
+`ALTERS_TYPE`, the 23-case table and the replay test, ~170 lines approximating a SQL parser.
+
+Replaced by `packages/schema/test/link-status-enum.integration.test.ts`: run the migrations against a
+real Postgres via Testcontainers, read the enum back from `pg_enum` by `enumsortorder`. No spelling
+can escape, because the parser is the one that will run the migrations in production. It also pins
+that `account_links.status` uses that type (otherwise a swap to a same-labelled enum would pass) and
+that an out-of-domain value is rejected on cast.
+
+**Proven on nine cases as real migration files** — the database gate is correct on all nine; the text
+scanner was wrong on four after seven rounds of repair:
+
+| Case | Text scanner | Database gate | Want |
+|---|---|---|---|
+| `ALTER/*c*/TYPE ... ADD VALUE` | **green — escaped** | red | red |
+| `DROP TYPE` + `CREATE TYPE` | **green — escaped** | red | red |
+| plain / `$$…$$` / positional / `RENAME VALUE` | red | red | red |
+| commented-out (no-op) | green | green | green |
+| `OWNER TO` / `SET SCHEMA` | **red — false** | green | green |
+
+`tables.test.ts` keeps the drizzle-mirror assertion — a different claim, correctly unit-tier — with a
+pointer to where the deployed-enum question is now answered.
+
+## Verification
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test:unit` | exit 0 — **264 / 29** (23 scanner cases removed with the scanner) |
+| `pnpm test:integration` | exit 0 — **143 / 6** (was 140 / 5) |
+| `pnpm test:e2e` | exit 0 — 43, unchanged |
+| `e2e/scripts/assert-seed-preserved.sh` | exit 0 |
+| `pnpm build` | exit 0 |
+
+## Also noted
+
+The reviewer found that `pnpm -C packages/schema test` reports 43 passed while never running
+`tables.test.ts` — the package script only picks up the integration file. Not introduced here and out
+of scope for this cycle, but worth knowing: a reviewer or job invoking the package script gets a
+confident green that never touches the gate under review.
+
+## Recurring Issue Check — Round 7
+
+- **RT7** — FINDING(R7-1, R7-2), closed by removing the instrument rather than patching it.
+- **False-green blindness** — FINDING(R7-1, R7-2). Two executed false greens, one of which defeated
+  the anti-blindness counter itself.
+- **False-red pressure on correct code** — FINDING(R7-3). The exemption list was growing per round.
+- **R2 (duplication)** — PASS, and improved: ~170 lines of parser approximation deleted.
+- **Derivation** — PASS, seventh consecutive round.
+
+## Seven-round assessment
+
+Seventeen findings across rounds 2–7. **Every one in a gate. Zero in the derivation**, which has been
+independently traced clean seven times and has not changed since Phase 2.
+
+Every finding was the same shape: a text scanner failing silently on input it did not understand. The
+structural answers got steadily more general — one shared pattern (r4), a direct case table (r4), a
+parse-completeness assertion (r5), statement-level scoping (r6) — and each was correct for the axis it
+targeted while inheriting the next one's blind spot. What converges is not a better parser but *not
+parsing*: where a real executor for the language is available, asking it is the only approach with no
+blind spot left to find. The cost is a database and a slower tier, and refusing that cost is what the
+previous six rounds were really doing.
