@@ -8,12 +8,6 @@ export default defineConfig({
           name: 'unit',
           include: ['packages/**/*.test.ts', 'apps/**/*.test.ts'],
           exclude: ['**/node_modules/**', '**/*.integration.test.ts'],
-          // The parity gate spawns one child per (member, tier) and grows with
-          // the workspace. Measured at ~0.6s on a warm 18-core machine; CI runs
-          // on 2 vCPU with a cold cache, and the same listings serialised are
-          // already ~2.2s locally. vitest's 5s default would make that a
-          // timeout that reads as a parity failure.
-          testTimeout: 60_000,
         },
       },
       {
