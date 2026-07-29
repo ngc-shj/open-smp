@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -131,7 +132,11 @@ function rootListing(tier: Tier): Promise<Set<string>> {
 async function memberListing(dir: string, tier: Tier): Promise<Set<string>> {
   const argv = canonicalArgv(dir, tier).map((a) => (a === 'run' ? 'list' : a));
   argv.splice(argv.indexOf('list') + 1, 0, '--filesOnly');
-  const child = await runChild(argv);
+  // Spawned from the package directory, which is the cwd pnpm gives the real
+  // `pnpm -C <dir> test`. `-w exec` normalises cwd to the workspace root either
+  // way, so this changes no result today — it removes the inference that it
+  // would not, which is the kind of inference the rest of this file refuses.
+  const child = await runChild(argv, path.join(REPO_ROOT, dir));
   assertChildOk(`${dir} (${tier})`, child);
   // Compared RAW, not re-filtered by a `${dir}/` prefix. The real script has no
   // such re-filter, so discarding foreign paths here would hide an over-matching
@@ -156,9 +161,11 @@ function workspaceEntries(): Promise<WorkspaceEntry[]> {
 // with `--list --reporter=json` appended. `-s` suppresses pnpm's script banner,
 // which otherwise precedes the JSON on stdout and breaks the parse. Started
 // eagerly alongside the vitest listings so all four overlap.
+type PlaywrightSpec = { title?: string; tests?: { annotations?: { type: string }[] }[] };
+
 type PlaywrightSuite = {
   file: string;
-  specs?: { tests?: { annotations?: { type: string }[] }[] }[];
+  specs?: PlaywrightSpec[];
   suites?: PlaywrightSuite[];
 };
 
@@ -260,7 +267,22 @@ describe('C1/C2: package test scripts delegate to the root runner', () => {
     // script, restoring the condition this cycle exists to remove.
     expect([...members].sort(), 'packages with assigned files vs packages declaring vitest').toEqual([...declaresVitest].sort());
 
+    // C1 Forbidden: no member's filter argument may be a prefix of another's
+    // path. Asserted here rather than left to the right half — both sides of
+    // that comparison apply the same `startsWith(dir + '/')` predicate, so a
+    // nested member satisfies it by construction while `pnpm -C <outer> test`
+    // silently runs the inner member's suite too. `packages/*` already matches
+    // `packages/connectors`, so this is one `package.json` away from real.
+    const nested = packages.flatMap(({ dir }) =>
+      packages.filter((o) => o.dir !== dir && o.dir.startsWith(`${dir}/`)).map((o) => `${dir} contains ${o.dir}`),
+    );
+    expect(nested, 'workspace members nested inside one another').toEqual([]);
+
     for (const { dir, pkg, deps, d1, d2 } of packages) {
+      // One predicate, not two: clauses 2 and 3 are the two directions of the
+      // same question, and two copies drift the day one is widened.
+      const otherRunners = KNOWN_TEST_RUNNERS.filter((r) => r !== 'vitest' && r in deps);
+
       if (d1 && d2) {
         // C2 clause 1 — symmetric. `test` iff the package has unit files,
         // `test:integration` iff it has integration files. Demanding `test`
@@ -271,19 +293,22 @@ describe('C1/C2: package test scripts delegate to the root runner', () => {
         const wantInteg = assigned(dir, integration).length > 0 ? canonicalScript(dir, 'integration') : undefined;
         expect(pkg.scripts?.test, `${dir}: test script`).toBe(wantUnit);
         expect(pkg.scripts?.['test:integration'], `${dir}: test:integration script`).toBe(wantInteg);
-      } else if (pkg.scripts?.test !== undefined) {
-        // C2 clauses 2 and 4 — a non-member may declare `test` only if it
-        // declares its own non-vitest runner. packages/queues declared
+      } else {
+        // C2 clauses 2 and 4 — a non-member may declare a test script only if
+        // it declares its own non-vitest runner. packages/queues declared
         // `vitest run` with no dependencies at all and resolved the binary off
-        // the ancestor PATH; that is the case this rejects.
-        const runners = KNOWN_TEST_RUNNERS.filter((r) => r !== 'vitest' && r in deps);
-        expect(runners, `${dir}: declares a test script but no recognised non-vitest runner`).not.toHaveLength(0);
+        // the ancestor PATH; that is the case this rejects. Both tiers, per
+        // requirement F2: an unbacked `test:integration` is the same defect on
+        // the axis the tier split created.
+        for (const key of ['test', 'test:integration'] as const) {
+          if (pkg.scripts?.[key] === undefined) continue;
+          expect(otherRunners, `${dir}: declares ${key} but no recognised non-vitest runner`).not.toHaveLength(0);
+        }
       }
 
       // C2 clause 3 — a package declaring a non-vitest runner MUST declare a
       // test script. This pins e2e's, which root `test:e2e` invokes directly,
       // without naming the package.
-      const otherRunners = KNOWN_TEST_RUNNERS.filter((r) => r !== 'vitest' && r in deps);
       if (otherRunners.length > 0) {
         expect(pkg.scripts?.test, `${dir}: declares ${otherRunners.join(', ')} but no test script`).toBeDefined();
       }
@@ -319,12 +344,26 @@ describe('C1/C2: package test scripts delegate to the root runner', () => {
     // An earlier draft asserted `job.expected.length > 0` inside the loop below,
     // which cannot fail: jobs are only pushed when that is already true.
     // Deleting it left the suite green, which is the definition of decorative.
+    const memberDirs = entries
+      .map((e) => path.relative(REPO_ROOT, e.path))
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    const ownerOf = (file: string): string | undefined => memberDirs.find((d) => file.startsWith(`${d}/`));
+
     const pairsFromListings = new Set<string>();
+    const unowned: string[] = [];
     for (const tier of ['unit', 'integration'] as Tier[]) {
-      // `<pkg>/test/<file>` is this repo's layout for every test file; the
-      // reconciliation in control 3 is what catches a file that does not fit it.
-      for (const f of rootByTier[tier]) pairsFromListings.add(`${f.split('/').slice(0, -2).join('/')}|${tier}`);
+      for (const f of rootByTier[tier]) {
+        // Longest-prefix match against the enumerated members, not a positional
+        // chop of two path components. The chop assumed `<pkg>/test/<file>` and
+        // invented a package name for anything nested deeper — so a red pointed
+        // at a phantom package instead of at the file that caused it.
+        const owner = ownerOf(f);
+        if (owner === undefined) unowned.push(f);
+        else pairsFromListings.add(`${owner}|${tier}`);
+      }
     }
+    expect(unowned, 'assigned files belonging to no workspace member').toEqual([]);
     const pairsFromJobs = new Set(jobs.map((j) => `${j.dir}|${j.tier}`));
     expect([...pairsFromJobs].sort(), 'executed (package, tier) set').toEqual([...pairsFromListings].sort());
 
@@ -338,7 +377,7 @@ describe('C1/C2: package test scripts delegate to the root runner', () => {
   });
 });
 
-describe('C3 control 5: every test-shaped file is claimed by exactly one runner', () => {
+describe('C3 positive controls: inventory, reconciliation, canaries, environment', () => {
   it('reconciles the working-tree inventory against every runner\'s observed discovery', async () => {
     const unit = await rootListing('unit');
     const integration = await rootListing('integration');
@@ -354,17 +393,38 @@ describe('C3 control 5: every test-shaped file is claimed by exactly one runner'
     // Claim and discovery, not execution: a declaration-level skip would leave a
     // spec claimed and discovered while never running. The annotations are in
     // the JSON already parsed, so this costs nothing.
-    const skipped = report.suites.flatMap((suite) =>
-      walkSpecs(suite)
-        .flatMap((spec) => (spec.tests ?? []).flatMap((t) => t.annotations ?? []))
-        .filter((a) => a.type === 'skip' || a.type === 'fixme')
-        .map(() => suite.file),
-    );
+    // One walk, three consumers. Reading the same nested path twice is how the
+    // guards below end up protecting a different accessor from the one the
+    // skip computation uses — which is the `canonicalArgv` lesson applied to a
+    // JSON shape rather than to an argv.
+    const specs = report.suites.flatMap(walkSpecs);
+    const tests = specs.flatMap((s) => s.tests ?? []);
+    const annotations = tests.flatMap((t) => t.annotations ?? []);
+
+    const skipped = annotations.filter((a) => a.type === 'skip' || a.type === 'fixme');
     expect(skipped, 'playwright specs carrying a declaration-level skip/fixme').toEqual([]);
-    // The assertion above is only meaningful if the walk reaches specs at all.
+
+    // Reachability, at every hop. The skip assertion above walks three levels
+    // of optional chaining, and each `?? []` turns a renamed key into a silent
+    // pass. The spec-level guard alone was not enough: renaming `annotations`
+    // left the control green with `test.describe.skip` applied to the auth
+    // suite. These three make every hop fail red instead.
+    expect(specs.length, 'playwright report yielded no specs').toBeGreaterThan(0);
+    expect(tests.length, 'playwright report yielded no tests').toBeGreaterThan(0);
     expect(
-      report.suites.flatMap(walkSpecs).length,
-      'playwright report yielded no specs — the walk is not reaching them',
+      tests.filter((t) => !Array.isArray(t.annotations)).length,
+      'playwright tests without an annotations array — the accessor no longer lands on data',
+    ).toBe(0);
+
+    // Named canaries, at spec granularity. The claimed set above is file-level,
+    // so a narrowing that leaves one spec per file standing — `--grep-invert`
+    // on a single title, say — passes every set comparison. These two titles
+    // are the login and session-expiry proofs; their absence is the event.
+    const titles = specs.map((s) => s.title ?? '');
+    expect(titles, 'the login proof').toContain('valid login lands on /accounts with nav visible');
+    expect(
+      titles.filter((t) => t.includes('redirects to /login on 401')).length,
+      `no session-expiry spec discovered; titles were:\n${titles.join('\n')}`,
     ).toBeGreaterThan(0);
 
     const files = inventory();
@@ -404,14 +464,67 @@ describe('C3 control 5: every test-shaped file is claimed by exactly one runner'
     expect([...partitioned].sort(), 'union of per-member assignments vs full root listing').toEqual([...all].sort());
   });
 
-  it('the two files whose absence is the event this gate exists for are still assigned', async () => {
+  it('every test file that is itself a security control is still assigned', async () => {
     // Control 6. Everything else here is relative: deleting a gate file shrinks
-    // the inventory and the unit set together, so control 5 stays green. These
-    // two are named because their absence IS the security event — the C39
-    // package-boundary gate and the saas_apps.key pin.
+    // the inventory and the unit set together, so control 5 stays green and only
+    // a named list can see it.
+    //
+    // The membership rule, so the next addition is mechanical rather than
+    // remembered: a file belongs here when it is not a unit test of product
+    // code but a control whose deletion removes a repository-wide invariant.
+    // An earlier draft named two, taken from the sentence in the plan that
+    // motivated the cycle rather than from that property — which left
+    // workflow-pins (the only thing stopping a mutable third-party action ref)
+    // deletable with every control green.
+    const CONTROL_FILES = [
+      'apps/api/test/api-types-boundary.test.ts', // C39 — keeps server-only code out of the browser bundle
+      'apps/api/test/saas-app-key-pin.test.ts', // SC30 — keeps saas_apps.key off the reserved audit source
+      'apps/api/test/workflow-pins.test.ts', // C32 — every GitHub Action pinned to a SHA
+      'apps/api/test/seed-gate-agreement.test.ts', // C38 — the shell seed gate and the E2E fixtures agree
+      'apps/api/test/audit-append-only.test.ts', // the audit trail has no update or delete path
+      'apps/api/test/no-rotation-route.test.ts', // key rotation is not reachable over HTTP
+      'apps/api/test/package-test-parity.test.ts', // this file
+    ];
     const unit = await rootListing('unit');
-    expect(unit).toContain('apps/api/test/api-types-boundary.test.ts');
-    expect(unit).toContain('apps/api/test/saas-app-key-pin.test.ts');
+    expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);
+  });
+
+  it('no CI-executed artifact reintroduces the exit-0-on-no-match pnpm --filter form', async () => {
+    // `pnpm --filter <no-match> …` exits 0 having done nothing. The class had
+    // three members and was declared closed at two of them twice, the third
+    // surviving four review rounds inside a Dockerfile stage that CI executes.
+    // A review trigger is what already failed; this is the executable form.
+    //
+    // Counting occurrences of a literal, not inferring behaviour from source —
+    // the same category as C5 counting config files.
+    // This file is excluded from its own scan: it necessarily contains the
+    // literal, in the needle and in the comments explaining it. Derived from
+    // `import.meta`, not hardcoded, so a rename cannot silently re-include it
+    // and turn the gate permanently red.
+    const self = path.relative(REPO_ROOT, new URL(import.meta.url).pathname);
+    const holders = trackedOrUntrackedFiles()
+      .filter((f) => /\.(ya?ml|json|ts|tsx|js|mjs|sh)$|(^|\/)Dockerfile[^/]*$/.test(f))
+      .filter((f) => !f.startsWith('docs/') && f !== self)
+      .filter((f) => readFileSync(path.join(REPO_ROOT, f), 'utf8').includes('pnpm --filter'));
+    // The two survivors are the comments explaining why the form was abandoned.
+    expect(holders.sort(), 'files still containing `pnpm --filter`').toEqual([
+      '.github/workflows/ci.yml',
+      'Dockerfile',
+    ]);
+  });
+
+  it('the Dockerfile dependency stage copies every workspace manifest', async () => {
+    // `pnpm install --frozen-lockfile` is SILENT when a lockfile importer has
+    // no manifest on disk, so an omitted COPY line installs none of that
+    // package's registry dependencies and the image builds green. The list was
+    // hand-enumerated and had been missing api-types and e2e.
+    const entries = await workspaceEntries();
+    const dockerfile = readFileSync(path.join(REPO_ROOT, 'Dockerfile'), 'utf8');
+    const missing = entries
+      .map((e) => path.relative(REPO_ROOT, e.path))
+      .filter(Boolean)
+      .filter((dir) => !dockerfile.includes(`${dir}/package.json`));
+    expect(missing, 'workspace members absent from the Dockerfile deps stage').toEqual([]);
   });
 
   it('pnpm resolves, so a PATH failure reads as a PATH failure', async () => {

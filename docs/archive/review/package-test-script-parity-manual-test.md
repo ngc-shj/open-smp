@@ -4,7 +4,7 @@
 
 | File | Change |
 |---|---|
-| `Dockerfile:57` | `pnpm --filter @open-smp/web build` → `pnpm -C apps/web build` |
+| `Dockerfile:60` | `pnpm --filter @open-smp/web build` → `pnpm -C apps/web build` |
 | `.github/workflows/ci.yml:148` | `pnpm --filter e2e exec playwright install …` → `pnpm -C e2e exec …` |
 
 Both sit on the path that produces the production web image and the CI E2E run. The reason they are in this diff is that `pnpm --filter` **exits 0 when the filter matches nothing**, so a package rename would have produced a green build with no `.next` and a green CI job with no browser. Everything below was executed; the Expected-result column carries observed values, not intentions.

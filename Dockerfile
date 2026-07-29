@@ -14,16 +14,23 @@ WORKDIR /repo
 # --- Dependency layer: manifests only, so `pnpm install` is cached until a
 # manifest actually changes (source edits below never bust this layer). ---
 FROM base AS deps
+# One line per workspace member, and the set must be complete: pnpm's
+# --frozen-lockfile is SILENT when a lockfile importer has no manifest on disk,
+# so an omitted member installs none of its registry dependencies and the image
+# builds green. api-types and e2e were both missing until the parity gate
+# started asserting this list against `pnpm list -r`.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY packages/api-types/package.json packages/api-types/package.json
 COPY packages/schema/package.json packages/schema/package.json
 COPY packages/matcher/package.json packages/matcher/package.json
 COPY packages/queues/package.json packages/queues/package.json
 COPY packages/crypto/package.json packages/crypto/package.json
 COPY packages/connectors/core/package.json packages/connectors/core/package.json
 COPY packages/connectors/google-workspace/package.json packages/connectors/google-workspace/package.json
+COPY e2e/package.json e2e/package.json
 RUN pnpm install --frozen-lockfile
 
 # --- Full source, dependencies already installed above. ---
