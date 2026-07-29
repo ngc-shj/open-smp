@@ -489,18 +489,29 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // motivated the cycle rather than from that property — which left
     // workflow-pins (the only thing stopping a mutable third-party action ref)
     // deletable with every control green.
-    // Derived by applying the rule above to every assigned unit file, with a
-    // mechanical discriminator: a unit-tier test that READS REPOSITORY FILES at
-    // runtime is enforcing a repository-wide invariant, while one that imports
-    // and exercises a module is a unit test of product code. Today that is
-    // `grep -l "from 'node:fs" over the unit listing, and it yields these.
+    // Two families satisfy the rule, and the discriminator only ever covered
+    // one of them.
     //
-    // Re-run that discriminator when adding a test — do not extend this list by
-    // eye. Two earlier drafts did: the first took two names from the sentence
-    // that motivated the cycle, the second re-enumerated over `apps/api/test/`
-    // alone. The list must stay literal (deriving it at runtime from the unit
-    // set would make a deletion shrink both sides and go green), so the
-    // discriminator is the thing that has to be re-run, not the list.
+    //   (a) tests that READ REPOSITORY FILES at runtime — workflow-pins reading
+    //       .github/workflows, seed-gate-agreement comparing two files;
+    //   (b) tests that IMPORT A DOMAIN and compare it against a second
+    //       declaration — label-kinds asserting LABEL_FILTERS derives from
+    //       ACCOUNT_LABEL_KINDS without widening it, link-statuses pinning the
+    //       status chips to the same declaration.
+    //
+    // An earlier draft ran `grep -l "from 'node:fs"` and called the result
+    // derived. That is family (a) only — a proxy for how *some* controls happen
+    // to be implemented, not for what makes a test a control — and it dropped
+    // two members of family (b) whose own headers say they are the only thing
+    // checking their invariant. The rule is the property, not the grep: **a
+    // test that asserts over a domain, a manifest, or a repository-wide
+    // relation rather than over the behaviour of one module.**
+    //
+    // The list stays literal because deriving it at runtime from the unit set
+    // would make a deletion shrink both sides and go green — which is the one
+    // thing this control exists to catch. The addition-guard below covers what
+    // a mechanical proxy can cover; family (b) still has to be added by hand,
+    // and that residue is named rather than papered over.
     //
     // `package-test-parity.test.ts` is deliberately absent: if it is deleted
     // nothing runs, and if it is running it is necessarily in the unit set, so
@@ -509,10 +520,12 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       'apps/api/test/accounts-query-domain.test.ts', // pins the ?status= input-validation domain to z.enum(LINK_STATUSES)
       'apps/api/test/api-types-boundary.test.ts', // C39 — keeps server-only code out of the browser bundle
       'apps/api/test/audit-append-only.test.ts', // the audit trail has no update or delete path
+      'apps/api/test/label-kinds.test.ts', // C29 — LABEL_FILTERS derives from ACCOUNT_LABEL_KINDS without widening it
       'apps/api/test/no-rotation-route.test.ts', // key rotation is not reachable over HTTP
       'apps/api/test/saas-app-key-pin.test.ts', // SC30 — keeps saas_apps.key off the reserved audit source
       'apps/api/test/seed-gate-agreement.test.ts', // C38 — the shell seed gate and the E2E fixtures agree
       'apps/api/test/workflow-pins.test.ts', // C32 — every GitHub Action pinned to a SHA
+      'apps/web/test/label-filters.test.ts', // I37.3 — the label bar's options and order, which no E2E spec asserts
       'apps/web/test/link-statuses.test.ts', // SC42 — status chips derive from one declaration
       'apps/web/test/page-spec-membership.test.ts', // I26.6 — every page under apps/web/src/app has an E2E spec
       'apps/worker/test/upsert-link-domain.test.ts', // the last type-level checkpoint before a status reaches the enum
@@ -520,24 +533,92 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);
+
+    // Addition-guard, strictly additive. The literal list above stays the sole
+    // authority for detecting DELETION; this only catches a control being
+    // ADDED without being listed, which the previous form missed entirely —
+    // de-listing an entry and adding a qualifying file were both green.
+    //
+    // The proxy is deliberately wider than the draft it replaces (double quotes,
+    // the bare `fs` specifier, dynamic import, child_process were all missed by
+    // `from 'node:fs`), and it is still only family (a). It cannot see family
+    // (b), nor a control that reads through a shared helper — stated so this
+    // guard is not read as proving the list complete.
+    const READS_FILES = /from ['"](node:)?fs|import\(['"](node:)?fs|from ['"]node:child_process/;
+    const unlisted = [...unit]
+      .filter((f) => f !== path.relative(REPO_ROOT, import.meta.filename))
+      .filter((f) => !CONTROL_FILES.includes(f))
+      .filter((f) => READS_FILES.test(readFileSync(path.join(REPO_ROOT, f), 'utf8')));
+    expect(unlisted, 'unit tests that read repository files but are not listed as controls').toEqual([]);
   });
 
-  it('no CI-executed artifact reintroduces the exit-0-on-no-match pnpm --filter form', async () => {
+  it('no CI-executed artifact selects a pnpm package by name', async () => {
     // `pnpm --filter <no-match> …` exits 0 having done nothing. The class had
-    // three members and was declared closed at two of them twice, the third
-    // surviving four review rounds inside a Dockerfile stage that CI executes.
-    // A review trigger is what already failed; this is the executable form.
+    // three members, was declared closed at two of them twice, and the third
+    // survived four review rounds inside a Dockerfile stage CI executes. A
+    // review trigger is what already failed; this is the executable form.
     //
-    // Counting occurrences of a literal, not inferring behaviour from source —
-    // the same category as C5 counting config files.
-    // The flag is matched as a TOKEN anywhere on a pnpm line, not as pnpm's
-    // first argument. Two narrowings were found here in successive rounds and
-    // both were the same error: first the long spelling only (`-F` is a
-    // documented alias carrying the identical hazard), then the position
-    // (`pnpm -r --filter`, `pnpm -s --filter` and `pnpm --workspace-root
-    // --filter` all evaded — four of six realistic spellings). `-r` is what a
-    // recursive build reaches for and `-s` is used elsewhere in this very file.
-    const SELECTOR = /\bpnpm\b.*(^|\s)(--filter|-F)(\s|=)/;
+    // **This scan was widened four times, and each widening followed a
+    // demonstration that the previous needle missed a member**: long spelling
+    // only, then the flag had to be pnpm's first argument, then the file had to
+    // carry a known extension, then matched files were pinned where a comment
+    // and an invocation inside the same file are indistinguishable. Widening a
+    // regex after each demonstration is the same method that produced the
+    // misses, so it does not terminate. What follows removes the axes instead
+    // of enumerating points on them.
+    //
+    // 1. NORMALISE. Join shell line-continuations and split on the operators
+    //    that separate commands, so position and line structure stop being
+    //    properties the needle has to model. A `RUN pnpm \` + `--filter …`
+    //    across two lines evaded every earlier form.
+    // 2. TOKENISE. A hit is a command mentioning pnpm with a later token in the
+    //    selector FAMILY — `--filter`, `--filter-prod`, `--filter=…`, `-F`, or
+    //    a clustered short group containing `F` such as `-rF`. Matching the
+    //    family rather than two literals is what admits `--filter-prod` and
+    //    whatever pnpm adds next.
+    // 3. PIN THE FAMILY against pnpm itself, below — so a pnpm release adding a
+    //    selector flag reds here instead of widening the hole silently.
+    //
+    // Counting occurrences of a literal is not the prohibited inference: it
+    // decides only whether bytes exist, never whether a line executes. A
+    // commented-out occurrence reds, which is the over-strict direction.
+    //
+    // The residue, stated rather than chased (SC60): a selector held in a
+    // variable — `F=--filter; pnpm $F x build` — is invisible to any text scan
+    // in every form. The honest scope of this control is literal selector text
+    // in tracked artifacts.
+    const SELECTOR_FAMILY = /^(--filter[a-z-]*(=.*)?|-[a-zA-Z]*F[a-zA-Z]*)$/;
+
+    const selectorLines = (source: string): string[] => {
+      const joined = source.replace(/\\\n[ \t]*/g, ' ');
+      return joined
+        .split('\n')
+        .filter((line) =>
+          line
+            .split(/[;|&]+/)
+            .some((cmd) => /\bpnpm\b/.test(cmd) && cmd.trim().split(/\s+/).some((t) => SELECTOR_FAMILY.test(t))),
+        )
+        .map((l) => l.trim());
+    };
+
+    // The family, pinned against pnpm's own flag surface rather than against
+    // recall — asserting no unrecognised `--filter*` appears there converts the
+    // next pnpm release from a silent widening into a red.
+    //
+    // `pnpm run --help`, not `pnpm --help`: the top-level help lists commands
+    // and mentions no flag at all (measured — zero occurrences of "filter"),
+    // while the per-command help carries a "Filtering options" block declaring
+    // `--filter` and `--filter-prod`. The reachability guard below is what
+    // caught that; the first draft pinned against the wrong surface and would
+    // have asserted over an empty set.
+    const help = await runChild(['run', '--help']);
+    assertChildOk('pnpm run --help', help);
+    const helpSelectors = [...help.stdout.matchAll(/--filter[a-z-]*/g)].map((m) => m[0]);
+    expect(helpSelectors.length, 'pnpm run --help declares no --filter flag; the family cannot be pinned').toBeGreaterThan(0);
+    expect(
+      [...new Set(helpSelectors)].filter((f) => !SELECTOR_FAMILY.test(f)).sort(),
+      'pnpm declares a selector flag this scan does not recognise',
+    ).toEqual([]);
 
     // This file is excluded from its own scan: it necessarily contains the
     // pattern, in the needle and in the comments explaining it.
@@ -546,27 +627,16 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // never match an inventory entry and the gate would red on itself forever.
     const self = path.relative(REPO_ROOT, import.meta.filename);
 
-    // Every tracked file is scanned. An earlier draft filtered to a list of
-    // file extensions, which is the same name-shape enumeration this gate
-    // exists to replace: extensionless executables, `.cjs` and `.mts` were all
-    // invisible. Unreadable or binary content is skipped by catching the read
-    // rather than by predicting which files are text.
     const inventoryFiles = trackedOrUntrackedFiles();
     const scanned = inventoryFiles.filter((f) => f !== self);
-    // Exactly one file is excluded from the scan, and that is pinned rather
-    // than left implicit. An earlier draft excluded `docs/` as well and filtered
-    // by extension; excluding one more directory would have blinded the scan
-    // over that path with nothing reporting it, and that draft already carried
-    // a clause that excluded nothing — which is how the next one gets appended
-    // without anyone re-deriving the predicate.
     expect(inventoryFiles.filter((f) => !scanned.includes(f)), 'files excluded from the selector scan').toEqual([self]);
     expect(scanned.length, 'nothing scanned').toBeGreaterThan(0);
 
-    // Matched LINES, not matched files. Pinning files cannot tell a comment
-    // mentioning the form from an invocation using it *within a file already on
-    // the list* — and both survivors are files that legitimately carry the
-    // prose. Restoring `RUN pnpm -F @open-smp/web build` to the Dockerfile,
-    // which already appears in a file-level expectation, changed nothing.
+    // What was actually READ is pinned, not what was selected for scanning.
+    // The exclusion pin above guards one site; an exclusion written inside this
+    // loop had the same effect and no coverage. This also surfaces whatever the
+    // catch swallows, which was previously silent.
+    const read: string[] = [];
     const holders = scanned.flatMap((f) => {
       let source: string;
       try {
@@ -575,17 +645,18 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
         // Binary or unreadable: not a place a shell command is invoked from.
         return [];
       }
-      return source
-        .split('\n')
-        .filter((l) => SELECTOR.test(l))
-        .map((l) => `${f}: ${l.trim()}`);
+      read.push(f);
+      return selectorLines(source).map((l) => `${f}: ${l}`);
     });
+    expect(scanned.filter((f) => !read.includes(f)), 'files in scope that were never read').toEqual([]);
 
-    // `docs/` holds the plan and review artifacts, which discuss this pattern at
-    // length — prose about an invocation, not an invocation. They are scanned
-    // rather than excluded, then classified here, so a new document mentioning
-    // the form is fine while a new executable artifact using it reds.
-    const executable = holders.filter((l) => !l.startsWith('docs/'));
+    // The plan and review artifacts discuss this pattern at length — prose
+    // about an invocation, not an invocation. They are scanned and then
+    // classified, so a new document mentioning the form is fine. Keyed on the
+    // file being markdown rather than on the `docs/` directory: a directory
+    // exemption is unbounded in what it can later acquire, which is the same
+    // objection this file raises about the scan's own exclusions.
+    const executable = holders.filter((l) => !/^docs\/.*\.md: /.test(l));
     expect(holders.length, 'nothing matched the selector at all').toBeGreaterThan(0);
     // The two survivors are the comments explaining why the form was abandoned.
     expect(executable.sort(), 'executable lines still selecting packages by name').toEqual([
@@ -613,16 +684,33 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // strong form is `docker build --target deps`, which the manual test plan
     // records.
     const dockerfile = readFileSync(path.join(REPO_ROOT, 'Dockerfile'), 'utf8').split('\n');
-    const depsStart = dockerfile.findIndex((l) => /^FROM\s+\S+\s+AS\s+deps\s*$/.test(l));
+    // Dockerfile instructions are case-insensitive, and `RUN` accepts flags —
+    // `RUN --mount=type=cache,… pnpm install` is the idiomatic BuildKit form and
+    // a plausible next edit given the layer-caching comment in the Dockerfile.
+    // Both matchers were case- and flag-strict, which reds on a legitimate
+    // change; that is the false-red class that gets a gate relaxed rather than
+    // fixed.
+    const depsStart = dockerfile.findIndex((l) => /^FROM\s+\S+\s+AS\s+deps\s*$/i.test(l));
     expect(depsStart, 'no `FROM … AS deps` stage in the Dockerfile').toBeGreaterThanOrEqual(0);
-    const installAt = dockerfile.findIndex((l, i) => i > depsStart && /^RUN\s+pnpm\s+install\b/.test(l));
+    const installAt = dockerfile.findIndex((l, i) => i > depsStart && /^RUN\s+(--\S+\s+)*pnpm\s+install\b/i.test(l));
     expect(installAt, 'no `RUN pnpm install` in the deps stage').toBeGreaterThan(depsStart);
     const beforeInstall = dockerfile.slice(depsStart, installAt);
 
     const missing = entries
       .map((e) => path.relative(REPO_ROOT, e.path))
       .filter(Boolean)
-      .filter((dir) => !beforeInstall.some((l) => new RegExp(`^COPY\\s+${dir}/package\\.json\\s`).test(l)));
+      // Token comparison, not an interpolated RegExp. `dir` comes from
+      // `pnpm list -r` and is PR-influenceable: a dot in a directory name
+      // became a metacharacter that matched a *different* package's COPY line
+      // (fail-open), and a bracket threw an uncaught SyntaxError. The plan
+      // guards this primitive carefully for argv and did not cover regexes.
+      .filter(
+        (dir) =>
+          !beforeInstall.some((l) => {
+            const tokens = l.trim().split(/\s+/);
+            return tokens[0]?.toUpperCase() === 'COPY' && tokens[1] === `${dir}/package.json`;
+          }),
+      );
     expect(missing, 'workspace members not COPYed into the deps stage before `pnpm install`').toEqual([]);
   });
 

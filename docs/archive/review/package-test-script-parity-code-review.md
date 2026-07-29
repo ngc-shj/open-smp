@@ -288,3 +288,94 @@ All 18 findings resolved. Gates after fixes: `pnpm lint` 0 · `pnpm typecheck` 0
 | M54b | `git rm apps/web/test/link-statuses.test.ts` | RED — a newly-derived canary |
 
 Three were mis-specified and corrected. M43's first form pinned files and could not red; M46 and M49 returned false greens because the harness's shell escaping silently mangled the edit and because the mutation removed the guard rather than testing it. **That is the fifth measurement-harness failure this cycle** — after a `--config` placed outside the repo, a `sed` that silently failed to match, a JSON probe run through a different invocation than the one under test, and `git checkout` restoring from an unstaged index. In every case the harness reported a confident result about something other than what was being measured.
+
+---
+
+# Code Review: package-test-script-parity — Round 3
+
+Date: 2026-07-29
+Review round: 3 (incremental, against `6021097`)
+
+## Changes from Previous Round
+
+All round-2 findings verified closed by each expert re-running its own original demonstration. **Security reported 0 Critical and 0 Major — "`6021097` closed everything material" — for the first time in this phase.** 10 new findings: 3 Major, 7 Minor, and one of the Majors is an argument about method rather than a defect.
+
+## Convergence summary
+
+| Merged | Severity | Raised by | Subject |
+|---|---|---|---|
+| **P1** | Major (2/3) | Func H1, Test T12 | **Three further selector spellings**, all exit-0 on no-match, all green through the gate on CI-executed paths: `--filter-prod` (fails the boundary *after* `--filter`), clustered short flags `-rF` (fails the boundary *before* `-F`), and a shell **line continuation** splitting `pnpm \` from `--filter …` (the scan's unit was a physical line). Testing planted the continuation on both artifacts, including the browser-install step — restoring the exact form C7 removed, in the file C7 fixed, with every control green. |
+| **P2** | Major | Func H2 | The `CONTROL_FILES` discriminator (`reads node:fs`) is **a proxy for the property, not the property**. Reading files is how *some* controls are implemented. Two files meet the written rule and were excluded because they assert by importing symbols rather than reading source: `apps/api/test/label-kinds.test.ts` (C29 — *"Nothing else checks that"*) and `apps/web/test/label-filters.test.ts` (I37.3 — *"without this a reordering or a dropped option ships green"*). Both are the same domain-derivation family as two files that **are** listed. Severity above round 2's G4 because the list is now *claimed* derived — a reader has no cue to re-check — and the instruction "re-run that discriminator" institutionalises the wrong rule for every future addition. |
+| **P3** | Minor (3/3) | Func H3, Test T15, Sec SEC-12 | `dir` from `pnpm list -r` interpolated **unescaped** into `new RegExp`. Measured: a dot widens the match in the **fail-open** direction (`apps/api.v2` also accepts `COPY apps/apiXv2/package.json`); a bracket throws an uncaught `SyntaxError`. The plan guards this primitive carefully one layer up for argv and does not cover regexes. |
+| **P4** | Minor (2/3) | Test T13, Sec SEC-10 | `CONTROL_FILES` is falsifiable **in the deletion direction only**. Executed: `git rm` a listed canary → RED; de-list an entry with the file present → **GREEN**; add a qualifying file unlisted → **GREEN**. The discriminator lives only in a comment — a review trigger, in the file whose thesis is that review triggers fail, on a list that has already failed it twice. |
+| **P5** | Minor | Test T14 | The pinned exclusion set guards **one of two sites**. An exclusion written inside the `holders` loop had the same effect and no coverage: planted holder → GREEN. The pin guarded a *location* where the property is "exactly one file is unread". |
+| **P6** | Minor | Sec SEC-11 | The prose exemption is keyed on the `docs/` **directory prefix**, not on the file being prose — the same unbounded-acquisition property the file objects to fourteen lines earlier about scan exclusions, relocated into the classifier. |
+| **P7** | Minor | Func H3 | `FROM … AS deps` matched case-sensitively (Dockerfile instructions are not), and `RUN pnpm install` rejected the idiomatic BuildKit `RUN --mount=type=cache,… pnpm install` form — a false red on a legitimate change, which is the class that gets a gate relaxed rather than fixed. |
+| **P8** | Minor | Sec SEC-10 | The discriminator's own spelling is narrower than its family: `from "node:fs"` (double quotes — the ESLint config has no quote rule), the bare `fs` specifier, `await import('node:fs')`, and a helper reading on the test's behalf are all missed. Measured complete today (committed and a deliberately wider discriminator both yield the same 12), so it is durability rather than a present gap. |
+
+## The method argument, and what it changed
+
+Functionality's H1 is the round's most important input and is not a defect report:
+
+> Every widening so far has patched one of those two axes after a demonstration. **That method cannot terminate, because it is the same method that produced the misses.**
+
+The scan had been widened four times across three rounds — spelling, position, file kind, match granularity — each time after a demonstration that the previous needle missed a member. Round 3 replaced the method rather than performing a fifth widening:
+
+1. **Normalise** — join shell line-continuations, split on `;`/`&&`/`||`/`|`, so position and line structure stop being properties the needle models.
+2. **Tokenise** — a hit is a command mentioning `pnpm` with a later token in the selector **family** `--filter[a-z-]*`, `-F`, or a clustered short group containing `F`. The family, not two literals, is what admits `--filter-prod` and whatever pnpm adds next.
+3. **Pin the family against pnpm itself** — this is the cycle-5 lesson applied to this axis: ask the tool rather than recall. **The reachability guard caught the first attempt**: `pnpm --help` mentions no flag at all (measured: zero occurrences of "filter"), so the pin would have asserted over an empty set. `pnpm run --help` carries the "Filtering options" block declaring `--filter` and `--filter-prod`, and that is what is pinned.
+4. **State the residue** — a selector held in a variable (`F=--filter; pnpm $F x build`) is invisible to any text scan in every form. **SC60** records that, so the next round reads a green as what it is.
+
+## Quality Warnings
+
+None on the findings. Three process notes, all from the experts, all worth keeping.
+
+- **Functionality corrected itself** on its round-2 G5 disposition: its first pass grepped only vitest's truncated summary line, which still prints `expected [ Array(1) ]`; the diff body carries the full `file :: title` identity that had been asked for. The fix was correct and the initial verdict was not.
+- **Testing hit a harness failure of its own** — a `perl` mutation failed to apply silently, and the run that followed printed a red that could have been misread as the probe's result. Every edit after that point asserts its anchor before writing.
+- **Security hit one too**, and it was the reassuring direction: a `grep -ql` through the shell's translation proxy returned **empty for both patterns**, which would have read as "the discriminator matches nothing". Re-run in `node` it gave 12/12.
+
+That is **six and seven** measurement-harness false answers in this cycle, and the second and third where the wrong answer was the comfortable one. Every load-bearing measurement in this round was taken in `node` or from a captured exit status.
+
+## Environment Verification Report
+
+Unchanged from round 1 except VE6, which Security's round-3 probes extended: the Playwright listing was already confirmed to work with no browsers (D18) and no `e2e/.auth/` storage state (round 2); round 3 additionally established that `git ls-files --others` does **not** list FIFOs, closing a blocking-read hang at the inventory source rather than at the `try/catch`. **VE5 remains the sole `blocked-deferred` path**, linked to D11 with its pre-committed non-filter fallback.
+
+## Resolution Status
+
+All 10 findings resolved. Gates after fixes: `pnpm lint` 0 · `pnpm typecheck` 0 · `pnpm test:unit` 30 files / 275 tests / 1.38 s · `pnpm test:integration` 6 / 143 / 7.2 s warm · `pnpm test:e2e` 43 passed · `docker compose build web` pass.
+
+### P1 [Major] Selector method replaced
+- Normalise → tokenise → flag family → pinned against `pnpm run --help`, with the four previous widenings and the reason the method changed recorded in the comment.
+- Red-proven: **M55** (`--filter-prod`), **M56** (`-rF`), **M57** (Dockerfile continuation), **M58** (`ci.yml` `run: |` continuation), **M62** (narrowing the family makes `--filter-prod` surface from pnpm's own help as unrecognised).
+
+### P2 [Major] Control-file property corrected
+- The rule is restated as the property — *a test that asserts over a domain, a manifest, or a repository-wide relation rather than over the behaviour of one module* — with **both families named**: (a) tests that read repository files, (b) tests that import a domain and compare it against a second declaration. The comment says plainly that the earlier grep was family (a) only, "a proxy for how *some* controls happen to be implemented".
+- `label-kinds.test.ts` and `label-filters.test.ts` added; the list is now 13.
+
+### P4, P8 [Minor] Addition-guard
+- Strictly additive: the literal list remains the sole authority for detecting **deletion**, and a new assertion catches a file-reading control being **added** unlisted. Both green cases are now red — **M59** (de-list an entry) and **M60** (add a qualifying file).
+- The proxy is widened per SEC-10 (double quotes, bare `fs`, dynamic import, `child_process`) and the comment states it cannot see family (b) — **SC61** records that residue rather than letting the guard read as proof of completeness.
+
+### P5 [Minor] Read-set pinned
+- The loop records what it actually read; `scanned − read` is asserted empty, which covers both exclusion sites and surfaces whatever the `catch` swallows. Red-proven **M61**.
+
+### P3, P7 [Minor] Deps-stage matchers
+- Token comparison replaces the interpolated regex (`tokens[0] === 'COPY' && tokens[1] === \`${dir}/package.json\``), removing the injection surface entirely. `FROM … AS deps` is case-insensitive; `RUN` accepts flags before `pnpm install`.
+
+### P6 [Minor] Prose exemption
+- Keyed on the file being markdown (`/^docs\/.*\.md: /`) rather than on the directory. Behaviour-neutral today — all 39 tracked files under `docs/` are `.md` — and no longer unbounded in what it can acquire.
+
+## Mutations added this round
+
+| # | Mutation | Result |
+|---|---|---|
+| M55 | `pnpm --filter-prod` in the Dockerfile | RED |
+| M56 | clustered short flags `pnpm -rF` | RED |
+| M57 | Dockerfile line continuation | RED |
+| M58 | `ci.yml` `run: \|` block with a continuation | RED |
+| M59 | de-list a `CONTROL_FILES` entry | RED — addition-guard |
+| M60 | add a qualifying control unlisted | RED — addition-guard |
+| M61 | exclusion applied inside the `holders` loop | RED — read-set pin |
+| M62 | narrow the selector family so pnpm declares one it does not recognise | RED — the `pnpm run --help` pin |
+
+Cumulative: **62 falsifiability mutations**, 3 documented-limit probes, 1 retired.
