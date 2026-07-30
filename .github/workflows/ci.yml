@@ -38,6 +38,34 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test:unit
 
+      - name: Every assigned test file is inside a typecheck program
+        # `pnpm typecheck` is `tsc --noEmit` per member, and each member's
+        # tsconfig `include` decides what that sees. Narrowing one is silent:
+        # measured, `apps/api` with `include: ["src"]` exits 0 with a planted
+        # TS2322 in test/ gone. Total wipeout is loud (TS18003); the partial
+        # narrowing is not — the SC58 asymmetry, on the only type gate CI runs.
+        #
+        # Asked of the resolver, not of the glob's spelling: an earlier attempt
+        # pattern-matched `include` strings and redded on apps/web, whose
+        # `**/*.ts` covers test/ correctly. `--listFilesOnly` costs 33s wall
+        # here and does not fit the unit suite's CPU budget, which is why it
+        # lives in CI (SC66).
+        run: |
+          set -euo pipefail
+          pnpm -r --parallel exec tsc --noEmit --listFilesOnly > /tmp/tsc-program.txt
+          pnpm -w exec vitest list --filesOnly --project unit > /tmp/assigned.txt
+          pnpm -w exec vitest list --filesOnly --project integration >> /tmp/assigned.txt
+          missing=0
+          while read -r f; do
+            [ -n "$f" ] || continue
+            f=${f#\[*\] }
+            if ! grep -qF "$f" /tmp/tsc-program.txt; then
+              echo "assigned test file outside every typecheck program: $f" >&2
+              missing=1
+            fi
+          done < /tmp/assigned.txt
+          exit "$missing"
+
   integration:
     needs: checks
     runs-on: ubuntu-latest
@@ -83,6 +111,41 @@ jobs:
 
       - name: Build and start the stack
         run: docker compose up -d --build
+
+      - name: Every built image carries every workspace manifest
+        # The builder adjudicating what it actually produced. `pnpm install
+        # --frozen-lockfile` is SILENT when a lockfile importer has no manifest on
+        # disk, so an omitted COPY installs none of that member's dependencies and
+        # the image builds green — the defect this cycle found with api-types and
+        # e2e missing.
+        #
+        # The parity gate checks that from the Dockerfile's TEXT, and text is what
+        # kept failing: five install spellings walked past an anchored matcher, and
+        # a `target:` with a trailing comment dropped a whole service out of the
+        # ancestry check. This step asks the images instead, so no spelling of a
+        # Dockerfile or a compose file can talk it out of the answer. The member
+        # list is derived from `pnpm list -r`, never typed.
+        run: |
+          set -euo pipefail
+          members=$(pnpm list -r --depth -1 --json | jq -r --arg root "$PWD" '.[] | select(.path != $root) | .path | sub("^" + $root + "/"; "")')
+          [ -n "$members" ] || { echo "no workspace members derived" >&2; exit 1; }
+          images=$(docker compose config --format json | jq -r '.services | to_entries[] | select(.value.build) | .value.image // ("open-smp-" + .key)' | sort -u)
+          [ -n "$images" ] || { echo "no built images found in the compose config" >&2; exit 1; }
+          fail=0
+          for image in $images; do
+            for dir in $members; do
+              if ! docker run --rm --entrypoint sh "$image" -c "test -f /repo/$dir/package.json"; then
+                echo "$image is missing /repo/$dir/package.json" >&2
+                fail=1
+              fi
+            done
+            if docker run --rm --entrypoint sh "$image" -c \
+              'find /repo -maxdepth 5 -type l ! -exec test -e {} \; -print' | grep -q .; then
+              echo "$image contains a dangling workspace symlink" >&2
+              fail=1
+            fi
+          done
+          exit "$fail"
 
       - name: Wait for API health endpoint
         run: |
@@ -170,17 +233,43 @@ jobs:
         # covers the half no setting reaches: `--filter <real-pkg> test` with no
         # `test` script still exits 0 (SC63). Same reason root `test:e2e` uses
         # `-C e2e test`.
-        # This comment previously said the step "had never actually executed —
-        # the repository carried no git remote for three cycles, so CI never ran".
-        # That is false and was load-bearing for deferring VE5/VE6: `origin` is
-        # configured, CI has run repeatedly, and run 30321653394 (2026-07-28,
-        # compose-smoke) executed this step and the suite it installs for —
-        # 43 passed (23.1s) on the runner. What has never run in CI is the parity
-        # gate, because it lives on an unpushed branch.
+        # This comment has carried a false claim about CI history twice: first
+        # "the repository carried no git remote for three cycles, so CI never
+        # ran", then "what has never run in CI is the parity gate, because it
+        # lives on an unpushed branch" — written in the commit before the branch
+        # was pushed. Both were load-bearing for deferring VE5/VE6.
+        #
+        # A comment is the wrong place for a fact that decays on the next push.
+        # What is durably true: this step and the suite it installs for run in
+        # `compose-smoke` on every pull request, and the run's own record is the
+        # authority — `gh run view <id> --job <id>` reports which steps executed.
         run: pnpm -C e2e exec playwright install --with-deps chromium
 
       - name: Run the e2e suite
         run: pnpm test:e2e
+
+      - name: The e2e suite actually executed its whole discovered set
+        # `pnpm test:e2e` exits 0 when nothing ran. Two measured routes: a
+        # `process.exit(0)` in globalSetup (which `--list` never executes, so the
+        # parity gate cannot see it), and a runtime `test.skip(() => true)` at
+        # describe scope (which emits no annotation). Both leave every in-repo
+        # gate green.
+        #
+        # The listing says what was discovered; the run's own report says what
+        # executed. Comparing them is the only thing that separates the two, and
+        # it has to happen out of band because no assertion inside the unit suite
+        # can observe a run.
+        run: |
+          set -euo pipefail
+          discovered=$(pnpm -s -C e2e test --list --reporter=json | jq '[.. | objects | select(has("specs")) | .specs[]] | length')
+          [ "$discovered" -gt 0 ] || { echo "the listing discovered no specs" >&2; exit 1; }
+          report=e2e/test-results/report.json
+          [ -f "$report" ] || { echo "no e2e run report at $report — the suite did not execute" >&2; exit 1; }
+          executed=$(jq '.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped' "$report")
+          echo "discovered=$discovered executed=$executed"
+          [ "$executed" = "$discovered" ] || { echo "the e2e suite executed $executed of $discovered discovered specs" >&2; exit 1; }
+          skipped=$(jq '.stats.skipped' "$report")
+          [ "$skipped" = "0" ] || { echo "$skipped e2e specs were skipped at runtime" >&2; exit 1; }
 
       - name: Assert seed acceptance bar survived the e2e suite
         run: bash e2e/scripts/assert-seed-preserved.sh

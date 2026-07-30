@@ -40,8 +40,15 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 // vitest writes its deprecation banner through `logger.deprecate` directly, not
 // through `process.emitWarning`, so a restored `poolOptions` still produces the
 // 196 bytes this gate reds on.
+// `PARITY_GATE_CHILD` is why the eager spawns below are guarded. `vitest list
+// --filesOnly` does not collect, so a child never imports this file; `--json`
+// DOES collect, which imports it, which re-runs its module-level spawns, which
+// collect again — the recursion the plan warns about, arriving through the
+// listing rather than through a member script. The marker makes this file inert
+// when it is being collected by one of its own children.
 const CHILD_ENV = {
   ...process.env,
+  PARITY_GATE_CHILD: '1',
   CI: '1',
   NO_UPDATE_NOTIFIER: '1',
   npm_config_update_notifier: 'false',
@@ -112,6 +119,9 @@ function lines(stdout: string): string[] {
 // on first await lets the independent children overlap instead of queueing
 // (~1.8s → the figure recorded in the plan's budget). A unit suite that runs in
 // ~0.7s cannot absorb a gate that serialises a dozen process spawns.
+/** True when this module is being collected by a child this gate spawned. */
+const IN_CHILD = process.env.PARITY_GATE_CHILD === '1';
+
 function startRootListing(tier: Tier): Promise<Set<string>> {
   return (async () => {
     const child = await runChild(['-w', 'exec', 'vitest', 'list', '--filesOnly', '--project', tier]);
@@ -123,6 +133,38 @@ function startRootListing(tier: Tier): Promise<Set<string>> {
 const rootListings: Record<Tier, Promise<Set<string>>> = {
   unit: startRootListing('unit'),
   integration: startRootListing('integration'),
+};
+
+/**
+ * The same subcommand WITHOUT `--filesOnly`, because `--filesOnly` is invariant
+ * under every skip form vitest has and `--json` is not.
+ *
+ * Measured: `describe.skip` on `apps/api/test/workflow-pins.test.ts` — the
+ * repository's only pin on third-party action SHAs — leaves it present in
+ * `--filesOnly`, leaves it assigned, leaves the parity gate 12/12 green, and
+ * `pnpm test:unit` exits 0 with `251 passed | 25 skipped`. In `--json` the file
+ * is simply absent (29 of 30). Same for `describe.skipIf(true)`, `runIf(false)`,
+ * and any form that skips a whole file.
+ *
+ * This is the third instance of one rule: **an assertion whose subject is a
+ * listing can only see what collection sees.** `forbidOnly` answered it for
+ * Playwright's `only` by moving the verdict into the tool; this answers it for
+ * vitest by asking the tool a question whose answer changes.
+ */
+function startExecutableListing(tier: Tier): Promise<Set<string>> {
+  if (IN_CHILD) return Promise.resolve(new Set<string>());
+  return (async () => {
+    const child = await runChild(['-w', 'exec', 'vitest', 'list', '--project', tier, '--json']);
+    assertChildOk(`root executable listing (${tier})`, child);
+    return new Set(
+      (JSON.parse(child.stdout) as { file: string }[]).map((t) => path.relative(REPO_ROOT, t.file)),
+    );
+  })();
+}
+
+const executableListings: Record<Tier, Promise<Set<string>>> = {
+  unit: startExecutableListing('unit'),
+  integration: startExecutableListing('integration'),
 };
 
 function rootListing(tier: Tier): Promise<Set<string>> {
@@ -483,6 +525,20 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     expect(overlap(unit, integration), 'claimed by both vitest projects').toEqual([]);
     expect(overlap(unit, playwright), 'claimed by vitest unit and playwright').toEqual([]);
     expect(overlap(integration, playwright), 'claimed by vitest integration and playwright').toEqual([]);
+
+    // CLAIMED is not EXECUTED. Everything above compares file sets from
+    // `--filesOnly`, which is invariant under every skip form vitest has: a
+    // `describe.skip` leaves the file claimed, listed, assigned and green while
+    // none of its tests run. `--json` omits a file whose tests are all skipped,
+    // so comparing the two answers the question the file sets cannot.
+    for (const tier of ['unit', 'integration'] as const) {
+      const claimedFiles = await rootListing(tier);
+      const executable = await executableListings[tier];
+      expect(
+        [...claimedFiles].filter((f) => !executable.has(f)).sort(),
+        `${tier} files that are claimed and assigned but contribute no executable test — a whole-file skip`,
+      ).toEqual([]);
+    }
   });
 
   it('the union of per-member assignments equals the full root listing', async () => {
@@ -978,6 +1034,20 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     const inventoryFiles = trackedOrUntrackedFiles();
     const scanned = inventoryFiles.filter((f) => !isExcluded(f));
 
+    // The population is bounded too. Revision 11 made the comparison independent
+    // on the EXCLUSION axis and left both sides reading one `inventoryFiles`, so
+    // narrowing the inventory itself — a pathspec on `git ls-files`, say — dropped
+    // `ci.yml` and `docker-compose.yml` from the scan with both sides agreeing and
+    // the suite green. And the `> 0` guard that partly covered it had been deleted
+    // in the same edit. Two independent spawns, and a floor.
+    expect(inventoryFiles.length, 'the file inventory is empty').toBeGreaterThan(0);
+    expect(scanned.length, 'nothing scanned').toBeGreaterThan(0);
+    const inventoryAgain = trackedOrUntrackedFiles();
+    expect(inventoryAgain.length, 'the two inventory spawns disagree; the scan population is not stable').toBe(inventoryFiles.length);
+    for (const required of ['.github/workflows/ci.yml', 'Dockerfile', 'docker-compose.yml', 'package.json']) {
+      expect(scanned, `\`${required}\` is not in the selector scan's population`).toContain(required);
+    }
+
     // The reason list above pins LABELS, and labels have no behaviour. Measured:
     // folding `|| extname(f) === '.yml'` into the existing markdown clause leaves
     // the reason list and all five predicate cells intact and drops
@@ -1191,46 +1261,51 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     //
     // Round 4 bounded the search to the stage and wrote a fresh assumption one
     // level down; this binds that assumption to the artifact that decides it.
-    const allInstalls = dockerfile.flatMap((l, i) => (DEPS_INSTALL.test(l) ? [i] : []));
-    expect(allInstalls, '`pnpm install` runs somewhere other than the verified deps stage').toEqual([installAt]);
+    // TOKENISED, not anchored. `DEPS_INSTALL` requires `pnpm` to be the first
+    // word of the RUN and the subcommand to be spelled `install`; measured, five
+    // working spellings walked past it — `apt-get update && pnpm install …`,
+    // `cd /repo && pnpm install …`, `pnpm i` (a documented alias: `pnpm install
+    // --help` prints `Alias: i`), `node …/pnpm/bin/pnpm.cjs install …`, and the
+    // JSON exec form. The same commit that wrote this line had just derived
+    // `isPnpm` as a filename family for the selector scan and then anchored on a
+    // literal one level down.
+    const INSTALL_SUBCOMMANDS = new Set(['install', 'i', 'add', 'update', 'up', 'fetch', 'dedupe', 'import']);
+    const installsAnyForm = dockerfile.flatMap((l, i) => {
+      if (!/^\s*RUN\b/i.test(l)) return [];
+      return l
+        .split(/[;|&]+/)
+        .some((cmd) => {
+          const t = cmd.split(/[\s,]+/).map((x) => x.replace(/^[[("'`]+|[\])"'`]+$/g, '')).filter(Boolean);
+          const at = t.findIndex((x) => /^pnpm(\.[cm]?js)?$/.test(path.posix.basename(x)));
+          if (at < 0) return false;
+          const sub = t.slice(at + 1).find((x) => !x.startsWith('-'));
+          return !!sub && INSTALL_SUBCOMMANDS.has(sub);
+        })
+        ? [i]
+        : [];
+    });
+    expect(installsAnyForm, 'a pnpm install-family command runs somewhere other than the verified deps stage').toEqual([installAt]);
 
-    // …and the stage that install lives in is an ancestor of every image compose
-    // builds. `deps` is a literal here; this is what makes the literal answerable.
-    const stageOf = (line: number): string => {
-      for (let i = line; i >= 0; i--) {
-        const m = /^\s*FROM\s+(--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(dockerfile[i] ?? '');
-        if (m) return (m[3] ?? m[2] ?? '').toLowerCase();
-      }
-      return '';
-    };
-    const parentOf = new Map<string, string>();
-    for (const l of dockerfile) {
-      const m = /^\s*FROM\s+(--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(l);
-      if (m?.[3]) parentOf.set(m[3].toLowerCase(), (m[2] ?? '').toLowerCase());
-    }
-    const installStage = stageOf(installAt);
-    expect(installStage, 'the verified install is not inside a named stage').not.toBe('');
-
-    const compose = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
-    const targets = [...new Set([...compose.matchAll(/^\s*target:\s*(\S+)\s*$/gm)].map((m) => m[1]?.toLowerCase() ?? ''))];
-    expect(targets.length, 'no build targets found in docker-compose.yml; the derivation is broken').toBeGreaterThan(0);
-
-    const inherits = (target: string): boolean => {
-      for (let stage: string | undefined = target, hops = 0; stage && hops < 32; stage = parentOf.get(stage), hops++) {
-        if (stage === installStage) return true;
-      }
-      return false;
-    };
-    expect(
-      targets.filter((t) => !inherits(t)),
-      `compose build targets that do not inherit the verified \`${installStage}\` stage, so their dependencies are installed by something this gate never read`,
-    ).toEqual([]);
-
-    // The root is the one entry `filter(Boolean)` above removes — its relative
-    // path is the empty string. Revision 7 left that subtraction undeclared and
-    // uncomplemented, which is the shape the plan treats as load-bearing for D0
-    // and C8. These are its complement.
+    // The stage-ancestry question — "is the verified install the one every shipped
+    // image inherits?" — is NOT answered here any more, and that is deliberate.
     //
+    // Revision 11 answered it by regexing `target:` out of `docker-compose.yml`.
+    // Measured: `target: base # rebuild without deps` was dropped from the
+    // collected set entirely, so that service went unchecked while docker
+    // resolved it to a stage with no install at all; `target: "api"` captured the
+    // quotes; and a long-syntax volume's `target: /etc/app.conf` was collected as
+    // a build target. Three defects in one line, and a YAML parser is not
+    // available — `yaml` does not resolve from the repo root, which is the same
+    // dependency argument C8 used to refuse parsing `ci.yml`.
+    //
+    // So the question moved to where the tool is. `compose-smoke` builds every
+    // service and then asserts, against the built images, that each carries every
+    // workspace manifest — the builder adjudicating what it actually produced,
+    // which no spelling of a Dockerfile or compose file can talk it out of. What
+    // remains here is what text can answer honestly: the deps stage exists, its
+    // install is the only install of the family anywhere in the file, it is
+    // frozen, and the manifests land before it.
+
     // `pnpm-workspace.yaml` is not cosmetic here: it carries `failIfNoMatch`,
     // the setting the first assertion in this describe observes. If it does not
     // reach the image, `pnpm --filter <no-match>` is silent again inside every
@@ -1400,5 +1475,54 @@ describe('C8: the root scripts CI invokes still mean what their names say', { ti
       'test:integration': 'vitest run --project integration',
       'test:e2e': 'pnpm -C e2e test',
     });
+
+    // Three of those five pinned strings DELEGATE the real decision to a file,
+    // and until now no assertion read any of them. `test:unit` and
+    // `test:integration` are the two exceptions — and they are the two this cycle
+    // worked on, which is the member-set-by-name-shape error one level up from
+    // where the plan already names it.
+    //
+    // `test:e2e` delegates to `e2e/package.json`. Measured: replacing its value
+    // with `playwright test --grep "<nine titles>"` leaves all 9 files claimed,
+    // both named canaries present and the gate 12/12 green, while 32 of 43 specs
+    // stop running in CI.
+    const e2ePkg = await manifest('e2e');
+    expect(e2ePkg.scripts?.test, "e2e's test script no longer runs the whole suite").toBe('playwright test');
+
+    // `lint` delegates to eslint.config.mjs's `ignores`. SC58 measured the
+    // asymmetry two cycles ago — `ignores: ['**/*']` exits 2 (loud) while
+    // `ignores: ['apps/api/**']` exits 0 with planted errors silently absent —
+    // and its stated trigger was "the next cycle touching root tooling, closed
+    // there with the three-line pin, not deferred again". This cycle rewrote root
+    // `package.json`, `pnpm-workspace.yaml` and `vitest.config.ts`; the trigger
+    // fired and the pin was deferred twice more. Here it is.
+    const eslintConfig = (await import(pathToFileURL(path.join(REPO_ROOT, 'eslint.config.mjs')).href)).default;
+    expect(Array.isArray(eslintConfig), 'eslint.config.mjs no longer default-exports an array').toBe(true);
+    expect(eslintConfig[0]?.ignores, "eslint's ignore list changed; `pnpm lint`'s file set is not what it was").toEqual([
+      '**/dist/**',
+      '**/.next/**',
+      '**/node_modules/**',
+      'apps/web/next-env.d.ts',
+    ]);
+
+    // `typecheck` delegates to each member's tsconfig, and that one is NOT
+    // asserted here. Measured on `apps/api`: narrowing `include` to `["src"]`
+    // makes `pnpm typecheck` exit 0 with a planted `TS2322` in `test/` gone —
+    // the same partial-silent / total-loud asymmetry SC58 records for eslint, on
+    // the gate VE4 calls the only type gate CI runs.
+    //
+    // The first attempt at closing it here pattern-matched `include` globs for a
+    // string starting with `test`, and redded on `apps/web` — whose
+    // `include: ["**/*.ts", …]` covers `test/` perfectly well (verified: a
+    // planted TS2322 there is caught, exit 2). Judging a glob by its spelling
+    // instead of asking the resolver is the error this whole contract is about,
+    // committed while writing the assertion against it.
+    //
+    // The resolver's answer costs `tsc --listFilesOnly`: 13-17 s per member, 33 s
+    // wall / 23 s CPU for `pnpm -r --parallel`. That does not fit NF1's 20 s CPU
+    // budget for the whole unit suite, so it runs as a CI step in `checks`
+    // instead, where the same comparison is made against the vitest listing.
+    // Measured there today: 36 assigned test files, 0 outside a typecheck
+    // program. SC66.
   });
 });
