@@ -4,8 +4,12 @@
 
 | File | Change |
 |---|---|
-| `Dockerfile:60` | `pnpm --filter @open-smp/web build` → `pnpm -C apps/web build` |
-| `.github/workflows/ci.yml:148` | `pnpm --filter e2e exec playwright install …` → `pnpm -C e2e exec …` |
+| `Dockerfile`, the `web-build` stage | `pnpm --filter @open-smp/web build` → `pnpm -C apps/web build` |
+| `Dockerfile`, the `base` stage | `npm i -g pnpm@10` → `npm i -g pnpm@10.34.5`, pinned to the root `packageManager` |
+| `.github/workflows/ci.yml`, *Install Playwright chromium browser* | `pnpm --filter e2e exec playwright install …` → `pnpm -C e2e exec …` |
+| `pnpm-workspace.yaml` | `failIfNoMatch: true` added |
+
+Cited by stage and step name rather than by line: three earlier revisions of this table carried line numbers that had drifted, and one of them was corrected in a paragraph that itself used stale numbers.
 
 Both sit on the path that produces the production web image and the CI E2E run. The reason they are in this diff is that `pnpm --filter` **exits 0 when the filter matches nothing**, so a package rename would have produced a green build with no `.next` and a green CI job with no browser. Everything below was executed; the Expected-result column carries observed values, not intentions.
 
@@ -108,7 +112,8 @@ These are the failure modes the change exists to remove. Each was executed.
 | Scenario | Old form | New form |
 |---|---|---|
 | **Package renamed** — someone namespaces `@open-smp/web`, or `e2e` → `@open-smp/e2e` | `pnpm --filter <no-match> build` → **exit 0**, `No projects matched the filters`. The image builds with no `.next`; CI installs no browser. | `-C` resolves a **directory**, so a name rename is a no-op. Verified end to end: renaming the `e2e` package name leaves `pnpm test:e2e` at **exit 0, 43 passed**. |
-| **A future artifact uses `--filter` again** — the form the `-C` rewrite was chosen to avoid | nothing prevents it; the scan added in code review can be evaded by quoting, a JSON exec array, a YAML folded scalar, a shell variable, or a wrapper script (all measured MISS) | `failIfNoMatch: true` in `pnpm-workspace.yaml` makes the no-match case **exit 1 at the tool**, so notation is irrelevant. Measured: `pnpm --filter @open-smp/nope build` → **exit 1**; `pnpm --filter e2e exec playwright --version` → **exit 0, Version 1.62.0**. The setting reaches the image via the pinned `COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./`, which C10 now asserts. |
+| **A future artifact uses `--filter` again** — the form the `-C` rewrite was chosen to avoid | nothing prevents it; a text scan is evaded by quoting, a JSON exec array, a YAML folded scalar, a shell variable, or a wrapper script (all measured MISS) | `failIfNoMatch: true` makes the no-match case **exit 1 at the tool**, so *notation* stops mattering. Measured: `pnpm --filter @open-smp/nope build` → **exit 1**; `pnpm --filter e2e exec playwright --version` → **exit 0, Version 1.62.0**. The setting reaches the image via the pinned root `COPY`, which C10 asserts, and holds there (step 4b). |
+| **A future artifact asks to be exempted** — `pnpm --no-fail-if-no-match --filter …` | — | **This is the one thing the setting does not refuse**: measured **exit 0**, in the workspace and inside the image, for both `--no-fail-if-no-match` and `--fail-if-no-match=false`. It is why C11 is a fail-closed default and not a boundary. The only observer is C9, which denies both spellings, so such a line reds at review time — a tripwire, with the residue stated in SC60. |
 | **The script is missing rather than the package** — `--filter <real-pkg> test` with no `test` script | **exit 0** (pnpm's `test` shorthand treats a missing script as a no-op) | **still exit 0** — `failIfNoMatch` does not apply because the filter matched. Covered instead by C2 clause 3 and by `-C` (`pnpm -C <pkg-without-script> test` → **exit 254**). Recorded as SC63 rather than implied closed. |
 | **Directory moved or deleted** | not distinguishable from success | `pnpm -C apps/web-renamed build` → **exit 1**. `pnpm -C e2e-nope test` → **exit 1, ENOENT**. Both loud. |
 | **Script removed from the target package** | `pnpm --filter <pkg> test` with no `test` script → **exit 0, no output** (a pnpm built-in shorthand bypasses the recursive-run error) | `pnpm -C <pkg> test` → **exit 254**, `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`. Additionally gated: C2 clause 3 reds if a package declaring a non-`vitest` runner has no `test` script. |
@@ -128,17 +133,17 @@ docker compose build web && docker compose up -d web
 
 Reverting restores the exit-0-on-no-match behaviour at both sites — and **`pnpm test:unit` then reds**, which is the intended coupling and not a complication to work around.
 
-This paragraph previously read "`Dockerfile` is outside every gate's domain". That was true when it was written, at `a30b49a`, and it is the sentence that explains how the third `--filter` site survived four review rounds. It stopped being true at `7ab1cf7`: C9 scans every tracked artifact for the selector family and pins the surviving matches to the two *comments* in `ci.yml` and `Dockerfile`, and C10 reads the Dockerfile's deps stage. Restoring `pnpm --filter` at either site removes a pinned comment line and introduces an unpinned invocation, so C9 fails naming the line.
+Two earlier versions of this paragraph were wrong, and both errors are worth keeping because they are the same error at different distances. It first said "`Dockerfile` is outside every gate's domain", true when written at `a30b49a` and false from `7ab1cf7`. It then described C9 as pinning "the surviving matches to the two comments" and told the operator to "update C9's pinned list" — written in `3e8fc45`, the commit that **deleted** that list, and quoting a failing assertion (`executable lines still selecting packages by name`) that the same commit deleted too. A rollback runbook is the one document read under time pressure; it is where a stale claim costs the most.
 
-So a partial rollback is not a one-line operation. Either revert the gate with the fix —
+**The shipped form.** C9's expected set is empty. Restoring a live `pnpm --filter` at either site reds; restoring only a *comment* about the form is stripped and stays green. There is no list to update, so a partial rollback needs no counter-edit — but C11's setting and C10's assertions still apply, so choose one:
 
 ```bash
-git revert 8fde007 6021097 7ab1cf7 dba32f2   # gates and fix together, newest first
+git revert d3541a5 3e8fc45 8fde007 6021097 7ab1cf7 dba32f2   # gates and fix together, newest first
 ```
 
-— or, to roll back only the deployment artifacts while keeping the gate, update C9's pinned list in the same commit.
+or roll back only the deployment artifacts and accept that the gate reds until the tree agrees again.
 
-**Measured, not assumed.** Restoring `RUN pnpm --filter @open-smp/web build` in the Dockerfile and running the gate alone: **exit 1**, `1 failed | 10 passed (11)`, failing assertion `executable lines still selecting packages by name`. Reverting `dba32f2` without the gate commits leaves `pnpm test:unit` red.
+**Measured against the shipped gate, not assumed.** Restoring `RUN pnpm --filter @open-smp/web build` in the Dockerfile and running the gate alone: **exit 1**, `1 failed | 11 passed (12)`, failing assertion `artifacts holding a literal pnpm selector`.
 
 ## Residual risk
 

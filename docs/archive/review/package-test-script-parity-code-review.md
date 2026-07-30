@@ -379,3 +379,76 @@ All 10 findings resolved. Gates after fixes: `pnpm lint` 0 · `pnpm typecheck` 0
 | M62 | narrow the selector family so pnpm declares one it does not recognise | RED — the `pnpm run --help` pin |
 
 Cumulative: **62 falsifiability mutations**, 3 documented-limit probes, 1 retired.
+
+---
+
+# Code Review: package-test-script-parity — Round 4
+Date: 2026-07-30
+Review round: 4
+
+## Changes from Previous Round
+
+Round 3 closed 10 findings in C9/C10. Plan-review round 6 then reviewed those two contracts —
+the first review either had ever had — and did not clear them; revision 8 rewrote both, added
+**C11** (`failIfNoMatch: true`), and re-executed 30 mutations. Round 4's primary subject is that
+new surface, `8fde007..HEAD`, on the cycle's own recurring evidence that each round's findings
+land in whatever the previous round created.
+
+## Convergence summary
+
+26 findings across three experts. **Two Critical**, both in text revision 8 wrote to close
+round 6's Criticals.
+
+| # | Finding | Convergence | Severity |
+|---|---|---|---|
+| **P1** | **C11 is not an enforceable boundary.** `--no-fail-if-no-match` and `--fail-if-no-match=false` disable it per invocation — measured exit 0 in the workspace and inside the built `deps` image. Security attacked every other context (`.npmrc`, `npm_config_*`/`PNPM_CONFIG_*`, nested workspace file, member-subdirectory cwd, `-r`, `-C`, every image stage) and the setting held; **the CLI flag is the only bypass, and it is total**. The overstatement was load-bearing: revision 8 demoted C9, closed SC60 with "Trigger: none — closed", and accepted C9's residue on it. Worse, `--fail-if-no-match` sat in C9's *reviewed non-selector allowlist*, so the one control that could observe the off-switch was told to ignore it. | 2/3 (Sec Critical, Func Major) | **Critical** |
+| **P2** | **C10's anti-vacuity self-tests were vacuous.** Three assertions re-typed the matcher regexes rather than using them, so they asserted over their own copies. Executed: narrowing the shipped `FROM … AS deps` matcher to drop `(--\S+\s+)*` leaves the real `FROM base AS deps` still matching and the self-test still passing — the whole `it` green with the property gone. **Tenth vacuous assertion in this file, in the lines labelled "anti-vacuity".** RT9, RT3 and RT5 at one site. | 1/3 (Test Critical) | **Critical** |
+| **P3** | **A working selector spelling the family missed.** `pnpm -F=<pkg>` and `-rF=<pkg>` resolve (measured exit 0); the short alternative had no `(=.*)?`. Composed with P1: `pnpm -F=e2e --no-fail-if-no-match test` is plain text, invisible to C9, and defeats C11 — the exact channel the cycle exists to close, in the commit declaring it shut. | 1/3 (Sec Major) | Major |
+| **P4** | **Only the first `pnpm` per command was scanned**, so `pnpm -w exec pnpm --filter …` was a MISS — and `pnpm -w exec` is the canonical form of every member `test` script this cycle wrote. | 3/3 (Func Major, Sec Major, Test Minor) | Major |
+| **P5** | **The sanctioned-exclusions guard restated its own predicate**, so it was empty for every repository state. Its only failing mode was a one-sided edit of two adjacent lines — which is what its mutation exercised. | 2/3 (Func Major, Test Major) | Major |
+| **P6** | **C10's root-COPY set was three hand-written filenames.** The defining primitive is "root-level inputs `pnpm install` reads", which also covers `.npmrc`, `.pnpmfile.cjs` and `patches/`. Complete today by coincidence — the condition under which the member list was complete before someone added `packages/api-types`. A missing `.npmrc` is the silent direction. | 2/3 (Func Major, Sec Minor) | Major |
+| **P7** | **The rollback runbook described a control the same commit deleted** — C9's "pinned list", an instruction to update it, and a quoted failing assertion that exists nowhere in the tree, against a test count that was already stale. | 3/3 | Major |
+| **P8** | **RT7 gap**: eight assertion sites had no mutation, including the three guards that exist *because of* round 6's vacuous pin, and six of C11's seven assertions. | 1/3 (Test Major) | Major |
+| **P9** | **Mutation totals irreconcilable with the table** — 28 / 22 / 6 stated against 21 deny + 9 allow rows, and both per-contract sub-counts wrong. N7's shape, one revision after N7 closed. | 2/3 | Major |
+| **P10–P17** | Comments stripped after continuations joined (a trailing `#` swallowed the joined line); `COPY --from=<stage>` accepted as a build-context copy; the `WORKDIR`-absolute destination redded; matchers anchored at column 0 despite a declared whitespace tolerance; C11's allow probe filtered the workspace **root**, not a member; NF1's wall figure taken at ~5.7× parallelism; `pnpm@10` floating while `--frozen-lockfile` was pinned; the `--filter exits 0` comments in `Dockerfile` and `ci.yml` made false by C11 and updated at neither site (R33). | mixed | Minor |
+
+## What was done
+
+All 26 were fixed or explicitly dispositioned; nothing was deferred. The two structural changes:
+
+- **C11's class is restated** as a fail-closed default with one enumerated CLI opt-out, the opt-out
+  moved into C9's **deny** set, and its existence asserted — so a pnpm release removing the negation
+  re-derives the contract instead of leaving a stale record. SC60 is **reopened**, two-sided: C11
+  sees selectors C9 cannot read, C9 sees exemptions C11 cannot refuse, and neither closes the other.
+- **C10's matchers are single declarations** used by both the parse and the self-tests, and its
+  root-input set is derived from the working tree.
+
+**50 mutations re-executed** against the shipped tree — 38 red-proofs, 12 allow-side. Four were
+mis-specified on the first run; three were harness errors, and the fourth was not: re-adding a
+`docs/` directory anchor stayed **green** against the repaired exclusion guard, because all 39
+tracked files under `docs/` are markdown and no comparison of *sets* can distinguish two predicates
+that produce the same set. That forced the predicate-level assertion that shipped.
+
+## Recurring Issue Check
+
+| Pattern | Status |
+|---|---|
+| The vacuous assertion (nine prior) | **Recurred** — tenth, in the lines labelled "anti-vacuity", written to close the ninth. |
+| The same production twice (round 6's mechanism) | **Recurred twice** — a duplicated regex literal and a restated predicate. |
+| A member set enumerated by name-shape | **Recurred twice** — C10's root-input triple, and C9's residue enumerated as two members with three more measurable. |
+| Red-proof not transitive across a rewrite | **Recurred** — in the rollback runbook, quoting a message and a count from a superseded implementation. |
+| The mutation table's own fidelity | **Recurred** — four totals, none matching the rows shipped beside them. |
+| Notation versus resolution | **Recurred one level down** — `./` normalised, `WORKDIR`-absolute not. |
+| A control at the wrong level | **Not recurred.** C11 is the right level; the defect was the strength claimed for it, not the placement. |
+| Harness destruction (D9) | **Not recurred** — no reviewer executed a mutation; the tree was unmodified throughout. |
+
+## Environment Verification Report
+
+| ID | Classification | Basis |
+|---|---|---|
+| VE1 | `verified-local` + `verified-CI` | `pnpm test:integration` exit 0, 6 files / 143 tests; `ci.yml` runs it. |
+| VE2 | `verified-local` | `pnpm test:e2e` exit 0, 43 passed. No spec added; the 5/5 login budget is untouched. |
+| VE3 | `verified-local` | 12/12 in the gate file, including the four new C11 children. |
+| VE4 | `verified-local` | lint / typecheck / test:unit / test:integration each run separately, all exit 0. |
+| VE5 | `blocked-deferred` | Local Node v26.5.0; `ci.yml` pins 22. Security measured the two new pnpm children **on the Node 22 image**: `pnpm run --help` and `pnpm list -r` both exit 0 with **0 bytes stderr**. C11's probes assert status and message, not stderr, so they carry no VE5 exposure. The vitest listings' Node-22 stderr remains the open item. |
+| VE6 | `verified-local` | Playwright `--list` green inside the passing gate; the runner-side leg is still the open CI question. |

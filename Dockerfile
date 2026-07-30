@@ -8,7 +8,12 @@
 # `tsc --noEmit`, i.e. typecheck only).
 
 FROM node:22 AS base
-RUN npm i -g pnpm@10
+# Pinned, not `pnpm@10`. C10 pins `--frozen-lockfile` so the image cannot resolve
+# outside the reviewed lockfile — but the tool that reads that lockfile was itself
+# floating, in an image where pnpm-workspace.yaml grants install-script execution
+# to five packages. The parity gate asserts this literal equals `packageManager`
+# in the root manifest, so the two cannot drift.
+RUN npm i -g pnpm@10.34.5
 WORKDIR /repo
 
 # --- Dependency layer: manifests only, so `pnpm install` is cached until a
@@ -61,9 +66,12 @@ FROM source AS web-build
 # process.env.API_URL again when the server boots, so the real value wins).
 ARG API_URL=http://localhost:3001
 ENV API_URL=${API_URL}
-# -C, not --filter: `pnpm --filter <no-match> …` exits 0 printing "No projects
+# -C, not --filter: `--filter <no-match>` used to exit 0 printing "No projects
 # matched the filters", so renaming this package would produce an image with no
-# .next and a green build. `-C` resolves a directory and fails loudly.
+# .next and a green build. `failIfNoMatch: true` in pnpm-workspace.yaml now makes
+# that exit 1, but `-C` is still the right form — it resolves a directory and
+# fails loudly without depending on a setting any invocation can switch off with
+# `--no-fail-if-no-match`.
 RUN pnpm -C apps/web build
 
 FROM web-build AS web

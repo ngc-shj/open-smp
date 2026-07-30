@@ -161,10 +161,15 @@ jobs:
       - name: Install Playwright chromium browser
         # -C e2e, not a bare `pnpm exec`: @playwright/test is declared in
         # e2e/package.json only, so the root has no `playwright` binary to run.
-        # -C rather than --filter because `pnpm --filter <no-match> …` exits 0
-        # printing "No projects matched the filters", so renaming the package
-        # would silently install nothing; `-C` resolves a directory and fails
-        # loudly (ENOENT). Same reason root `test:e2e` uses `-C e2e test`.
+        # -C rather than --filter: `--filter <no-match>` used to exit 0 printing
+        # "No projects matched the filters", so renaming the package would
+        # silently install nothing. `failIfNoMatch: true` in pnpm-workspace.yaml
+        # now makes that exit 1, but `-C` is still the right form — it resolves a
+        # directory and fails loudly (ENOENT) without depending on a setting any
+        # invocation can switch off with `--no-fail-if-no-match`, and it also
+        # covers the half no setting reaches: `--filter <real-pkg> test` with no
+        # `test` script still exits 0 (SC63). Same reason root `test:e2e` uses
+        # `-C e2e test`.
         # This step had never actually executed — the repository carried no git
         # remote for three cycles, so CI never ran and the error stayed hidden.
         run: pnpm -C e2e exec playwright install --with-deps chromium

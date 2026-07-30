@@ -235,3 +235,63 @@ findings, including a vacuous assertion at the centre of the control, in code th
 survived three code-review rounds and 62 mutations. **Mutation testing did not find it, because
 the mutation that would have exposed it was the one nobody could write: it required changing
 pnpm's output, not the gate's.**
+
+## D21 — code-review round 4: two Criticals in revision 8's own repairs
+
+Revision 8 answered round 6's Critical (a vacuous family pin) and declared C9, C10 and C11 locked.
+Round 4 attacked that surface and found **26 findings, two Critical**, both inside the text written
+to close the previous Criticals.
+
+**1. C11 was declared an enforceable boundary and is not.** `--no-fail-if-no-match` and
+`--fail-if-no-match=false` disable `failIfNoMatch` for that invocation — measured **exit 0**, in the
+workspace and inside the built `deps` image. Every other context was attacked and held: `.npmrc`,
+`npm_config_*` / `PNPM_CONFIG_*`, a nested `pnpm-workspace.yaml`, a member-subdirectory cwd, `-r`,
+`-C`, and every image stage. The CLI flag is the only bypass and it is total.
+
+The overstatement was load-bearing, which is what made it Critical rather than a wording defect:
+revision 8 demoted C9 to defense-in-depth, closed SC60 with "Trigger: none — closed", and accepted
+C9's remaining residue *because C11 was believed to cover it*. And `--fail-if-no-match` had been
+filed in C9's **reviewed non-selector allowlist** — accurate as a description, exactly wrong as a
+disposition, because that scan is the only thing in the repository that can observe an invocation
+disabling C11. The composed line `pnpm -F=e2e --no-fail-if-no-match test` is plain text with no
+quoting, no folding and no wrapper, and it passed both controls.
+
+**2. C10's anti-vacuity self-tests were themselves vacuous.** They re-typed the matcher regexes
+instead of using them, so they asserted over private copies. Executed: narrowing the shipped
+`FROM … AS deps` matcher to drop `(--\S+\s+)*` leaves the real `FROM base AS deps` still matching
+and the self-test still passing — the `it` green with the property it names removed. **Tenth vacuous
+assertion in this file, in the lines labelled "anti-vacuity".**
+
+**Also measured and closed rather than declared**: `-F=<pkg>` and `-rF=<pkg>` are working selectors
+the family did not match; only the first `pnpm` per command was scanned, so `pnpm -w exec pnpm
+--filter …` was invisible — and `pnpm -w exec` is the canonical form of every member `test` script
+this cycle wrote; comments were stripped after continuations were joined, so a trailing `#`
+swallowed the line joined onto it, which neither the Dockerfile parser nor the shell does.
+
+**Shipped**: C11's class restated as a fail-closed default with one enumerated CLI opt-out, the
+opt-out moved into C9's deny set and its existence asserted; C10's matchers hoisted to single
+declarations; C10's root-input set derived from the working tree rather than three names; the
+Dockerfile's pnpm pinned to the root `packageManager` and gate-tied to it; `COPY --from=` rejected
+in the deps stage; `WORKDIR`-absolute destinations resolved; SC60 reopened as two-sided; NF1
+restated in CPU-seconds; the rollback runbook rewritten against the shipped gate and re-measured.
+
+**50 mutations executed** against the shipped tree — 38 red, 12 allow-side green.
+
+**Four were mis-specified on the first run, and the fourth is the one worth keeping.** Three were
+harness errors: a deny probe whose failure had the same cause it was meant to differ from, a family
+narrowing caught by an earlier self-test rather than the assertion it targeted, and a guard
+inversion that filled the parsed set with garbage instead of emptying it. The fourth was not an
+error in the mutation: re-adding a `docs/` directory anchor stayed **green** against the *repaired*
+exclusion guard. All 39 tracked files under `docs/` are markdown, so the directory predicate and the
+extension predicate produce identical sets — and **no comparison of sets can distinguish two
+predicates that agree on every file that currently exists**. The guard now asserts the predicate
+against synthetic paths instead. The first repair had been reviewed, looked correct, and was wrong.
+
+**What the round says about the method.** Nine vacuous assertions were found by mutation, the tenth
+and eleventh by review. Both new ones were in code written to fix the previous one, and both took
+the same form the previous one took: **a check that compares something to a copy of itself.** The
+pattern is not carelessness about assertions; it is that the natural way to write a self-check is to
+restate the thing being checked, and restating it is exactly what makes it vacuous. C1–C8, which
+were reviewed before implementation, have taken zero Major findings across four code-review rounds.
+C9–C11, implemented before they were contracted, have taken twelve Major and three Critical across
+two reviews.
