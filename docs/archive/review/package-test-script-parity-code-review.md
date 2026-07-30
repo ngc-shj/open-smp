@@ -452,3 +452,69 @@ that produce the same set. That forced the predicate-level assertion that shippe
 | VE4 | `verified-local` | lint / typecheck / test:unit / test:integration each run separately, all exit 0. |
 | VE5 | `blocked-deferred` | Local Node v26.5.0; `ci.yml` pins 22. Security measured the two new pnpm children **on the Node 22 image**: `pnpm run --help` and `pnpm list -r` both exit 0 with **0 bytes stderr**. C11's probes assert status and message, not stderr, so they carry no VE5 exposure. The vitest listings' Node-22 stderr remains the open item. |
 | VE6 | `verified-local` | Playwright `--list` green inside the passing gate; the runner-side leg is still the open CI question. |
+
+---
+
+# Code Review: package-test-script-parity — Round 5
+Date: 2026-07-30
+Review round: 5
+
+## Changes from Previous Round
+
+Round 4 closed 26 findings, including two Criticals, and revision 9 declared C9, C10 and C11 locked.
+Round 5's subject is `7ecfae6` — that fix. **33 findings, three Critical**, and once again the
+Criticals are inside the text the previous round wrote to close its own.
+
+## Convergence summary
+
+| # | Finding | Convergence | Severity |
+|---|---|---|---|
+| **Q1** | **C11's opt-out enumeration was wrong in both directions.** Revision 9 corrected the *class* and wrote a two-spelling deny list beneath it. Measured on pnpm 10.34.5: **eleven** spellings disable the setting — any unambiguous prefix with or without `no-` (`--no-fa`, `--fail-if=false`), `--config.fail-if-no-match=false` and `--config.failIfNoMatch=false`, the double negation `--no-fail-if-no-match=true`, and `--fail-if-no-match false`, whose bare token was in the *reviewed-benign allowlist*. Two spellings the list carried (`=0`, `=no`) pnpm rejects. Controls (`--no-color`, `--config.bogus-zzz=false`) confirm the disabling is specific, not blanket. **`pnpm -F=e2e --no-fa test` defeats C11 and passes C9.** | 2/3 (Sec Critical/escalate, Func Critical) | **Critical** |
+| **Q2** | **The tautological exclusion guard survived the round that named it.** `scanned = filter(f => !isExcluded(f))`, then `filter(f => !scanned.includes(f) && !isExcluded(f))` — `X \ X`, empty for every repository state. Round 4 diagnosed it, added predicate self-tests, and left it. The self-tests do not close it either: a **third clause** passes all of them, and `\|\| extname(f) === '.yml'` drops `ci.yml`, `docker-compose.yml` and `dependabot.yml` from the scan with the suite green — silencing M-T2 and M-T4's subjects and re-hiding C11's off-switch. | 3/3 (Test Critical, Func Major, Sec Minor) | **Critical** |
+| **Q3** | **`ANY_STAGE` was the one hoisted production with no self-test**, and narrowing it is invisible against a Dockerfile with one `pnpm install` — the `docs/`-anchor situation in the code written to close the `docs/`-anchor situation. | 1/3 (Test Major) | Major |
+| **Q4** | **The pnpm pin was unbounded and substring-matched.** `pnpm@10.34.55`, `pnpm@10.34.5-rc.1`, a trailing comment naming the version, `RUN npm i -g pnpm@10 && echo pnpm@10.34.5`, and a pinned install in a stage production never inherits all passed — the standard the same `it` raises for `installAt`, thirty lines above. | 3/3 | Major |
+| **Q5** | **`WORKDIR = '/repo/'` was a hand-typed copy** of a value the parsed Dockerfile states, in the commit whose theme was tying literals to their source. A bare `/repo` destination also false-redded. | 3/3 | Major |
+| **Q6** | **The `run`-family allow cell was vacuous** — `--help` short-circuits before selector resolution, so `pnpm --filter <no-match> run --help` exits 0 too. The run family was unproved on both sides. | 2/3 | Major |
+| **Q7** | **`pnpm-workspace.yaml` still carried round 4's Critical claim verbatim** — "it holds for every invocation" — at the one site a reader of the setting opens first. Round 4's correction reached the Dockerfile, `ci.yml`, the test and the plan, and not the declaration site. | 2/3 | Major |
+| **Q8** | **Root-input membership came from `existsSync`, not git**, so a developer's local `.npmrc` — where a registry `_authToken` lives, and which `.dockerignore` does not exclude — would red the gate with a message instructing the operator to COPY it into the image. `patches/` was named in the comment and omitted from the code. | 2/3 | Major |
+| **Q9** | **RT7 gap: fourteen assertions added by `7ecfae6` had no mutation**, and MT12 masked seven of the eight synthetic self-tests by redding at the first. | 1/3 (Test Major) | Major |
+| **Q10** | `pnpm` matched by exact token, so a path invocation was invisible; a whole-line comment inside a continuation was a MISS because blanking it stopped the join Docker performs anyway; two COPY recognisers in one `it`; the opt-out probe asserted status without cause; the `impossible` name's non-match property was assumed; `packageManager`'s `+sha512` form was rejected with the wrong message; the `catch`'s stated benign-skip is contradicted by the read-completeness assertion; three doc figures unreproducible. | mixed | Minor |
+
+**Found by the orchestrator while verifying Q7:** `ci.yml` claimed "the repository carried no git remote for three cycles, so CI never ran and the error stayed hidden". False. `origin` is configured, CI runs are green on `main`, and run **30321653394** (2026-07-28, `compose-smoke`) executed the Playwright install step and the E2E suite — **43 passed (23.1s)** on the runner. That claim had been load-bearing for deferring VE5 and VE6. Recorded as **SC65**; VE6 is restated.
+
+## What was done
+
+All 33 were fixed or dispositioned. The structural changes, each replacing an enumeration with a derivation:
+
+- **The off-switch predicate is derived from the setting's name** — strip `-`, an optional `no-`, an optional `config.`, take the part before `=`, de-hyphenate, and deny any prefix of `failifnomatch` two characters or longer. Verified in both directions: denies all twelve disabling spellings, passes `--filter`, `--force`, `--fail-fast`, `--frozen-lockfile`, `--no-color`, `-C`, `-w`. Any *mention* is denied regardless of polarity, because no tracked artifact has a legitimate reason to write the setting.
+- **The exclusions are a named list whose reasons are pinned**, so a third clause has to be named and naming it reds.
+- **`WORKDIR` is derived from the Dockerfile**, root-input membership from git, `pnpm` matched by basename, the pnpm pin bounded to the stage and compared as a token.
+
+**63 mutations executed** against the shipped tree — 49 red-proofs, 14 allow-side. Two were
+mis-specified: MT21 stayed green because the self-test cell it targeted carried a `--filter` and
+passed through `SELECTOR_FAMILY` — the shape this very round raised about round 4's cells,
+reproduced in round 5's first draft; and MC19 is green **by design** once the workdir is derived,
+since every deps-stage destination is relative.
+
+## Recurring Issue Check
+
+| Pattern | Status |
+|---|---|
+| An enumeration written where a derivation belongs | **Recurred — three times** (off-switch spellings, root inputs, `WORKDIR`). Thirteenth, fourteenth and fifteenth on record. |
+| The correction repeating the original error one level down | **Recurred.** Round 4 found a working off-switch classified benign in C9's allowlist; round 5 found the same token, with a separated value, still classified benign — plus nine more the new deny set missed. |
+| The vacuous assertion | **Twelfth, and it is the tenth left in place**: round 4 diagnosed the tautology and shipped it. A thirteenth in the `run --help` allow cell. |
+| Findings land in the surface the previous round created | **Recurred** — 9 of 11 functionality findings are inside `7ecfae6`'s own lines. |
+| Notation versus resolution | **Recurred** — substring versus token for the pin, `/repo/` versus a derived workdir. |
+| Harness destruction (D9) | **Not recurred** — no reviewer executed a mutation; the tree was unmodified throughout. |
+| A control at the wrong level | **Not recurred.** |
+
+## Environment Verification Report
+
+| ID | Classification | Basis |
+|---|---|---|
+| VE1 | `verified-CI` | `ci.yml` runs `pnpm test:integration`; green on `main`. Locally 6 files / 143 tests, exit 0. |
+| VE2 | `verified-local` + `verified-CI` | `pnpm test:e2e` exit 0 / 43 passed locally; **43 passed (23.1s)** on the runner in run 30321653394. |
+| VE3 | `verified-local` | 12/12 in the gate file, including the six C11 children. |
+| VE4 | `verified-local` | lint / typecheck / test:unit / test:integration each run separately, all exit 0. |
+| VE5 | `blocked-deferred` — **and now cheap to discharge** | Local Node v26.5.0; CI pins 22. Local pnpm 10.34.5 is byte-identical to `packageManager` and to the Dockerfile pin, so every flag measurement this round is on the version CI and the image run. The parity gate has never run in CI only because the branch is unpushed (SC65). |
+| VE6 | `verified-CI` for the browser path; `blocked-deferred` for the listing | Playwright installs and runs on the runner (measured, above). The gate's `--list` inside `checks`, which installs no browser, remains the open leg. |

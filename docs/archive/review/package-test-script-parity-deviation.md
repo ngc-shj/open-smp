@@ -246,7 +246,7 @@ to close the previous Criticals.
 `--fail-if-no-match=false` disable `failIfNoMatch` for that invocation — measured **exit 0**, in the
 workspace and inside the built `deps` image. Every other context was attacked and held: `.npmrc`,
 `npm_config_*` / `PNPM_CONFIG_*`, a nested `pnpm-workspace.yaml`, a member-subdirectory cwd, `-r`,
-`-C`, and every image stage. The CLI flag is the only bypass and it is total.
+`-C`, and every image stage. The CLI flag is the only bypass mechanism, and round 5 measured that the *mechanism* has at least eleven spellings — prefix abbreviations, a `--config.<key>=` channel in two cases, a double negation, and a space-separated value. Revision 9's enumeration of two was wrong in both directions, and revision 10 replaced it with a derivation over the setting's name.
 
 The overstatement was load-bearing, which is what made it Critical rather than a wording defect:
 revision 8 demoted C9 to defense-in-depth, closed SC60 with "Trigger: none — closed", and accepted

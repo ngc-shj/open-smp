@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -32,10 +32,6 @@ import { describe, expect, it } from 'vitest';
 // two facts are why the halves are split rather than fused.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
-
-// The deps stage inherits `WORKDIR /repo` from `base`, so an absolute COPY
-// destination is relative to it. Declared here because C10 resolves against it.
-const WORKDIR = '/repo/';
 
 // Every child is spawned with this env. `NODE_NO_WARNINGS` is the sanctioned
 // answer to the one ambient stderr writer that cannot be silenced at source:
@@ -591,6 +587,10 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     expect(member, 'no workspace member (other than the root) to probe with').toBeDefined();
     const memberName = member?.name ?? '';
     const impossible = `${memberName}-no-such-package-95f3c1`;
+    // Asserted, not assumed. If the name ever collides, `deny.status` goes 0 and
+    // the failure message blames `failIfNoMatch` — pointing the next reader at a
+    // setting that is fine.
+    expect(entries.map((e) => e.name), 'the impossible name collides with a real workspace member').not.toContain(impossible);
 
     const deny = await runChild(['--filter', impossible, 'exec', 'node', '--version']);
     expect(deny.error, `deny probe: spawn failed — ${deny.error?.message}`).toBeUndefined();
@@ -617,6 +617,13 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       optOut.status,
       '`--no-fail-if-no-match` no longer disables the setting; C11 may now be an enforceable boundary and the contract must be re-derived',
     ).toBe(0);
+    // Exited 0 for the right reason, the same discipline the deny probe applies.
+    // Without it, a pnpm in which the flag became a no-op that also swallowed the
+    // filter would report the off-switch as live.
+    expect(
+      `${optOut.stdout}${optOut.stderr}`,
+      'the opt-out probe exited 0 for some reason other than the filter matching nothing',
+    ).toContain('No projects matched the filters');
 
     // RT10's allow side, adjacent to the boundary. Three cells, because
     // `failIfNoMatch` is subcommand- and selector-form-agnostic today and nothing
@@ -626,7 +633,10 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     for (const [label, argv] of [
       ['a member name', ['--filter', memberName, 'exec', 'node', '--version']],
       ['a path selector', ['--filter', `./${path.relative(REPO_ROOT, member?.path ?? '')}`, 'exec', 'node', '--version']],
-      ['a run-family subcommand', ['--filter', memberName, 'run', '--help']],
+      // Bare `run`, not `run --help`: `--help` short-circuits before the filter
+      // is resolved, so the cell exited 0 for a no-match selector too and could
+      // not adjudicate anything. Measured: `--filter <no-match> run` → 1.
+      ['a run-family subcommand', ['--filter', memberName, 'run']],
     ] as const) {
       const allow = await runChild([...argv]);
       expect(allow.error, `allow probe (${label}): spawn failed — ${allow.error?.message}`).toBeUndefined();
@@ -687,7 +697,36 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // This scan is the ONLY thing in the repository that can observe the flag, so
     // it is denied here rather than allowlisted as a non-selector — a line
     // carrying it is a line disabling the strongest control over this class.
-    const BOUNDARY_DISABLING = /^(--no-fail-if-no-match|--fail-if-no-match=(false|0|no))$/;
+    // DERIVED from the setting's name, not enumerated. Revision 9 listed two
+    // spellings; pnpm accepts at least eleven, measured on 10.34.5 — nopt takes
+    // any unambiguous prefix (`--no-fa`, `--fail-if=false`), a `--config.<key>=`
+    // channel in both kebab and camel case, a double negation
+    // (`--no-fail-if-no-match=true`), and a space-separated value after the bare
+    // flag, which was itself sitting in the reviewed-benign allowlist. Two of the
+    // three spellings the list did carry (`=0`, `=no`) pnpm rejects outright.
+    // Enumerating a flag's surface forms is the error R47 names, and it had
+    // already been made once in this contract; this is the derivation.
+    //
+    // Any MENTION of the setting is denied, in any spelling and either polarity.
+    // No tracked artifact has a legitimate reason to write it — the setting's
+    // home is `pnpm-workspace.yaml` — so there is nothing to gain from parsing
+    // the value, and parsing the value is what let `--fail-if-no-match false`
+    // through.
+    const BOUNDARY_SETTING = 'failifnomatch';
+    const namesBoundarySetting = (token: string): boolean => {
+      const name = token
+        .replace(/^-+/, '')
+        .replace(/^no-/, '')
+        .replace(/^config\./, '')
+        .split('=')[0]
+        ?.replace(/-/g, '')
+        .toLowerCase();
+      // A prefix of the setting's name, two characters or more: `--f` is
+      // ambiguous and pnpm rejects it, while `--fa` resolves (measured). Two
+      // characters is also what keeps `--filter`, `--force` and `--fail-fast`
+      // out — none is a prefix of `failifnomatch`.
+      return !!name && name.length >= 2 && BOUNDARY_SETTING.startsWith(name);
+    };
 
     // After these, the remaining argv belongs to a program pnpm invokes, and its
     // flags are not pnpm's to interpret. `--` ends pnpm's own options.
@@ -705,7 +744,17 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // comment lines before processing continuations, and in shell a trailing
       // `\` inside a comment does not continue anything. The join was
       // manufacturing a comment neither interpreter sees.
-      const joined = source.split('\n').map(stripLineComment).join('\n').replace(/\\\n[ \t]*/g, ' ');
+      // Whole-line comments are DROPPED before joining, not blanked. Docker
+      // removes a comment line and still joins the continuation across it, so
+      // `RUN pnpm \` / `# pick` / `--filter e2e build` executes as one command —
+      // and blanking the comment left an empty line that stopped the join, making
+      // it a MISS. Trailing comments are stripped in the same pass.
+      const joined = source
+        .split('\n')
+        .map(stripLineComment)
+        .filter((l, i, all) => l.trim() !== '' || i === 0 || !/\\\s*$/.test(all[i - 1] ?? ''))
+        .join('\n')
+        .replace(/\\\n[ \t]*/g, ' ');
       for (const raw of joined.split('\n')) {
         for (const cmd of raw.split(/[;|&]+/)) {
           // Split on commas too, and strip bracket/quote punctuation, so
@@ -722,14 +771,17 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
           // invocation is the shape a future artifact is most likely to take.
           // Scanning each occurrence closes it by construction rather than by
           // adding a case.
-          const starts = tokens.flatMap((t, i) => (t === 'pnpm' ? [i] : []));
+          // Compared by BASENAME, so `/usr/local/bin/pnpm` and `./node_modules/.bin/pnpm`
+          // are the same invocation. Exact-token equality made a path invocation
+          // invisible — one more spelling of one more thing.
+          const starts = tokens.flatMap((t, i) => (path.posix.basename(t) === 'pnpm' ? [i] : []));
           const holds = starts.some((at) => {
             const own: string[] = [];
             for (const t of tokens.slice(at + 1)) {
               if (HANDOFF.has(t)) break;
               own.push(t);
             }
-            return own.some((t) => SELECTOR_FAMILY.test(t) || BOUNDARY_DISABLING.test(t));
+            return own.some((t) => SELECTOR_FAMILY.test(t) || namesBoundarySetting(t));
           });
           if (holds) {
             held.push(raw.trim());
@@ -751,11 +803,22 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     expect(selectorLines('RUN pnpm -F=@open-smp/web build'), 'the predicate no longer detects the `-F=<pkg>` spelling').toHaveLength(1);
     expect(selectorLines("RUN pnpm -w exec pnpm --filter e2e test"), 'the predicate no longer detects a nested pnpm invocation').toHaveLength(1);
     expect(selectorLines('RUN echo hi # why \\\n  && pnpm --filter e2e build'), 'a trailing comment swallows the continuation joined onto it').toHaveLength(1);
-    expect(selectorLines('RUN pnpm --no-fail-if-no-match --filter e2e test'), "the predicate no longer detects C11's off-switch").toHaveLength(1);
+    // Selector-free on purpose: with a `--filter` in the same line these pass via
+    // SELECTOR_FAMILY and cannot fail for the reason they name. Measured — the
+    // first draft of the round-5 cells carried one and stayed green under a
+    // mutation that gutted the off-switch predicate.
+    expect(selectorLines('RUN pnpm --no-fail-if-no-match build'), "the predicate no longer detects C11's off-switch").toHaveLength(1);
     expect(selectorLines('RUN pnpm --fail-if-no-match=false build'), "the predicate no longer detects C11's off-switch in its `=false` spelling").toHaveLength(1);
     expect(selectorLines('RUN pnpm -C apps/web build'), 'the predicate reds on the sanctioned directory form').toEqual([]);
     expect(selectorLines('RUN pnpm exec grep -F needle file.txt'), "the predicate reds on a sub-program's own -F").toEqual([]);
     expect(selectorLines('# -C, not --filter: `pnpm --filter <no-match>` used to exit 0'), 'the predicate reds on a comment explaining the form').toEqual([]);
+    // Round 5 additions, each a measured MISS or a measured false red before it.
+    expect(selectorLines('RUN pnpm \\\n  # pick the package\n  --filter e2e \\\n  build'), 'a whole-line comment inside a continuation hides the command Docker still runs').toHaveLength(1);
+    expect(selectorLines('RUN /usr/local/bin/pnpm --filter e2e test'), 'the predicate no longer detects pnpm invoked by path').toHaveLength(1);
+    expect(selectorLines('RUN pnpm --no-fa build'), 'the predicate no longer detects an abbreviated off-switch').toHaveLength(1);
+    expect(selectorLines('RUN pnpm --config.failIfNoMatch=false build'), 'the predicate no longer detects the --config off-switch channel').toHaveLength(1);
+    expect(selectorLines('RUN pnpm --fail-if-no-match false build'), 'the predicate no longer detects the space-separated off-switch value').toHaveLength(1);
+    expect(selectorLines('RUN pnpm --fail-fast --frozen-lockfile -C apps/web build'), 'the predicate reds on legitimate flags that begin with f').toEqual([]);
 
     // The family is pinned against pnpm's own flag surface. The previous form
     // extracted candidates with `/--filter[a-z-]*/g` and then asserted each
@@ -839,19 +902,42 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     //
     // What distinguishes them is behaviour on a file that does not exist yet, so
     // that is what is asserted, against synthetic paths.
-    const isExcluded = (f: string): boolean => f === self || path.extname(f) === '.md';
+    // The exclusions are a NAMED LIST, and the list of reasons is what is pinned.
+    //
+    // Revision 9 kept a set assertion beside the predicate self-tests:
+    // `inventoryFiles.filter(f => !scanned.includes(f) && !isExcluded(f))`, where
+    // `scanned` is `filter(f => !isExcluded(f))`. That is `X \ X` — a theorem for
+    // every possible repository state, not a check. It survived the round that
+    // diagnosed it, because the fix added the self-tests and left it in place.
+    //
+    // The self-tests alone are not enough either: they pin behaviour on four
+    // named paths, and a THIRD clause passes all four. Adding
+    // `|| extname(f) === '.yml'` — one line — removes `.github/workflows/ci.yml`,
+    // `docker-compose.yml` and `.github/dependabot.yml` from the scan with the
+    // suite green, silencing the two artifacts M-T2 and M-T4 red-prove against
+    // and re-hiding C11's off-switch, which this scan is the only observer of.
+    //
+    // Pinning the reasons closes that: a third clause has to be named, and naming
+    // it reds.
+    const EXCLUSIONS: readonly { reason: string; test: (f: string) => boolean }[] = [
+      { reason: 'this gate file', test: (f) => f === self },
+      { reason: 'markdown', test: (f) => path.extname(f) === '.md' },
+    ];
+    expect(
+      EXCLUSIONS.map((e) => e.reason),
+      'sanctioned exclusion reasons',
+    ).toEqual(['this gate file', 'markdown']);
+
+    const isExcluded = (f: string): boolean => EXCLUSIONS.some((e) => e.test(f));
     expect(isExcluded('docs/scripts/build.sh'), 'a non-markdown file under docs/ is excluded from the scan').toBe(false);
     expect(isExcluded('vendor/setup.sh'), 'a non-markdown file is excluded from the scan').toBe(false);
-    expect(isExcluded('docs/notes.md'), 'markdown is scanned').toBe(true);
+    expect(isExcluded('docs/notes.md'), 'markdown under docs/ is scanned').toBe(true);
+    expect(isExcluded('README.md'), 'markdown outside docs/ is scanned').toBe(true);
     expect(isExcluded(self), 'this gate does not exclude itself and will red on its own predicate').toBe(true);
 
     const inventoryFiles = trackedOrUntrackedFiles();
     const scanned = inventoryFiles.filter((f) => !isExcluded(f));
     expect(scanned.length, 'nothing scanned').toBeGreaterThan(0);
-    expect(
-      inventoryFiles.filter((f) => !scanned.includes(f) && !isExcluded(f)),
-      'files excluded from the selector scan for no stated reason',
-    ).toEqual([]);
 
     // What was actually READ is pinned, not what was selected for scanning: an
     // exclusion written inside this loop, or a file swallowed by the catch, is
@@ -862,7 +948,11 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       try {
         source = readFileSync(path.join(REPO_ROOT, f), 'utf8');
       } catch {
-        // Binary or unreadable: not a place a shell command is invoked from.
+        // Not a benign skip: `:read` is asserted to cover `scanned` below, so a
+        // swallowed file reds there. `readFileSync(…, 'utf8')` does not throw on
+        // binary content, so this fires only on a permission error or a dangling
+        // symlink surfaced by `--others` — an environment fault, and the
+        // read-completeness assertion is what denies it.
         return [];
       }
       read.push(f);
@@ -946,17 +1036,29 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // other flag leaves the source in the build context, and this one replaces
     // it with another stage's filesystem. Skipping it accepted a manifest that
     // never came from the reviewed tree.
+    const COPY_LINE = /^\s*COPY\b/i;
     const crossStage = dockerfile
       .slice(depsStart, installAt)
-      .filter((l) => /^\s*COPY\b/i.test(l) && /(^|\s)--from=/i.test(l));
+      .filter((l) => COPY_LINE.test(l) && /(^|\s)--from=/i.test(l));
     expect(crossStage, 'deps-stage COPY sourcing from another stage rather than the build context').toEqual([]);
+
+    // Derived from the Dockerfile, not typed into the test. The previous form
+    // declared `const WORKDIR = '/repo/'` — a second hand-written copy of a value
+    // the parsed file states, introduced by the commit whose theme was tying
+    // literals to their source. A `WORKDIR` change would have desynchronised the
+    // resolver silently. The last `WORKDIR` at or before the install wins, which
+    // is what Docker does.
+    const workdirLine = dockerfile.slice(0, installAt).filter((l) => /^\s*WORKDIR\s+\S+/i.test(l)).at(-1);
+    expect(workdirLine, 'no WORKDIR instruction before the deps-stage install').toBeDefined();
+    const workdirRaw = /^\s*WORKDIR\s+(\S+)/i.exec(workdirLine ?? '')?.[1] ?? '/';
+    const workdir = workdirRaw.endsWith('/') ? workdirRaw : `${workdirRaw}/`;
 
     const landings = dockerfile.slice(depsStart, installAt).flatMap((l) => {
       const tokens = l
         .split(/[\s,]+/)
         .map((t) => t.replace(/^[["'`]+|[\]"'`]+$/g, ''))
         .filter(Boolean);
-      if (tokens[0]?.toUpperCase() !== 'COPY') return [];
+      if (!COPY_LINE.test(l)) return [];
       // Token comparison, never an interpolated RegExp: `dir` comes from
       // `pnpm list -r` and is PR-influenceable — a dot became a metacharacter
       // matching a different package's line (fail-open), and a bracket threw an
@@ -972,7 +1074,7 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // `path.posix.normalize`, never a lowercase fold: Dockerfile paths are
       // case-sensitive on Linux, so folding case would make two distinct
       // manifests compare equal.
-      const rel = (p: string): string => path.posix.normalize(p.startsWith(WORKDIR) ? p.slice(WORKDIR.length) : p);
+      const rel = (p: string): string => path.posix.normalize(p.startsWith(workdir) ? p.slice(workdir.length) : p);
       return args.slice(0, -1).map((source) => ({
         source: rel(source),
         at: rel(dest.endsWith('/') || dest === '.' ? path.posix.join(dest, path.posix.basename(source)) : dest),
@@ -987,6 +1089,13 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     expect(DEPS_STAGE.test('FROM base AS source'), 'the FROM matcher matches a stage that is not `deps`').toBe(false);
     expect(DEPS_INSTALL.test('RUN --mount=type=cache,target=/pnpm pnpm install --frozen-lockfile'), 'the RUN matcher reds on --mount').toBe(true);
     expect(DEPS_INSTALL.test('RUN pnpm build'), 'the RUN matcher matches a command that is not `pnpm install`').toBe(false);
+    // ANY_STAGE is the stage bound, and it was the one hoisted production with no
+    // self-test. Narrowing it makes `nextStage` return -1 and the slice span every
+    // stage — invisible against today's Dockerfile, which has one `pnpm install`.
+    // That is the `docs/`-anchor situation again: two predicates that agree on the
+    // artifact that exists, separable only against synthetic input.
+    expect(ANY_STAGE.test('  from deps as source'), 'the stage bound misses an indented or lowercase FROM').toBe(true);
+    expect(ANY_STAGE.test('COPY package.json ./'), 'the stage bound matches a non-FROM instruction').toBe(false);
     expect(landings.length, 'no COPY landings parsed from the deps stage').toBeGreaterThan(0);
 
     const memberDirs = entries.map((e) => path.relative(REPO_ROOT, e.path)).filter(Boolean);
@@ -1027,14 +1136,48 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // install-script execution to five packages. Tied to the root manifest's
     // `packageManager` so the two cannot drift silently.
     const declaredPm = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).packageManager;
-    expect(declaredPm, 'the root manifest declares no packageManager').toMatch(/^pnpm@\d+\.\d+\.\d+$/);
-    expect(
-      dockerfile.some((l) => /^\s*RUN\s+(--\S+\s+)*npm\s+i(nstall)?\s+-g\s+\S+/i.test(l) && l.includes(declaredPm)),
-      `the Dockerfile does not install exactly \`${declaredPm}\`; the pinned lockfile would be read by an unpinned tool`,
-    ).toBe(true);
+    // `+sha512.…` is what `corepack use` writes and is the integrity-bearing
+    // form; rejecting it would red with a message naming the wrong defect.
+    expect(declaredPm, `the root manifest's packageManager is not a pinned pnpm version: ${declaredPm}`).toMatch(
+      /^pnpm@\d+\.\d+\.\d+(\+[a-z0-9.]+)?$/,
+    );
 
+    // Bounded to the lines the deps stage inherits, comment-stripped, and
+    // compared as a TOKEN. The previous form was `dockerfile.some(l => … &&
+    // l.includes(declaredPm))` over the whole file: `pnpm@10.34.55` satisfied it,
+    // so did `RUN npm i -g pnpm@10 && echo pnpm@10.34.5`, so did a trailing
+    // comment mentioning the version, and so did a pinned install in a stage the
+    // production targets never inherit. That is the same unbounded, substring
+    // read this `it` bounds `installAt` to avoid, added thirty lines below it.
+    const pmVersion = String(declaredPm).split('+')[0];
+    const globalInstalls = dockerfile
+      .slice(0, installAt)
+      .map((l) => l.replace(/(^|\s)#.*$/, ''))
+      .filter((l) => /^\s*RUN\s+(--\S+\s+)*npm\s+i(nstall)?\s+-g\b/i.test(l))
+      .flatMap((l) => {
+        const tokens = l.split(/\s+/).filter(Boolean);
+        const at = tokens.findIndex((t) => t === '-g' || t === '--global');
+        return tokens.slice(at + 1).filter((t) => !t.startsWith('-')).slice(0, 1);
+      });
+    expect(globalInstalls, 'the deps stage does not globally install exactly one pnpm').toHaveLength(1);
+    expect(
+      globalInstalls[0],
+      `the deps stage installs \`${globalInstalls[0]}\`, not the declared \`${pmVersion}\`; the pinned lockfile would be read by an unpinned tool`,
+    ).toBe(pmVersion);
+
+    // Membership from GIT, not from the filesystem. `existsSync` sees untracked
+    // and ignored files, so a developer's local `.npmrc` — the ordinary place a
+    // private-registry `_authToken` lives — would create an obligation to COPY it
+    // into the image, and `.dockerignore` does not exclude it. Every other
+    // membership question in this file goes through `trackedOrUntrackedFiles()`
+    // for reasons its own docstring records; this one had not.
+    //
+    // `patches/` is a real root input (via `patchedDependencies`) and is NOT
+    // covered: it is directory-shaped and the landing resolver is filename-shaped.
+    // Stated rather than left as a gap between the comment and the code — SC64.
+    const tracked = new Set(trackedOrUntrackedFiles());
     const rootInputs = ['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', '.npmrc', '.pnpmfile.cjs'].filter((f) =>
-      existsSync(path.join(REPO_ROOT, f)),
+      tracked.has(f),
     );
     expect(rootInputs, 'no root-level pnpm inputs found; the derivation is broken').toContain('pnpm-lock.yaml');
     for (const required of rootInputs) {

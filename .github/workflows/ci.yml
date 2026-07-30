@@ -170,8 +170,13 @@ jobs:
         # covers the half no setting reaches: `--filter <real-pkg> test` with no
         # `test` script still exits 0 (SC63). Same reason root `test:e2e` uses
         # `-C e2e test`.
-        # This step had never actually executed — the repository carried no git
-        # remote for three cycles, so CI never ran and the error stayed hidden.
+        # This comment previously said the step "had never actually executed —
+        # the repository carried no git remote for three cycles, so CI never ran".
+        # That is false and was load-bearing for deferring VE5/VE6: `origin` is
+        # configured, CI has run repeatedly, and run 30321653394 (2026-07-28,
+        # compose-smoke) executed this step and the suite it installs for —
+        # 43 passed (23.1s) on the runner. What has never run in CI is the parity
+        # gate, because it lives on an unpushed branch.
         run: pnpm -C e2e exec playwright install --with-deps chromium
 
       - name: Run the e2e suite
