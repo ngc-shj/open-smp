@@ -169,7 +169,7 @@ type PlaywrightSuite = {
   suites?: PlaywrightSuite[];
 };
 
-type PlaywrightReport = { config: { rootDir: string }; suites: PlaywrightSuite[] };
+type PlaywrightReport = { config: { rootDir: string; forbidOnly?: boolean }; suites: PlaywrightSuite[] };
 
 /**
  * Specs live under `suites[].suites[]` for anything inside a `test.describe`,
@@ -182,6 +182,20 @@ function walkSpecs(suite: PlaywrightSuite): NonNullable<PlaywrightSuite['specs']
 }
 
 const playwrightReportPromise: Promise<PlaywrightReport> = (async () => {
+  // No `--forbid-only` on this argv, deliberately. `forbidOnly: true` in
+  // `e2e/playwright.config.ts` does both jobs, and passing the flag here would
+  // make the pin below read a value this gate had just set — asserting something
+  // it caused. Measured: `report.config.forbidOnly` is `true` from the file with
+  // no flag, and with the config setting alone `--list` exits **1** when a
+  // `.only` exists.
+  //
+  // That half cannot be done by reading the JSON. `test.only` emits **no
+  // annotation at all** — measured: with one planted in `auth.spec.ts` the
+  // listing still reports 43 specs and 0 annotations, both named canaries still
+  // match, the parity gate stays 12/12 green, and `pnpm -C e2e test` runs
+  // `1 passed (542ms)`, exit 0. Forty-two specs, every session-expiry proof
+  // among them, silently stop running. Playwright adjudicates it instead, and
+  // `assertChildOk` names the child. Same move as C11.
   const child = await runChild(['-s', '-C', 'e2e', 'test', '--list', '--reporter=json']);
   assertChildOk('playwright listing', child);
   return JSON.parse(child.stdout) as PlaywrightReport;
@@ -412,16 +426,28 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // annotation objects made the failure read `expected [ Array(1) ] to equal
     // []` — no file, no title — in a file whose own discipline is that a
     // failure names its cause.
-    const skipped = annotations
-      .filter(({ a }) => a.type === 'skip' || a.type === 'fixme')
-      .map(({ file, title }) => `${file} :: ${title}`);
-    expect(skipped, 'playwright specs carrying a declaration-level skip/fixme').toEqual([]);
+    // An ALLOWLIST over annotation types, and the sanctioned set is empty — not a
+    // denylist of the two spellings the author had in mind.
+    //
+    // Playwright's declaration-level modifiers are four, read from the installed
+    // build: `skip`, `fixme`, `fail` and `only` (plus `fail.only`). The previous
+    // form named two. `test.fail` INVERTS a spec — the login proof then passes
+    // exactly when login is broken — and carries the annotation type `fail`,
+    // which the two-element filter dropped.
+    const annotated = annotations.map(({ file, title, a }) => `${file} :: ${title} :: ${a.type}`);
+    expect(annotated, 'playwright specs carrying a declaration-level annotation').toEqual([]);
 
     // Reachability, at every hop. The skip assertion above walks three levels
     // of optional chaining, and each `?? []` turns a renamed key into a silent
     // pass. The spec-level guard alone was not enough: renaming `annotations`
     // left the control green with `test.describe.skip` applied to the auth
     // suite. These three make every hop fail red instead.
+    // The fail-closed half, pinned from the report Playwright itself emits. The
+    // `--forbid-only` flag on the listing catches a `.only` that exists; this
+    // catches the config setting being removed, which is what would let one
+    // reach `pnpm -C e2e test` in CI — the listing is not the command CI runs.
+    expect(report.config.forbidOnly, 'e2e/playwright.config.ts no longer sets forbidOnly, so a committed test.only would run alone in CI').toBe(true);
+
     expect(specs.length, 'playwright report yielded no specs').toBeGreaterThan(0);
     expect(tests.length, 'playwright report yielded no tests').toBeGreaterThan(0);
     expect(
@@ -577,7 +603,10 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // It also does not cover `--filter <real-pkg> test` with no `test` script,
     // which still exits 0 via pnpm's `test` shorthand (SC63, C2 clause 3).
     const entries = await workspaceEntries();
-    expect(entries.length, 'no workspace entries enumerated').toBeGreaterThan(0);
+    // More than one: `pnpm list -r --json` returns the cwd package even in an
+    // empty workspace, so `> 0` had no failing state (measured). `> 1` reds when
+    // `pnpm-workspace.yaml` stops declaring members.
+    expect(entries.length, 'pnpm list -r enumerated no workspace members, only the root').toBeGreaterThan(1);
 
     // A member, not the workspace root: the root is the entry every other
     // assertion in this file subtracts, and the three historical hazard sites all
@@ -774,7 +803,15 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
           // Compared by BASENAME, so `/usr/local/bin/pnpm` and `./node_modules/.bin/pnpm`
           // are the same invocation. Exact-token equality made a path invocation
           // invisible — one more spelling of one more thing.
-          const starts = tokens.flatMap((t, i) => (path.posix.basename(t) === 'pnpm' ? [i] : []));
+          // The FILENAME family, not one filename. Round 5 normalised the
+          // directory axis away and then wrote `=== 'pnpm'` — one more spelling
+          // of one more thing. `npm i -g pnpm` installs
+          // `…/pnpm/bin/pnpm.cjs`, and `RUN node …/pnpm/bin/pnpm.cjs --filter x`
+          // is a working invocation. It matters beyond the selector: tokens are
+          // only examined after a pnpm token, so every missed spelling also hides
+          // C11's off-switch, which this scan is the only observer of.
+          const isPnpm = (t: string): boolean => /^pnpm(\.[cm]?js)?$/.test(path.posix.basename(t));
+          const starts = tokens.flatMap((t, i) => (isPnpm(t) ? [i] : []));
           const holds = starts.some((at) => {
             const own: string[] = [];
             for (const t of tokens.slice(at + 1)) {
@@ -815,6 +852,9 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // Round 5 additions, each a measured MISS or a measured false red before it.
     expect(selectorLines('RUN pnpm \\\n  # pick the package\n  --filter e2e \\\n  build'), 'a whole-line comment inside a continuation hides the command Docker still runs').toHaveLength(1);
     expect(selectorLines('RUN /usr/local/bin/pnpm --filter e2e test'), 'the predicate no longer detects pnpm invoked by path').toHaveLength(1);
+    expect(selectorLines('RUN node /usr/local/lib/node_modules/pnpm/bin/pnpm.cjs --filter e2e test'), 'the predicate no longer detects the .cjs entrypoint npm i -g installs').toHaveLength(1);
+    expect(selectorLines('RUN node /usr/local/lib/node_modules/pnpm/bin/pnpm.cjs --no-fail-if-no-match build'), "the .cjs entrypoint hides C11's off-switch").toHaveLength(1);
+    expect(selectorLines('RUN npm-check-updates --filter x'), 'the predicate reds on a different tool whose name ends in pnpm-like text').toEqual([]);
     expect(selectorLines('RUN pnpm --no-fa build'), 'the predicate no longer detects an abbreviated off-switch').toHaveLength(1);
     expect(selectorLines('RUN pnpm --config.failIfNoMatch=false build'), 'the predicate no longer detects the --config off-switch channel').toHaveLength(1);
     expect(selectorLines('RUN pnpm --fail-if-no-match false build'), 'the predicate no longer detects the space-separated off-switch value').toHaveLength(1);
@@ -937,7 +977,24 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
 
     const inventoryFiles = trackedOrUntrackedFiles();
     const scanned = inventoryFiles.filter((f) => !isExcluded(f));
-    expect(scanned.length, 'nothing scanned').toBeGreaterThan(0);
+
+    // The reason list above pins LABELS, and labels have no behaviour. Measured:
+    // folding `|| extname(f) === '.yml'` into the existing markdown clause leaves
+    // the reason list and all five predicate cells intact and drops
+    // `.github/workflows/ci.yml`, `docker-compose.yml` and `dependabot.yml` from
+    // the scan — silencing the artifacts M-T2 and M-T4 red-prove against, and
+    // re-hiding C11's off-switch, which this scan is the only observer of.
+    //
+    // So the set is compared against a predicate written INDEPENDENTLY here.
+    // Neither check subsumes the other, and that is the point: a clause that
+    // differs on a file that exists reds below; a clause that agrees on every
+    // existing file but differs in principle — the `docs/` anchor — reds in the
+    // synthetic cells above. Round 4 deleted this comparison because its previous
+    // form was `X \ X`; the repair was to make it independent, not to remove it.
+    expect(
+      scanned.sort(),
+      'the scanned set does not match the sanctioned exclusions',
+    ).toEqual(inventoryFiles.filter((f) => f !== self && path.extname(f) !== '.md').sort());
 
     // What was actually READ is pinned, not what was selected for scanning: an
     // exclusion written inside this loop, or a file swallowed by the catch, is
@@ -976,7 +1033,7 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // dependencies and no dependents is invisible in the image and visible here
     // (SC62).
     const entries = await workspaceEntries();
-    expect(entries.length, 'no workspace entries enumerated').toBeGreaterThan(0);
+    expect(entries.length, 'pnpm list -r enumerated no workspace members, only the root').toBeGreaterThan(1);
 
     // Continuations are joined first. C9 treats line assembly as an axis it must
     // normalise away and proved a Dockerfile continuation defeats a
@@ -1053,6 +1110,10 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     const workdirRaw = /^\s*WORKDIR\s+(\S+)/i.exec(workdirLine ?? '')?.[1] ?? '/';
     const workdir = workdirRaw.endsWith('/') ? workdirRaw : `${workdirRaw}/`;
 
+    // Hoisted, so the synthetic cells below exercise the SHIPPED resolver rather
+    // than a copy — the distinction that produced the round-4 Critical.
+    const rel = (p: string): string => path.posix.normalize(p.startsWith(workdir) ? p.slice(workdir.length) : p);
+
     const landings = dockerfile.slice(depsStart, installAt).flatMap((l) => {
       const tokens = l
         .split(/[\s,]+/)
@@ -1074,12 +1135,18 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // `path.posix.normalize`, never a lowercase fold: Dockerfile paths are
       // case-sensitive on Linux, so folding case would make two distinct
       // manifests compare equal.
-      const rel = (p: string): string => path.posix.normalize(p.startsWith(workdir) ? p.slice(workdir.length) : p);
       return args.slice(0, -1).map((source) => ({
         source: rel(source),
         at: rel(dest.endsWith('/') || dest === '.' ? path.posix.join(dest, path.posix.basename(source)) : dest),
       }));
     });
+
+    // `rel()` is a shipped production and was the only one without a synthetic
+    // cell — measured, four derivation mutants and a hardcoded `/nonsense/` all
+    // left the `it` green, because every deps-stage destination is relative and
+    // never reaches the prefix branch. This exercises it.
+    expect(rel(`${workdir}apps/api/package.json`), 'a WORKDIR-absolute destination no longer resolves to a repo-relative path').toBe('apps/api/package.json');
+    expect(rel('./apps/api/package.json'), 'a ./-prefixed path no longer normalises').toBe('apps/api/package.json');
 
     // Anti-vacuity and RT10's allow side, against synthetic input, exercising the
     // SHIPPED productions above rather than copies of them.
@@ -1111,6 +1178,54 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     );
     expect(missing, 'workspace members not COPYed into the deps stage before `pnpm install`').toEqual([]);
 
+    // Everything above reads `dockerfile.slice(depsStart, installAt)`. That makes
+    // the whole contract rest on two things nothing had asserted: that the
+    // examined install is the ONLY one, and that the stage it lives in is the one
+    // the shipped images inherit. Measured before this: appending
+    // `RUN pnpm install --no-frozen-lockfile` to the `source` stage left every
+    // assertion in this `it` byte-identically green, while every compose-built
+    // image resolved outside the reviewed lockfile — in an image whose workspace
+    // grants install-script execution to five packages. The selector scan misses
+    // it too (`--no-frozen-lockfile` is neither a selector nor the boundary
+    // setting), so nothing in the repository observed it.
+    //
+    // Round 4 bounded the search to the stage and wrote a fresh assumption one
+    // level down; this binds that assumption to the artifact that decides it.
+    const allInstalls = dockerfile.flatMap((l, i) => (DEPS_INSTALL.test(l) ? [i] : []));
+    expect(allInstalls, '`pnpm install` runs somewhere other than the verified deps stage').toEqual([installAt]);
+
+    // …and the stage that install lives in is an ancestor of every image compose
+    // builds. `deps` is a literal here; this is what makes the literal answerable.
+    const stageOf = (line: number): string => {
+      for (let i = line; i >= 0; i--) {
+        const m = /^\s*FROM\s+(--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(dockerfile[i] ?? '');
+        if (m) return (m[3] ?? m[2] ?? '').toLowerCase();
+      }
+      return '';
+    };
+    const parentOf = new Map<string, string>();
+    for (const l of dockerfile) {
+      const m = /^\s*FROM\s+(--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(l);
+      if (m?.[3]) parentOf.set(m[3].toLowerCase(), (m[2] ?? '').toLowerCase());
+    }
+    const installStage = stageOf(installAt);
+    expect(installStage, 'the verified install is not inside a named stage').not.toBe('');
+
+    const compose = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+    const targets = [...new Set([...compose.matchAll(/^\s*target:\s*(\S+)\s*$/gm)].map((m) => m[1]?.toLowerCase() ?? ''))];
+    expect(targets.length, 'no build targets found in docker-compose.yml; the derivation is broken').toBeGreaterThan(0);
+
+    const inherits = (target: string): boolean => {
+      for (let stage: string | undefined = target, hops = 0; stage && hops < 32; stage = parentOf.get(stage), hops++) {
+        if (stage === installStage) return true;
+      }
+      return false;
+    };
+    expect(
+      targets.filter((t) => !inherits(t)),
+      `compose build targets that do not inherit the verified \`${installStage}\` stage, so their dependencies are installed by something this gate never read`,
+    ).toEqual([]);
+
     // The root is the one entry `filter(Boolean)` above removes — its relative
     // path is the empty string. Revision 7 left that subtraction undeclared and
     // uncomplemented, which is the shape the plan treats as load-bearing for D0
@@ -1121,16 +1236,22 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     // reach the image, `pnpm --filter <no-match>` is silent again inside every
     // build stage.
     //
-    // The set is DERIVED, not named. Revision 8 hard-coded three filenames, which
-    // was complete only by coincidence: the defining primitive is "root-level
-    // inputs `pnpm install` reads", and that also covers `.npmrc` (registry, auth,
-    // `node-linker`, `minimumReleaseAge`), `.pnpmfile.cjs`, and `patches/`. None
-    // exist today — exactly the condition under which the member list was
-    // complete before someone added `packages/api-types`. Requiring the COPY
-    // **iff the file exists** makes the obligation appear the moment the file
-    // does. A missing `.npmrc` is the silent direction: the image would install
-    // under different resolution rules than the reviewed tree, with this gate
-    // green and `--frozen-lockfile` saying nothing.
+    // A LIST, pinned against pnpm 10.x's documented root install inputs — not a
+    // derivation, and revision 9 was wrong to call it one. Filtering a literal by
+    // existence changes the enumeration's arity, not its kind, and no runtime
+    // primitive enumerates pnpm's root inputs: no CLI surface emits them, so
+    // short of tracing `open()` there is nothing to execute. Saying so is the
+    // honest answer; calling it derived is what would stop the next reader
+    // re-deriving it on a pnpm major.
+    //
+    // The list is `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`,
+    // `.npmrc` (registry, auth, `node-linker`, `minimumReleaseAge`) and
+    // `.pnpmfile.cjs`. `patches/` is a real root input via `patchedDependencies`
+    // and is directory-shaped, so the landing resolver cannot express it — SC64.
+    // Membership comes from git rather than the filesystem, and the obligation
+    // appears the moment a file is tracked. A missing `.npmrc` is the silent
+    // direction: the image would install under different resolution rules than
+    // the reviewed tree, with this gate green and `--frozen-lockfile` silent.
     // The lockfile is only as pinned as the tool that reads it. `pnpm@10` floated
     // while C10 pinned `--frozen-lockfile`, in an image whose workspace grants
     // install-script execution to five packages. Tied to the root manifest's
@@ -1153,7 +1274,7 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     const globalInstalls = dockerfile
       .slice(0, installAt)
       .map((l) => l.replace(/(^|\s)#.*$/, ''))
-      .filter((l) => /^\s*RUN\s+(--\S+\s+)*npm\s+i(nstall)?\s+-g\b/i.test(l))
+      .filter((l) => /^\s*RUN\s+(--\S+\s+)*npm\s+i(nstall)?\s+(-g|--global)\b/i.test(l))
       .flatMap((l) => {
         const tokens = l.split(/\s+/).filter(Boolean);
         const at = tokens.findIndex((t) => t === '-g' || t === '--global');

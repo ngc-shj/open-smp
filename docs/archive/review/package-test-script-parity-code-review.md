@@ -516,5 +516,77 @@ since every deps-stage destination is relative.
 | VE2 | `verified-local` + `verified-CI` | `pnpm test:e2e` exit 0 / 43 passed locally; **43 passed (23.1s)** on the runner in run 30321653394. |
 | VE3 | `verified-local` | 12/12 in the gate file, including the six C11 children. |
 | VE4 | `verified-local` | lint / typecheck / test:unit / test:integration each run separately, all exit 0. |
-| VE5 | `blocked-deferred` — **and now cheap to discharge** | Local Node v26.5.0; CI pins 22. Local pnpm 10.34.5 is byte-identical to `packageManager` and to the Dockerfile pin, so every flag measurement this round is on the version CI and the image run. The parity gate has never run in CI only because the branch is unpushed (SC65). |
-| VE6 | `verified-CI` for the browser path; `blocked-deferred` for the listing | Playwright installs and runs on the runner (measured, above). The gate's `--list` inside `checks`, which installs no browser, remains the open leg. |
+| VE5 | **`verified-CI`** (revision 11) | Local Node v26.5.0; CI pins 22. Local pnpm 10.34.5 is byte-identical to `packageManager` and to the Dockerfile pin, so every flag measurement this round is on the version CI and the image run. The parity gate has never run in CI only because the branch is unpushed (SC65). |
+| VE6 | **`verified-CI`** (revision 11) | Playwright installs and runs on the runner (measured, above). The gate's `--list` inside `checks`, which installs no browser, remains the open leg. |
+
+---
+
+# Code Review: package-test-script-parity — Round 6
+Date: 2026-07-30
+Review round: 6
+
+## Changes from Previous Round — and a change of method
+
+Rounds 1–5 ran three experts over the same diff. Every Critical any of them produced came from
+**executing a tool**; none came from reading. Round 6 therefore replaced the three overlapping
+reviews with three disjoint, measurement-first missions, each required to output a *derived set*
+rather than an opinion, and each told that reporting **"No findings"** accurately would be more
+valuable than surfacing something marginal:
+
+- **A — derivation audit**: enumerate every hand-written set in the gate, execute its defining primitive, diff both directions.
+- **B — falsifiability audit**: for all 110 assertions, name the single edit that reds it; verdict PROVABLE / VACUOUS / MASKED.
+- **C — claim reconciliation**: re-derive every environmental and quantitative claim; REPRODUCED / CONTRADICTED / UNVERIFIABLE.
+
+**33 findings, three Critical.** All three Criticals are ones five rounds of reading passed over.
+
+## Convergence summary
+
+| # | Finding | Mission | Severity |
+|---|---|---|---|
+| **R1** | **`test.only` removes 42 of 43 E2E specs with every gate green.** Playwright has four declaration-level modifiers; the control named two. `only` emits **no annotation**, so the listing still reports 43 specs / 0 annotations, both canaries match, the gate stays 12/12, and `pnpm -C e2e test` runs `1 passed (542ms)`, exit 0. `test.fail` inverts the login proof instead. Verified on the real repository, one token, tree restored. | A | **Critical** |
+| **R2** | **The Dockerfile contract never bound its stage to the images that ship.** Appending `RUN pnpm install --no-frozen-lockfile` to the `source` stage leaves every assertion **byte-identically green** while every compose-built image resolves outside the reviewed lockfile. The selector scan misses the line too. | A | **Critical** |
+| **R3** | **The exclusion-reason pin binds inert labels.** Folding `.yml` into the existing markdown clause keeps the reason list and all five predicate cells intact and drops `ci.yml`, `docker-compose.yml`, `dependabot.yml` from the scan — the two artifacts M-T2/M-T4 red-prove against, and C11's off-switch with them. | B | **Critical** |
+| **R4** | `basename === 'pnpm'` is one filename where `npm i -g pnpm` installs `…/pnpm/bin/pnpm.cjs`. `RUN node …/pnpm.cjs --no-fail-if-no-match --filter x` is a working invocation that hides both a selector and C11's off-switch. | A | Major |
+| **R5** | VE2/VE6 were classified `verified-CI` on run 30321653394 — `main`@`f8ae6c3`, executing the **pre-C7** `--filter` form. **Closed by PR #9's run**, which executed the shipped `-C` forms: `pnpm -C e2e exec playwright install`, root `test:e2e` = `pnpm -C e2e test`, 43 passed (24.9s). | C | Critical→closed |
+| **R6** | `expect(entries.length).toBeGreaterThan(0)` has no failing state at two sites — `pnpm list -r --json` never returns `[]` with exit 0. | B | Major |
+| **R7** | The derived `WORKDIR` has no assertion on its **value**: four derivation mutants and a hardcoded `/nonsense/` all leave the `it` green. Deriving without a self-test reduces observation. | B | Major |
+| **R8** | NF1 states 11 vitest children; the gate spawns 13 vitest and 23 total — and that list *is* VE5's checklist. | C | Major |
+| **R9** | C6's permitted-key list still contains `pool`, which the shipped gate rejects and D1 removed for doubling the integration tier. A reader repairing the gate against the plan would re-admit it. | C | Major |
+| **R10** | Per-contract acceptance counts and in-gate self-test counts contradict the shipped tables — **three different values for one quantity in one document**, in the revision whose purpose was to make it code-derived. | B, C | Major |
+| **R11–R33** | Masked assertions (three spawn-error guards, the opt-out cause, `scanned.length`); `-g` vs `--global` divergence; two `vitest.config.ts` literals; `Tier` duplicated from the config; `rootInputs` documented as "DERIVED" while being a filtered literal; MB8's and M15's recorded observations not reproducing; stale line citations; an unreproducible char count. | all | Minor |
+
+## What was done
+
+Each Critical's fix climbs to the tool rather than widening a list:
+
+- **`forbidOnly: true` in `e2e/playwright.config.ts`** — Playwright itself refuses a committed `only`, and `--list` exits 1 with one present (measured). The annotation filter became an **allowlist over annotation types with an empty sanctioned set**, so a future modifier reds instead of being enumerated. The gate pins `report.config.forbidOnly`; the `--forbid-only` CLI flag was deliberately **not** used, because passing it made the pin read a value the gate had just set — caught by a mutation, and the reason the config is the single source.
+- **The install is bound to what ships**: `pnpm install` must be unique in the Dockerfile and appear at the examined line, and every `target:` in `docker-compose.yml` must inherit the stage it lives in — computed from the `FROM` edge list.
+- **The exclusion set is compared against an independently written predicate** *and* against synthetic cells. Neither subsumes the other: a clause differing on a file that exists reds in the comparison; one agreeing on every existing file but differing in principle (the `docs/` anchor) reds in the cells. Round 4 deleted the comparison because its form was `X \ X`; the repair was to make it independent.
+
+**71 mutations executed** against the shipped tree — 57 red-proofs, 14 allow-side. Two were
+mis-specified and both were informative: one revealed the self-referential `forbidOnly` pin, the
+other a masking between two self-test cells.
+
+**Every count in the plan's falsifiability section is now generated from the code**, not typed.
+
+## Recurring Issue Check
+
+| Pattern | Status |
+|---|---|
+| An enumeration written where a derivation belongs | **Recurred — three times** (Playwright modifiers, the pnpm filename, the Dockerfile stage name). Sixteenth through eighteenth on record. |
+| The Critical is inside the previous round's fix | **Recurred — sixth consecutive round.** R3 is inside round 5's replacement for round 4's tautology. |
+| A check that compares something to a copy of itself | **Recurred, at a new remove** — the reason pin compares retyped *labels*, which have no behaviour. Fourth instance, and the hardest to see. |
+| Deriving without a self-test | **New** (R7). The derivation removed the "a reader can see it is wrong" property of a literal and put nothing in its place. |
+| Counts typed rather than generated | **Recurred** — and is now closed by generating them. |
+| Harness destruction (D9) | **Not recurred.** All three missions were read-only; the tree was clean before and after. |
+
+## Environment Verification Report
+
+| ID | Classification | Basis |
+|---|---|---|
+| VE1 | `verified-CI` | PR #9 run 30523473020, job `integration`: pass. |
+| VE2 | `verified-CI` | Same run, `compose-smoke`: `pnpm -C e2e test` → **43 passed (24.9s)** on the runner. The shipped form, not the pre-C7 one. |
+| VE3 | `verified-local` + `verified-CI` | 12/12 locally; the gate ran in `checks` on the runner. |
+| VE4 | `verified-local` + `verified-CI` | lint / typecheck / test:unit are three separate steps in `checks`, all pass. |
+| **VE5** | **`verified-CI` — discharged** | `checks` on **Node 22.23.1**: 30 files / 276 tests, zero assertion failures. `assertChildOk` demands byte-exact empty stderr from every child, so the green run *is* the measurement. Corroborated in-image beforehand with a positive control proving the zero was not vacuous. The sanctioned fallback is not needed. |
+| **VE6** | **`verified-CI` — discharged** | The gate's Playwright `--list` ran inside `checks`, which installs no browser, and passed. The browser-install step ran in `compose-smoke` in its shipped `-C` form. |
