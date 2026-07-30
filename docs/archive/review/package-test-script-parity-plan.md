@@ -413,6 +413,10 @@ Red-proof is not transitive across a rewrite. The table below therefore discards
 | M-A4 | `RUN --mount=type=cache,… pnpm install --frozen-lockfile` | exit 0 |
 | M-A5 | `pnpm exec grep -F needle package.json` | exit 0 *(redded in revision 7)* |
 | M-A6 | `README.md` documenting the abandoned form | exit 0 *(redded in revision 7)* |
+| M-A7 | `COPY ./apps/api/package.json apps/api/package.json` | exit 0 *(redded until the paths were normalised)* |
+| M-A8 | `COPY apps/api/package.json ./apps/api/` | exit 0 *(same)* |
+
+M-A7 and M-A8 came from the round-4 local pre-screening, which reported the `./` prefix as a **fail-open** ("allowing missing manifests to pass silently"). The direction was the opposite — three legitimate spellings redded — and the fix is `path.posix.normalize`, because the builder normalises and the matcher did not. It is the notation-versus-resolution mistake this contract keeps recording, one level further down, found in code written to fix the previous instance of it. The pre-screening's suggested `.toLowerCase()` was rejected: Dockerfile paths are case-sensitive on Linux, so a case fold would make two distinct manifests compare equal.
 
 Two further allow shapes and three deny shapes are asserted **inside** the gate against synthetic input, because with an empty expected set a predicate matching nothing would pass every assertion above. M-T12 proves that self-test fires.
 

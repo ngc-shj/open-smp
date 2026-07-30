@@ -858,9 +858,17 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       const args = tokens.slice(1).filter((t) => !t.startsWith('--'));
       const dest = args.at(-1);
       if (!dest || args.length < 2) return [];
+      // Normalised, because the builder normalises: `./apps/api/package.json`
+      // and `apps/api/package.json` are the same path to Docker, and three
+      // legitimate spellings redded before this — the same notation-versus-
+      // resolution mistake this whole contract keeps recording, one level down.
+      // `path.posix.normalize`, not a lowercase fold: Dockerfile paths are
+      // case-sensitive on Linux, so folding case would make two distinct
+      // manifests compare equal.
+      const norm = (p: string): string => path.posix.normalize(p);
       return args.slice(0, -1).map((source) => ({
-        source,
-        at: dest.endsWith('/') || dest === '.' ? path.posix.join(dest, path.posix.basename(source)) : dest,
+        source: norm(source),
+        at: norm(dest.endsWith('/') || dest === '.' ? path.posix.join(dest, path.posix.basename(source)) : dest),
       }));
     });
 
