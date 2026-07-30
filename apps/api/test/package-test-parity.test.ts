@@ -552,90 +552,221 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     expect(unlisted, 'unit tests that read repository files but are not listed as controls').toEqual([]);
   });
 
-  it('no CI-executed artifact selects a pnpm package by name', async () => {
-    // `pnpm --filter <no-match> …` exits 0 having done nothing. The class had
-    // three members, was declared closed at two of them twice, and the third
-    // survived four review rounds inside a Dockerfile stage CI executes. A
-    // review trigger is what already failed; this is the executable form.
+  it('a pnpm selector that matches nothing fails loudly', async () => {
+    // THE boundary for this class, and the only control in this file whose
+    // verdict comes from pnpm instead of from reading text.
     //
-    // **This scan was widened four times, and each widening followed a
-    // demonstration that the previous needle missed a member**: long spelling
-    // only, then the flag had to be pnpm's first argument, then the file had to
-    // carry a known extension, then matched files were pinned where a comment
-    // and an invocation inside the same file are indistinguishable. Widening a
-    // regex after each demonstration is the same method that produced the
-    // misses, so it does not terminate. What follows removes the axes instead
-    // of enumerating points on them.
+    // `pnpm --filter <no-match> …` exits 0 having done nothing, so renaming a
+    // package turns a CI step into a green no-op — the route that could have
+    // removed the repository's only end-to-end auth and session-expiry coverage
+    // from CI while every other signal stayed green. `failIfNoMatch: true` in
+    // `pnpm-workspace.yaml` makes it exit 1 at the tool.
     //
-    // 1. NORMALISE. Join shell line-continuations and split on the operators
-    //    that separate commands, so position and line structure stop being
-    //    properties the needle has to model. A `RUN pnpm \` + `--filter …`
-    //    across two lines evaded every earlier form.
-    // 2. TOKENISE. A hit is a command mentioning pnpm with a later token in the
-    //    selector FAMILY — `--filter`, `--filter-prod`, `--filter=…`, `-F`, or
-    //    a clustered short group containing `F` such as `-rF`. Matching the
-    //    family rather than two literals is what admits `--filter-prod` and
-    //    whatever pnpm adds next.
-    // 3. PIN THE FAMILY against pnpm itself, below — so a pnpm release adding a
-    //    selector flag reds here instead of widening the hole silently.
+    // This is asserted behaviourally, not by reading the setting, because the
+    // property that matters is what pnpm DOES. Reading the config would be the
+    // same surface-form move the scan below is confined to, one level down. And
+    // because it holds at the tool, it holds for every notation no text scan can
+    // see: quoted, inside a JSON exec array, assembled by a YAML folded scalar,
+    // held in a shell variable, or behind a wrapper script — the whole of
+    // SC60's residue.
     //
-    // Counting occurrences of a literal is not the prohibited inference: it
-    // decides only whether bytes exist, never whether a line executes. A
-    // commented-out occurrence reds, which is the over-strict direction.
+    // It does NOT cover `--filter <real-pkg> test` with no `test` script, which
+    // still exits 0 via pnpm's `test` shorthand. That half is C2 clause 3's.
+    const entries = await workspaceEntries();
+    expect(entries.length, 'no workspace entries enumerated').toBeGreaterThan(0);
+
+    // Derived from a real name rather than invented, so it stays a non-match
+    // even if the workspace is renamed wholesale.
+    const impossible = `${entries[0]?.name ?? 'open-smp'}-no-such-package-95f3c1`;
+
+    const deny = await runChild(['--filter', impossible, 'exec', 'node', '--version']);
+    expect(deny.error, `deny probe: spawn failed — ${deny.error?.message}`).toBeUndefined();
+    expect(
+      deny.status,
+      `\`pnpm --filter ${impossible}\` exited 0 — the no-match route is silent again; check failIfNoMatch in pnpm-workspace.yaml`,
+    ).not.toBe(0);
+    // Failed for the right reason. Without this, a pnpm that cannot start at
+    // all reports the boundary as present (R50 (i)/(iii)).
+    expect(
+      `${deny.stdout}${deny.stderr}`,
+      'the no-match probe failed for some reason other than the filter matching nothing',
+    ).toContain('No projects matched the filters');
+
+    // RT10's allow side, adjacent to the boundary: the SAME command with a real
+    // member must still succeed. A guard that denies legitimate work gets
+    // disabled, and the protection leaves with it.
+    const allow = await runChild(['--filter', entries[0]?.name ?? 'open-smp', 'exec', 'node', '--version']);
+    expect(allow.error, `allow probe: spawn failed — ${allow.error?.message}`).toBeUndefined();
+    expect(allow.status, `a selector matching a real member exited ${allow.status}:\n${allow.stderr}`).toBe(0);
+    expect(allow.stdout, 'the allow probe produced no node version').toMatch(/v\d+\./);
+  });
+
+  it('no tracked artifact holds a literal pnpm selector', async () => {
+    // A best-effort tripwire, NOT the boundary — the assertion above is. Its job
+    // is to keep selector-by-name notation out of the tree so the question is
+    // settled at review time rather than at the tool.
     //
-    // The residue, stated rather than chased (SC60): a selector held in a
-    // variable — `F=--filter; pnpm $F x build` — is invisible to any text scan
-    // in every form. The honest scope of this control is literal selector text
-    // in tracked artifacts.
+    // The history is the contract. This scan was widened four times across three
+    // rounds — spelling, then flag position, then file kind, then match
+    // granularity — and each widening followed a demonstration that the previous
+    // needle missed a member. Round 3 replaced widening with a method claimed to
+    // "remove the axes"; plan review then found two axes it had never removed
+    // (quoted and JSON-array forms) and one it had introduced (a classifier
+    // matching against `file: line`, where `.*` spanned the boundary so any line
+    // mentioning `.md: ` was exempted — fail-open). The lesson is not a better
+    // regex. It is that this predicate cannot be complete, which is why the
+    // boundary above exists and why this is declared a tripwire.
+    //
+    // Three things changed as a result, and each removes a maintenance burden
+    // rather than adding a case:
+    //
+    //  1. LINE COMMENTS ARE STRIPPED. The expected set is therefore EMPTY. The
+    //     previous form pinned matched lines as a literal list, so every comment
+    //     explaining why `--filter` was abandoned had to be added to it — a
+    //     hand-maintained member set that grew to three the moment
+    //     `pnpm-workspace.yaml` documented the boundary. An empty expected set
+    //     is a real invariant; a growing literal list is bookkeeping.
+    //  2. THE DECISION IS SCOPED TO PNPM'S OWN ARGV. `pnpm exec grep -F needle`
+    //     passes `-F` to grep, not to pnpm; the old form redded on it, and on
+    //     `pnpm exec curl -sF` and `pnpm exec tsx x.ts -Force`. Scanning up to
+    //     the hand-off token removes that whole false-red class by construction.
+    //  3. MARKDOWN IS EXCLUDED BY FILE KIND. CI executes no markdown. The old
+    //     form claimed in its own comment to be "keyed on the file being
+    //     markdown, not on the directory" while being keyed on both — and the
+    //     `docs/` anchor is what made the classifier leak.
+    //
+    // Residue, stated rather than chased: a YAML folded scalar (`run: >`) that
+    // assembles `pnpm` and the selector from separate physical lines, and a `#`
+    // inside a quoted string that this strip reads as a comment. Both are MISS
+    // (measured). Neither is a hole in the hazard — the boundary above covers
+    // them — and closing them needs the host format's parser, which C8 refused
+    // on dependency grounds. SC60.
     const SELECTOR_FAMILY = /^(--filter[a-z-]*(=.*)?|-[a-zA-Z]*F[a-zA-Z]*)$/;
+
+    // After these, the remaining argv belongs to a program pnpm invokes, and its
+    // flags are not pnpm's to interpret. `--` ends pnpm's own options.
+    const HANDOFF = new Set(['exec', 'dlx', 'x', '--']);
+
+    // `#` and `//` only when at line start or preceded by whitespace, so
+    // `https://…`, `file#frag`, and `echo "#"` are not treated as comments.
+    const stripLineComment = (line: string): string => line.replace(/(^|\s)(#|\/\/).*$/, '');
 
     const selectorLines = (source: string): string[] => {
       const joined = source.replace(/\\\n[ \t]*/g, ' ');
-      return joined
-        .split('\n')
-        .filter((line) =>
-          line
-            .split(/[;|&]+/)
-            .some((cmd) => /\bpnpm\b/.test(cmd) && cmd.trim().split(/\s+/).some((t) => SELECTOR_FAMILY.test(t))),
-        )
-        .map((l) => l.trim());
+      const held: string[] = [];
+      for (const raw of joined.split('\n')) {
+        for (const cmd of stripLineComment(raw).split(/[;|&]+/)) {
+          // Split on commas too, and strip bracket/quote punctuation, so
+          // `["pnpm", "--filter", "e2e", "build"]` — the Dockerfile/compose exec
+          // form, already used by three CMD lines and one compose service —
+          // tokenises the same as the shell form.
+          const tokens = cmd
+            .split(/[\s,]+/)
+            .map((t) => t.replace(/^[[("'`]+|[\])"'`]+$/g, ''))
+            .filter(Boolean);
+          const at = tokens.indexOf('pnpm');
+          if (at < 0) continue;
+          const own: string[] = [];
+          for (const t of tokens.slice(at + 1)) {
+            if (HANDOFF.has(t)) break;
+            own.push(t);
+          }
+          if (own.some((t) => SELECTOR_FAMILY.test(t))) {
+            held.push(raw.trim());
+            break;
+          }
+        }
+      }
+      return held;
     };
 
-    // The family, pinned against pnpm's own flag surface rather than against
-    // recall — asserting no unrecognised `--filter*` appears there converts the
-    // next pnpm release from a silent widening into a red.
+    // Anti-vacuity, and RT10's allow side, both against synthetic input. The
+    // expected set below is empty, so a predicate that matched NOTHING would
+    // pass — the literal list this replaced provided that proof incidentally,
+    // and it has to be provided deliberately now.
+    expect(selectorLines('RUN pnpm --filter @open-smp/web build'), 'the predicate no longer detects the plain form').toHaveLength(1);
+    expect(selectorLines('RUN ["pnpm", "--filter", "e2e", "build"]'), 'the predicate no longer detects the exec-array form').toHaveLength(1);
+    expect(selectorLines('RUN pnpm -rF x build'), 'the predicate no longer detects clustered short flags').toHaveLength(1);
+    expect(selectorLines('RUN pnpm -C apps/web build'), 'the predicate reds on the sanctioned directory form').toEqual([]);
+    expect(selectorLines('RUN pnpm exec grep -F needle file.txt'), "the predicate reds on a sub-program's own -F").toEqual([]);
+
+    // The family is pinned against pnpm's own flag surface. The previous form
+    // extracted candidates with `/--filter[a-z-]*/g` and then asserted each
+    // matched SELECTOR_FAMILY — the same production twice, so the filtered array
+    // was empty for EVERY possible input and the pin could not fire. It was the
+    // ninth vacuous assertion found in this file and the first found by review
+    // rather than by mutation.
     //
-    // `pnpm run --help`, not `pnpm --help`: the top-level help lists commands
-    // and mentions no flag at all (measured — zero occurrences of "filter"),
-    // while the per-command help carries a "Filtering options" block declaring
-    // `--filter` and `--filter-prod`. The reachability guard below is what
-    // caught that; the first draft pinned against the wrong surface and would
-    // have asserted over an empty set.
+    // The real pin reads the declaration column of pnpm's "Filtering options"
+    // block and requires every flag declared there to be either in the family or
+    // on an explicitly reviewed non-selector list. A new selector flag is then
+    // neither, and reds. Measured on pnpm 10.34.5: the block declares
+    // `--changed-files-ignore-pattern`, `--fail-if-no-match`, `--filter`,
+    // `--filter-prod`, `--test-pattern`, `-F`.
+    //
+    // Only the declaration column is read (2-10 leading spaces). Descriptions
+    // wrap at column 48 and split flag names across lines
+    // (`--changed-files-ignore-` / `pattern=…`), which a whole-block scan
+    // mis-extracts as a flag that does not exist.
+    const NON_SELECTOR_FILTERING_FLAGS = new Set([
+      '--changed-files-ignore-pattern',
+      '--test-pattern',
+      // Not a selector — it is the boundary the first assertion in this describe
+      // observes behaviourally.
+      '--fail-if-no-match',
+    ]);
+
     const help = await runChild(['run', '--help']);
     assertChildOk('pnpm run --help', help);
-    const helpSelectors = [...help.stdout.matchAll(/--filter[a-z-]*/g)].map((m) => m[0]);
-    expect(helpSelectors.length, 'pnpm run --help declares no --filter flag; the family cannot be pinned').toBeGreaterThan(0);
+    const helpLines = help.stdout.split('\n');
+    const blockStart = helpLines.findIndex((l) => /^Filtering options/.test(l));
+    expect(blockStart, 'pnpm run --help declares no Filtering options block; the family cannot be pinned').toBeGreaterThanOrEqual(0);
+    let blockEnd = helpLines.length;
+    for (let i = blockStart + 1; i < helpLines.length; i++) {
+      const line = helpLines[i];
+      if (line && /^\S/.test(line) && line.trim()) {
+        blockEnd = i;
+        break;
+      }
+    }
+    const declared = [
+      ...new Set(
+        helpLines
+          .slice(blockStart + 1, blockEnd)
+          .map((l) => /^ {2,10}(-{1,2}[A-Za-z][A-Za-z0-9-]*)/.exec(l)?.[1])
+          .filter((f): f is string => Boolean(f)),
+      ),
+    ];
+    expect(declared.length, 'no flags parsed from the Filtering options block').toBeGreaterThan(0);
     expect(
-      [...new Set(helpSelectors)].filter((f) => !SELECTOR_FAMILY.test(f)).sort(),
-      'pnpm declares a selector flag this scan does not recognise',
+      declared.filter((f) => SELECTOR_FAMILY.test(f)).sort(),
+      'the family matches none of the flags pnpm declares under Filtering options',
+    ).not.toEqual([]);
+    expect(
+      declared.filter((f) => !SELECTOR_FAMILY.test(f) && !NON_SELECTOR_FILTERING_FLAGS.has(f)).sort(),
+      'pnpm declares a filtering flag that is neither in the selector family nor reviewed as a non-selector',
     ).toEqual([]);
 
-    // This file is excluded from its own scan: it necessarily contains the
-    // pattern, in the needle and in the comments explaining it.
-    // `import.meta.filename`, not `new URL(import.meta.url).pathname` — the
-    // latter is percent-encoded, so a checkout path containing a space would
-    // never match an inventory entry and the gate would red on itself forever.
+    // This file necessarily contains the pattern, in the predicate and in the
+    // comments explaining it. `import.meta.filename`, not
+    // `new URL(import.meta.url).pathname` — the latter is percent-encoded, so a
+    // checkout path containing a space would never match an inventory entry and
+    // the gate would red on itself forever.
     const self = path.relative(REPO_ROOT, import.meta.filename);
 
     const inventoryFiles = trackedOrUntrackedFiles();
-    const scanned = inventoryFiles.filter((f) => f !== self);
-    expect(inventoryFiles.filter((f) => !scanned.includes(f)), 'files excluded from the selector scan').toEqual([self]);
+    const scanned = inventoryFiles.filter((f) => f !== self && !f.endsWith('.md'));
     expect(scanned.length, 'nothing scanned').toBeGreaterThan(0);
+    // Only two exclusions are sanctioned. A third added later reds here rather
+    // than silently shrinking the scanned set.
+    expect(
+      inventoryFiles.filter((f) => !scanned.includes(f) && f !== self && !f.endsWith('.md')),
+      'files excluded from the selector scan for no stated reason',
+    ).toEqual([]);
 
-    // What was actually READ is pinned, not what was selected for scanning.
-    // The exclusion pin above guards one site; an exclusion written inside this
-    // loop had the same effect and no coverage. This also surfaces whatever the
-    // catch swallows, which was previously silent.
+    // What was actually READ is pinned, not what was selected for scanning: an
+    // exclusion written inside this loop, or a file swallowed by the catch, is
+    // otherwise invisible.
     const read: string[] = [];
     const holders = scanned.flatMap((f) => {
       let source: string;
@@ -650,68 +781,125 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
     });
     expect(scanned.filter((f) => !read.includes(f)), 'files in scope that were never read').toEqual([]);
 
-    // The plan and review artifacts discuss this pattern at length — prose
-    // about an invocation, not an invocation. They are scanned and then
-    // classified, so a new document mentioning the form is fine. Keyed on the
-    // file being markdown rather than on the `docs/` directory: a directory
-    // exemption is unbounded in what it can later acquire, which is the same
-    // objection this file raises about the scan's own exclusions.
-    const executable = holders.filter((l) => !/^docs\/.*\.md: /.test(l));
-    expect(holders.length, 'nothing matched the selector at all').toBeGreaterThan(0);
-    // The two survivors are the comments explaining why the form was abandoned.
-    expect(executable.sort(), 'executable lines still selecting packages by name').toEqual([
-      '.github/workflows/ci.yml: # -C rather than --filter because `pnpm --filter <no-match> …` exits 0',
-      'Dockerfile: # -C, not --filter: `pnpm --filter <no-match> …` exits 0 printing "No projects',
-    ]);
+    expect(holders.sort(), 'artifacts holding a literal pnpm selector').toEqual([]);
   });
 
   it('the Dockerfile dependency stage copies every workspace manifest', async () => {
-    // `pnpm install --frozen-lockfile` is SILENT when a lockfile importer has
-    // no manifest on disk, so an omitted COPY line installs none of that
-    // package's registry dependencies and the image builds green. The list was
+    // `pnpm install --frozen-lockfile` is SILENT when a lockfile importer has no
+    // manifest on disk, so an omitted COPY installs none of that member's
+    // registry dependencies and the image builds green. The list was
     // hand-enumerated and had been missing api-types and e2e.
+    //
+    // A fail-closed verification gate over Dockerfile TEXT. The adjudicator for
+    // what the image actually contains is the builder, not this parse: the
+    // image-level form is `docker build --target deps`, recorded as step 4 of the
+    // manual test plan. Neither subsumes the other — a leaf member with no
+    // dependencies and no dependents is invisible in the image and visible here
+    // (SC62).
     const entries = await workspaceEntries();
     expect(entries.length, 'no workspace entries enumerated').toBeGreaterThan(0);
 
-    // Sliced to the deps stage and anchored to a COPY instruction. A whole-file
-    // substring search was satisfied by prose: deleting two COPY lines and
-    // rewording the comment four lines above to name those two paths left the
-    // assertion green — and a COPY placed *after* `RUN pnpm install` satisfied
-    // it too, which is the exact defect condition. That is the same substring
-    // read C8 refuses to perform on ci.yml, and it fails the same way.
-    //
-    // Still text, and strictly weaker than inspecting the built image; the
-    // strong form is `docker build --target deps`, which the manual test plan
-    // records.
-    const dockerfile = readFileSync(path.join(REPO_ROOT, 'Dockerfile'), 'utf8').split('\n');
-    // Dockerfile instructions are case-insensitive, and `RUN` accepts flags —
-    // `RUN --mount=type=cache,… pnpm install` is the idiomatic BuildKit form and
-    // a plausible next edit given the layer-caching comment in the Dockerfile.
-    // Both matchers were case- and flag-strict, which reds on a legitimate
-    // change; that is the false-red class that gets a gate relaxed rather than
-    // fixed.
-    const depsStart = dockerfile.findIndex((l) => /^FROM\s+\S+\s+AS\s+deps\s*$/i.test(l));
-    expect(depsStart, 'no `FROM … AS deps` stage in the Dockerfile').toBeGreaterThanOrEqual(0);
-    const installAt = dockerfile.findIndex((l, i) => i > depsStart && /^RUN\s+(--\S+\s+)*pnpm\s+install\b/i.test(l));
-    expect(installAt, 'no `RUN pnpm install` in the deps stage').toBeGreaterThan(depsStart);
-    const beforeInstall = dockerfile.slice(depsStart, installAt);
+    // Continuations are joined first. C9 treats line assembly as an axis it must
+    // normalise away and proved a Dockerfile continuation defeats a
+    // physical-line scan (M57); this assertion modelled physical lines in the
+    // same file — R33's shape inside one `it`.
+    const dockerfile = readFileSync(path.join(REPO_ROOT, 'Dockerfile'), 'utf8')
+      .replace(/\\\n[ \t]*/g, ' ')
+      .split('\n');
 
-    const missing = entries
-      .map((e) => path.relative(REPO_ROOT, e.path))
-      .filter(Boolean)
-      // Token comparison, not an interpolated RegExp. `dir` comes from
-      // `pnpm list -r` and is PR-influenceable: a dot in a directory name
-      // became a metacharacter that matched a *different* package's COPY line
-      // (fail-open), and a bracket threw an uncaught SyntaxError. The plan
-      // guards this primitive carefully for argv and did not cover regexes.
-      .filter(
-        (dir) =>
-          !beforeInstall.some((l) => {
-            const tokens = l.trim().split(/\s+/);
-            return tokens[0]?.toUpperCase() === 'COPY' && tokens[1] === `${dir}/package.json`;
-          }),
-      );
+    // Every matcher here is case- and flag-tolerant. Dockerfile instructions are
+    // case-insensitive; `FROM --platform=$BUILDPLATFORM …`, `RUN --mount=… pnpm
+    // install` and `COPY --link` are all idiomatic BuildKit and all plausible
+    // next edits. A strict matcher reds on a legitimate change, and a false red
+    // is what gets a gate relaxed rather than fixed.
+    const isStage = (l: string): boolean => /^FROM\b/i.test(l);
+    const depsStart = dockerfile.findIndex((l) => /^FROM\s+(--\S+\s+)*\S+\s+AS\s+deps\s*$/i.test(l));
+    expect(depsStart, 'no `FROM … AS deps` stage in the Dockerfile').toBeGreaterThanOrEqual(0);
+
+    // Bounded to the stage. The previous form searched to end of file, so if the
+    // deps install were moved out while a later stage had one, the slice would
+    // span stages and COPY lines belonging to a different stage would satisfy
+    // the check — the assertion would report on a subject other than the one it
+    // names.
+    const nextStage = dockerfile.findIndex((l, i) => i > depsStart && isStage(l));
+    const stageEnd = nextStage < 0 ? dockerfile.length : nextStage;
+    const installAt = dockerfile.findIndex(
+      (l, i) => i > depsStart && i < stageEnd && /^RUN\s+(--\S+\s+)*pnpm\s+install\b/i.test(l),
+    );
+    expect(installAt, 'no `RUN pnpm install` inside the `deps` stage').toBeGreaterThan(depsStart);
+
+    // The Problem statement above is a property of `--frozen-lockfile`. Without
+    // it the image resolves versions outside the reviewed lockfile, and nothing
+    // else in the repository pins this line.
+    expect(
+      dockerfile[installAt],
+      "the deps stage's install does not pass --frozen-lockfile, so the image can resolve outside the lockfile",
+    ).toContain('--frozen-lockfile');
+
+    // Where each COPY source actually LANDS, not merely that a source token
+    // appears. `COPY packages/schema/package.json packages/matcher/package.json`
+    // passed the previous form while leaving `packages/schema` with no manifest —
+    // the exact silent-install condition this gate exists for — and additionally
+    // clobbering another member's.
+    //
+    // Both destination spellings are accepted: `COPY a/package.json
+    // a/package.json` and `COPY a/package.json a/` land in the same place, and
+    // rejecting the second would be a false red.
+    const landings = dockerfile.slice(depsStart, installAt).flatMap((l) => {
+      const tokens = l
+        .split(/[\s,]+/)
+        .map((t) => t.replace(/^[["'`]+|[\]"'`]+$/g, ''))
+        .filter(Boolean);
+      if (tokens[0]?.toUpperCase() !== 'COPY') return [];
+      // Token comparison, never an interpolated RegExp: `dir` comes from
+      // `pnpm list -r` and is PR-influenceable — a dot became a metacharacter
+      // matching a different package's line (fail-open), and a bracket threw an
+      // uncaught SyntaxError.
+      const args = tokens.slice(1).filter((t) => !t.startsWith('--'));
+      const dest = args.at(-1);
+      if (!dest || args.length < 2) return [];
+      return args.slice(0, -1).map((source) => ({
+        source,
+        at: dest.endsWith('/') || dest === '.' ? path.posix.join(dest, path.posix.basename(source)) : dest,
+      }));
+    });
+
+    // Anti-vacuity and RT10's allow side, against synthetic input: the
+    // assertions below compare against an empty expected set, so a parse that
+    // extracted NOTHING would pass every one of them.
+    expect(/^FROM\s+(--\S+\s+)*\S+\s+AS\s+deps\s*$/i.test('FROM --platform=$BUILDPLATFORM node:22 AS deps'), 'the FROM matcher reds on --platform').toBe(true);
+    expect(/^FROM\s+(--\S+\s+)*\S+\s+AS\s+deps\s*$/i.test('from base as deps'), 'the FROM matcher is case-sensitive').toBe(true);
+    expect(/^RUN\s+(--\S+\s+)*pnpm\s+install\b/i.test('RUN --mount=type=cache,target=/pnpm pnpm install --frozen-lockfile'), 'the RUN matcher reds on --mount').toBe(true);
+    expect(landings.length, 'no COPY landings parsed from the deps stage').toBeGreaterThan(0);
+
+    const memberDirs = entries.map((e) => path.relative(REPO_ROOT, e.path)).filter(Boolean);
+    // Guards the DERIVED set. `entries.length` above guards the raw enumeration,
+    // which includes the workspace root; a defect in the map/filter below would
+    // leave this list empty, `missing` empty, and the `it` green having checked
+    // no member at all.
+    expect(memberDirs.length, 'no workspace member directories derived').toBeGreaterThan(0);
+    expect(memberDirs.length, 'the derived member set is smaller than the raw enumeration by more than the root').toBe(entries.length - 1);
+
+    const missing = memberDirs.filter(
+      (dir) => !landings.some((l) => l.source === `${dir}/package.json` && l.at === `${dir}/package.json`),
+    );
     expect(missing, 'workspace members not COPYed into the deps stage before `pnpm install`').toEqual([]);
+
+    // The root is the one entry `filter(Boolean)` above removes — its relative
+    // path is the empty string. Revision 7 left that subtraction undeclared and
+    // uncomplemented, which is the shape the plan treats as load-bearing for D0
+    // and C8. These are its complement.
+    //
+    // `pnpm-workspace.yaml` is not cosmetic here: it carries `failIfNoMatch`,
+    // the boundary the first assertion in this describe observes. If it does not
+    // reach the image, `pnpm --filter <no-match>` is silent again inside every
+    // build stage.
+    for (const required of ['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
+      expect(
+        landings.some((l) => l.source === required && l.at === required),
+        `\`${required}\` is not COPYed to the deps stage root; the workspace root manifest and its settings must reach the image`,
+      ).toBe(true);
+    }
   });
 
   it('pnpm resolves, so a PATH failure reads as a PATH failure', async () => {

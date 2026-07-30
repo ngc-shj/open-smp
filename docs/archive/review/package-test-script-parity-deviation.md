@@ -174,3 +174,64 @@ D6 recorded "pairwise disjointness is unproven by an in-tree mutation". It is pr
 `pnpm lint` 0 · `pnpm typecheck` 0 · `pnpm test:unit` 30 files / 273 tests / 1.33 s · `pnpm test:integration` 6 files / 143 tests / 8.27 s · `pnpm test:e2e` 43 passed · `docker compose build web` green.
 
 33 falsifiability mutations executed, all red on the intended assertion. 2 documented-limit probes green as required. 1 retired.
+
+## D20 — C9 and C10 were rewritten after plan-review round 6, and C11 was added (8 Major-class, revision 8)
+
+Revision 7 contracted the two controls that code review had invented (C9, C10) and submitted them
+to the plan review the other eight contracts had. **The review did not clear them.** 28 findings
+across three experts, 8 Major-class, four changing an invariant. Every claim below was
+re-measured by the orchestrator in `node` or from a captured exit status before being acted on.
+
+**What was wrong, and the shape it had:**
+
+| | Defect | Shape |
+|---|---|---|
+| 1 | C9's family pin compared a regex against strings extracted by the same production — **empty for every possible input** | Ninth vacuous assertion in this file; **first of the nine found by review rather than by executing a mutation**. Its certifying mutation (M62) edited the gate's own reader. |
+| 2 | The prose classifier `/^docs\/.*\.md: /` was applied to the composed `file: line` string, so `.*` spanned the boundary and any line containing `.md:` plus a space was exempted | **Fail-open**, introduced by round 3's fix for the previous fail-open |
+| 3 | Quoted and JSON-array selector forms were invisible — a form already used by three Dockerfile `CMD` lines and one compose `command` | The "axes removed" claim was false for an axis never removed |
+| 4 | YAML folded scalars (`run: >`) were invisible | Same |
+| 5 | Three legitimate inputs redded: `pnpm exec grep -F`, `README.md` prose, `COPY --link` | RT10 — no allow side existed at all |
+| 6 | C10's stage slice ran to end of file, not to the next `FROM` | The invariant said "in that stage" and the code did not |
+| 7 | C10 compared only the COPY *source*, so a mis-targeted destination passed | Reproduced the exact defect the contract exists for |
+| 8 | C10's cardinality guard was on the raw enumeration, not the derived list | Fourth vacuity site in this `it`'s lineage |
+| 9 | `--frozen-lockfile` was unpinned although the whole Problem statement is a property of it | — |
+| 10 | The root manifest was subtracted by `filter(Boolean)` with nothing taking responsibility | The D0 shape, which this plan calls load-bearing |
+| 11 | 11 of 17 cited mutations — **all four** of C10's — were proofs against implementations round 3 replaced | Red-proof is not transitive across a rewrite |
+
+**Root cause, and it is not any of the eleven.** The selector scan had been widened four times
+across three rounds, each widening following a demonstrated miss. Round 3 relabelled the method
+as "removing the axes" and the contract made that the invariant. Round 6 found two axes never
+removed and one introduced. The reason the sequence would not terminate is that **the control was
+at the wrong level**: it judged notation for a property that only pnpm can decide. SC60 had
+recorded for three rounds that closing the residue "needs a runtime observer of the invocation,
+not a reader of the text" — and then deferred it, three times, while the residue kept acquiring
+members.
+
+**Shipped**:
+
+- **C11 (new)** — `failIfNoMatch: true` in `pnpm-workspace.yaml`. Measured: `pnpm --filter <no-match>`
+  exits **0 → 1**; `pnpm --filter e2e exec playwright --version` and `pnpm -C apps/web build`
+  unaffected. This closes every route C9 cannot see, including all of SC60's three-round residue,
+  because the decision happens inside pnpm. It holds when no test runs — the one control here that
+  SC56 does not reach. Asserted behaviourally, not by reading the setting.
+- **C9 rewritten** as a declared best-effort tripwire: comments stripped so the expected set is
+  **empty** (the pinned literal list was itself a name-shape member set, and it had grown to three);
+  decisions scoped to pnpm's own argv; markdown excluded by file kind, deleting the classifier
+  rather than patching its leak; the family pinned against the declaration column of pnpm's
+  "Filtering options" block; anti-vacuity self-tests in both directions, because an empty expected
+  set makes a dead predicate pass.
+- **C10 corrected** on all six counts, with `pnpm-workspace.yaml` added to the pinned root COPY —
+  C11's setting has to reach the image or the no-match route is silent inside every build stage.
+- **28 mutations re-executed against the shipped tree**, 22 red with their observed messages
+  recorded and 6 allow-side controls green. Four of the six allow controls redded in revision 7.
+- **Two structural alternatives measured and declined** with the cost named: `pnpm fetch` (deletes
+  C10's member set; moves the `argon2` native build onto every source edit) and a `find`-derived
+  manifests stage (keeps the cache; restructures the production image path). Recorded in SC62.
+
+**The finding worth keeping**: revision 7 argued that the difference between C1–C8 (zero Major in
+two code-review rounds) and C9/C10 (twelve) was the plan review the latter skipped. That was a
+correlation. Round 6 made it causal — one review round on two contracts produced eight Major-class
+findings, including a vacuous assertion at the centre of the control, in code that had already
+survived three code-review rounds and 62 mutations. **Mutation testing did not find it, because
+the mutation that would have exposed it was the one nobody could write: it required changing
+pnpm's output, not the gate's.**

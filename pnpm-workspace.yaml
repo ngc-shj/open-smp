@@ -3,6 +3,20 @@ packages:
   - packages/*
   - packages/connectors/*
   - e2e
+# `pnpm --filter <no-match> …` exits 0 having done nothing, which turns a
+# package rename into a green no-op — the channel that could have removed the
+# E2E auth suite from CI while every other signal stayed green. This setting
+# makes that exit 1 at the tool, so it holds for every invocation regardless of
+# how the selector is written or which artifact writes it: quoted, in a JSON
+# exec array, assembled by a YAML folded scalar, held in a shell variable, or
+# inside a wrapper script. A text scan can see none of those (SC60); this needs
+# to see none of them. Measured: exit 0 → exit 1 on no match, real matches
+# unaffected.
+#
+# It does NOT close the other half of the channel: `--filter <real-pkg> test`
+# with no `test` script still exits 0, because pnpm's `test` shorthand treats a
+# missing script as a no-op. That half is C2 clause 3's.
+failIfNoMatch: true
 allowBuilds:
   argon2: true
   esbuild: true

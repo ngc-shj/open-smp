@@ -786,3 +786,86 @@ Five rounds, **89 findings**, 8 Critical. The record worth carrying forward:
 - **The convergence signal was the failure-direction inversion, not the finding count.** Rounds 1–3 were dominated by false-green; round 4 produced zero Critical and Security stated plainly that every constructible failure in the new surface failed red. Round 5's Critical was in surface that did not exist in round 4.
 - **Three member-set errors, all from enumerating by name-shape rather than deriving from the defining primitive**: revision 2's `D1 ∧ D2` admitting the repo root, revision 3's SC53 counting one `--filter` site where there were two, and revision 5's C8 pinning the "test-shaped" scripts instead of the CI-invoked ones. Fourth cycle running.
 - **The measurement harness was itself a source of three false conclusions**: a `--config` placed outside the repo (round 2), a `sed` that silently failed to match (round 3), and a JSON probe run through `pnpm exec` rather than the plan's actual `pnpm -C … test` invocation (round 5, self-reported by Security). Every one produced a confident wrong answer that only re-running differently exposed.
+
+---
+
+# Plan Review: package-test-script-parity — Round 6 (C9 / C10 only)
+
+Date: 2026-07-29
+Review round: 6 (scoped)
+
+## Changes from Previous Round
+
+Rounds 1–5 reviewed revisions 1–6 and locked C1–C8. Phase 2 implemented them, and Phase 3
+code-review rounds 1–3 then added **two controls that no contract described**: the pnpm
+selector scan and the Dockerfile deps-stage check. Revision 7 writes them as C9 and C10 and
+submits them to the plan review the other eight had. Scope: C9, C10, their Go/No-Go rows,
+SC53 (rewritten), SC62 (new), the C9/C10 mutation table, and revision 7's header. C1–C8 and
+SC47–SC61 were explicitly out of scope.
+
+## Why this round exists
+
+The Major findings of code-review rounds 2 and 3 fell almost entirely in these two controls —
+zero in C1–C8 across both rounds. The hypothesis under test was that the difference is the
+plan review the two skipped, not the subject matter. **The round confirms it.** Three experts,
+28 findings, 8 of them Major-class defects in two contracts, on a first review — against zero
+for C1–C8 in the two most recent rounds of attack.
+
+## Convergence summary
+
+| # | Finding | Convergence | Severity |
+|---|---|---|---|
+| **N1** | **The `pnpm run --help` family pin is a tautology.** The extraction `/--filter[a-z-]*/g` and the test `SELECTOR_FAMILY` are the same production, so the filtered array is empty for *every possible input*. The contract's headline claim — "a pnpm release adding a selector flag then reds here instead of widening the hole silently" — has no backing. M62 red-proves only the reverse direction (narrowing the regex), which is an edit to the gate's own reader. | 3/3 (Sec S1, Func F2, Test T3) | Major |
+| **N2** | **The prose exemption is fail-open.** `/^docs\/.*\.md: /` is applied to the composed `` `${file}: ${line}` ``, so `.*` spans the boundary: a shell script under `docs/` whose selector line merely contains `.md: ` is exempted. The contract states the exemption is "keyed on the file being markdown, not on the directory" — it is keyed on both, and leaks through the line. | 3/3 (Func F1, Sec S4, Test T4) | Major |
+| **N3** | **Selector forms the scan cannot see, inside the artifacts it names.** JSON/exec form `["pnpm","--filter",…]` — already the idiom at `docker-compose.yml` and three `Dockerfile` CMD lines — and YAML folded scalars (`run: >`) both MISS. SC60's residue names only variables, environment, and wrapper scripts, so the text implies a coverage the scan lacks. | 2/3 (Sec S2, Func F3) | Major |
+| **N4** | **C10's "in that stage" anchor is unimplemented.** `installAt` is the first `RUN … pnpm install` *anywhere* after `depsStart`, with no intervening-`FROM` check, so the slice can span stages. Correct today only because the Dockerfile has exactly one install. | 3/3 (Func F4, Sec S5, Test T8) | Major |
+| **N5** | **Both contracts are missing SC56, and SC53 overstates because of it.** C9 and C10 live in the file M28b demonstrates is entirely unexecuted when root `test:unit` is narrowed. SC53's rewrite calls C9 "the standing enforcement". C9 is additionally inside the blast radius of its own subject: a silent no-op is one way to remove the step that runs C9. | 2/3 (Test T7, Sec S3) | Major |
+| **N6** | **Acceptance rests on mutations executed against replaced implementations.** Round 3 replaced C9's method wholesale and C10's matchers; 11 of the 17 cited IDs predate that. **All four C10 mutations do** — the shipped token comparison has never been red-proven. The two recorded messages are stale against the shipped assertions. | 3/3 (Test T2, Func F7, Sec S8) | Major |
+| **N7** | **The mutation table records no observed failing assertion, and its stated reason is false.** It claims the code-review artifact carries each message; 9 of 17 carry the bare word `RED`, 6 carry a mechanism label, and the 2 quoted messages no longer match the code. Three of the cited IDs are ones the artifact itself records as having first returned harness false greens. | 2/3 (Test T1, Sec S8) | Major |
+| **N8** | **No allow side (RT10), and four legitimate inputs red today.** `pnpm exec grep -F` / `curl -sF` (the `F` belongs to the sub-program), `README.md` prose, `COPY --link`, `COPY --chown=`. `FROM --platform=… AS deps` MISSes and reports the wrong cause. Every cited mutation is a deny proof. | 2/3 (Test T4, Func F6) | Major |
+| **N9** | Neither contract declares a **control class or adjudication authority** (R49). The four class names appear nowhere in any plan in this repository. Undeclared, both read as enforceable boundaries; C9 is a best-effort tripwire. | 3/3 (Func F9, Sec S3, orchestrator) | Minor→Major by convergence |
+| **N10** | **C10's cardinality guard is on the pre-derivation set.** `entries.length` is guarded; the `map/filter(Boolean)` list actually compared is not. M49 proves only the outer guard. Fourth vacuity site in this `it`'s lineage. | 1/3 (Test T5) | Major |
+| **N11** | **C10 ignores the COPY destination**, so `COPY packages/schema/package.json packages/matcher/package.json` passes while leaving `packages/schema` with no manifest — the exact silent-`--frozen-lockfile` condition C10 exists for. | 1/3 (Sec S6) | Minor |
+| **N12** | **C10's anchor does not pin `--frozen-lockfile`**, the property its Problem statement rests on. Dropping it lets the image resolve outside the reviewed lockfile with C10 green. | 1/3 (Sec S7) | Minor |
+| **N13** | **Undeclared root subtraction.** C10 quantifies over "every member directory from `pnpm list -r`" (12 entries); the code checks 11. The root manifest is copied by an un-tokenised line and pinned by nothing. The plan treats exactly this shape as load-bearing for D0/C8. | 1/3 (Func F5) | Minor |
+| **N14** | R50: `11 of 11`, "zero dependencies (measured)", and the `pnpm --help` probes carry no command, exit status, or **pnpm version** — and the family pin is version-relative. | 3/3 (Test T9, Func F8, Sec S8) | Minor |
+| **N15** | NF1's cost basis and VE5's per-child stderr list were not extended for C9's twelfth child (`pnpm run --help`) and its whole-repo `readFileSync`. | 1/3 (Test T10) | Minor |
+| **N16** | SC53's paragraph correcting a stale line citation is itself written with stale line citations. | 1/3 (Func F10) | Minor |
+
+Every finding above was independently re-measured by the orchestrator in `node` or from a
+captured exit status before being recorded — per R21, and per this cycle's seven
+measurement-harness false answers.
+
+## Orchestrator verification of the reported findings
+
+| Claim | Re-measured result |
+|---|---|
+| Family pin cannot be non-empty | `non-matching=[]` for `--filter --filter-prod`, `--filterXYZ`, `--filter=x`, `--resume-from`, `--only-filter`, `--FILTER` |
+| Prose exemption leaks through the line | `docs/scripts/build.sh: RUN pnpm --filter … # see notes.md: rationale` → **exempted** |
+| Array form invisible | `RUN ["pnpm","--filter","e2e","build"]`, `CMD [...]`, `command: [...]`, `pnpm '--filter'` → all MISS |
+| YAML folded scalar invisible | `run: >` + `pnpm` + `--filter …` → MISS |
+| Sub-program `-F` false red | `pnpm exec curl -sF`, `pnpm exec grep -F`, `pnpm exec tsx x.ts -Force` → all RED |
+| `README.md` false red | classifier is `/^docs\/.*\.md: /`; `README.md` is the only tracked non-`docs/` markdown |
+| COPY flag intolerance | `COPY --link …`, `COPY --chown=node:node …` → both RED |
+| `FROM --platform` | MISS → reports "no `FROM … AS deps` stage" |
+| COPY destination ignored | `COPY packages/schema/package.json packages/matcher/package.json` → passes for `packages/schema` |
+| `--frozen-lockfile` unpinned | anchor matches with and without the flag |
+| Root subtraction | `pnpm list -r` → 12 entries; after `relative()` the root is `''`; after `filter(Boolean)` → 11 |
+| Cardinality guard site | guard on `entries.length`; the derived list is built after it and guarded by nothing |
+
+## What this round establishes about the method
+
+- **The correlation was causal.** C1–C8 took five plan-review rounds and have survived three
+  code-review rounds with zero Major findings. C9 and C10 skipped plan review and produced
+  eight Major-class defects on their first one — including a vacuous assertion at the centre
+  of C9, the **ninth** in this file, and the first of the nine found by *review* rather than
+  by executing a mutation.
+- **The widening sequence had not terminated; it had been relabelled.** Round 3 replaced C9's
+  needle with a method described as "removing the axes", and the contract made that method the
+  invariant. Two axes were never removed (quoting/JSON-array assembly, host-format line
+  folding) and one new one was introduced (the composed-string classifier). The claim that a
+  future widening would be "reverting the fix" was itself the strongest form of the error the
+  fix was meant to end.
+- **Red-proof is not transitive across a rewrite.** Eleven mutations were carried forward as
+  acceptance for implementations that replaced the ones they were executed against. For C10,
+  every single one.
