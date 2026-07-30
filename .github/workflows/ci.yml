@@ -9,11 +9,25 @@ on:
 # checks -> compose-smoke both build on the same lint/typecheck/unit gate.
 # compose-smoke is "compose-smoke + e2e": existing curl gates remain fast-fail
 # preludes (R44), then the Playwright suite runs against the same stack boot.
+
+# Nothing here writes to the repository or the package registry: the jobs lint,
+# typecheck, run tests and upload a failure-only artifact. Declaring the floor
+# explicitly matters because every job runs `pnpm install --frozen-lockfile`
+# with install scripts permitted for argon2/esbuild/sharp/protobufjs/
+# msgpackr-extract, and actions/checkout otherwise leaves a repo-scoped token in
+# .git/config where any of those scripts could read it.
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No job pushes; leaving the token in .git/config only exposes it
+          # to the install scripts pnpm-workspace.yaml permits.
+          persist-credentials: false
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -29,6 +43,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No job pushes; leaving the token in .git/config only exposes it
+          # to the install scripts pnpm-workspace.yaml permits.
+          persist-credentials: false
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -51,6 +69,10 @@ jobs:
       E2E_DEMO_PASSWORD: demo-admin-password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No job pushes; leaving the token in .git/config only exposes it
+          # to the install scripts pnpm-workspace.yaml permits.
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -137,11 +159,25 @@ jobs:
           fi
 
       - name: Install Playwright chromium browser
-        # --filter e2e, not a bare `pnpm exec`: @playwright/test is declared in
+        # -C e2e, not a bare `pnpm exec`: @playwright/test is declared in
         # e2e/package.json only, so the root has no `playwright` binary to run.
-        # This step had never actually executed — the repository carried no git
-        # remote for three cycles, so CI never ran and the error stayed hidden.
-        run: pnpm --filter e2e exec playwright install --with-deps chromium
+        # -C rather than --filter: `--filter <no-match>` used to exit 0 printing
+        # "No projects matched the filters", so renaming the package would
+        # silently install nothing. `failIfNoMatch: true` in pnpm-workspace.yaml
+        # now makes that exit 1, but `-C` is still the right form — it resolves a
+        # directory and fails loudly (ENOENT) without depending on a setting any
+        # invocation can switch off with `--no-fail-if-no-match`, and it also
+        # covers the half no setting reaches: `--filter <real-pkg> test` with no
+        # `test` script still exits 0 (SC63). Same reason root `test:e2e` uses
+        # `-C e2e test`.
+        # This comment previously said the step "had never actually executed —
+        # the repository carried no git remote for three cycles, so CI never ran".
+        # That is false and was load-bearing for deferring VE5/VE6: `origin` is
+        # configured, CI has run repeatedly, and run 30321653394 (2026-07-28,
+        # compose-smoke) executed this step and the suite it installs for —
+        # 43 passed (23.1s) on the runner. What has never run in CI is the parity
+        # gate, because it lives on an unpushed branch.
+        run: pnpm -C e2e exec playwright install --with-deps chromium
 
       - name: Run the e2e suite
         run: pnpm test:e2e

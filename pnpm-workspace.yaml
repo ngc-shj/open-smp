@@ -3,6 +3,30 @@ packages:
   - packages/*
   - packages/connectors/*
   - e2e
+# `pnpm --filter <no-match> …` exits 0 having done nothing, which turns a
+# package rename into a green no-op — the channel that could have removed the
+# E2E auth suite from CI while every other signal stayed green. This setting
+# makes that exit 1 at the tool.
+#
+# It holds against every NOTATION, which is what a text scan cannot do: quoted,
+# in a JSON exec array, assembled by a YAML folded scalar, held in a shell
+# variable, or inside a wrapper script. Measured: exit 0 -> exit 1 on no match,
+# real matches unaffected.
+#
+# It does NOT hold against an invocation that asks to be exempted. Measured on
+# pnpm 10.34.5, all exit 0 again: `--no-fail-if-no-match`, any unambiguous
+# prefix of it (`--no-fa` upward), `--<prefix>=false`, `--config.<key>=false` in
+# kebab or camel case, the double negation `--no-fail-if-no-match=true`, and a
+# space-separated `--fail-if-no-match false`. So this is a fail-closed DEFAULT,
+# not an enforceable boundary. The only observer of an exemption is the parity
+# gate's selector scan, which denies any mention of this setting in a tracked
+# artifact — derived from the setting's name, because enumerating the spellings
+# was tried twice and was wrong both times.
+#
+# It also does not close the other half of the channel: `--filter <real-pkg>
+# test` with no `test` script still exits 0, because pnpm's `test` shorthand
+# treats a missing script as a no-op. That half is C2 clause 3's (SC63).
+failIfNoMatch: true
 allowBuilds:
   argon2: true
   esbuild: true

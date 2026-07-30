@@ -6,7 +6,8 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "pnpm -w exec vitest run --project unit packages/schema/",
+    "test:integration": "pnpm -w exec vitest run --project integration packages/schema/"
   },
   "dependencies": {
     "@open-smp/api-types": "workspace:*",
