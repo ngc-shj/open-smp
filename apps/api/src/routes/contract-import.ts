@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync';
 import { withTenant } from '@open-smp/schema';
 import {
   BILLING_CYCLES,
+  CONTRACT_IMPORT_MAX_ROWS,
   MAX_UPLOAD_BYTES,
   type BillingCycle,
   type ContractImportResponse,
@@ -13,11 +14,7 @@ import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
 import { normalizeAppKey, APP_KEY_MAX_LENGTH } from '../app-key.js';
 import { recordContractImportAudit } from '../audit.js';
-import {
-  CONTRACT_IMPORT_MAX_ROWS,
-  MAX_IMPORT_ERRORS,
-  MAX_SAAS_APPS_PER_TENANT,
-} from '../import-limits.js';
+import { MAX_IMPORT_ERRORS, MAX_SAAS_APPS_PER_TENANT } from '../import-limits.js';
 
 // Every bound below is derived from a constraint in migration 0006, and the
 // derivation is the contract, not a convenience.
