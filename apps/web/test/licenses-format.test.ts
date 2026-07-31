@@ -4,19 +4,28 @@ import { formatMoney, unassignedTone } from '../src/lib/licenses-format';
 // C4. Both of these have a plausible wrong version that looks like an
 // improvement, which is the only reason they are functions rather than JSX.
 
-describe('formatMoney keeps an exact decimal exact', () => {
-  it('renders the digits the API sent, unparsed', () => {
-    // The failing state: any formatter that takes a number. Number('0.07') *
-    // 100 is 7.000000000000001, and `numeric(14,2)` crosses the wire as a
-    // string precisely so that never happens.
-    expect(formatMoney('1234567890.99', 'JPY')).toBe('1234567890.99 JPY');
-    expect(formatMoney('0.07', 'USD')).toBe('0.07 USD');
+describe('formatMoney keeps the scale the column stored', () => {
+  // WHAT IS ACTUALLY FALSIFIABLE HERE. The first draft of this block asserted
+  // that a value survives "unparsed", using 1234567890.99 and 0.07 — and the
+  // mutation that re-parses through `Number(v).toFixed(2)` PASSED it, because
+  // every value numeric(14,2) can hold round-trips through a double exactly
+  // (14 significant digits fit in one). Those assertions read as coverage of a
+  // property they could not fail on.
+  //
+  // The scale is what a number loses, so the scale is what these pin.
+  it.each([
+    ['a trailing zero', '10.50', '10.50 USD'],
+    ['two trailing zeros', '10.00', '10.00 USD'],
+    ['a zero price, which is not the same as no price', '0.00', '0.00 USD'],
+    ['a tenth', '0.10', '0.10 USD'],
+  ])('keeps %s', (_label, value, expected) => {
+    // `String(Number('10.50'))` is '10.5' — the realistic wrong version, and
+    // what `{Number(item.unitPrice)}` in the cell would render.
+    expect(formatMoney(value, 'USD')).toBe(expected);
   });
 
-  it('keeps a trailing zero the column stored', () => {
-    // `10.5` and `10.50` are the same number and different figures. A round
-    // trip through Number() renders the first.
-    expect(formatMoney('10.50', 'USD')).toBe('10.50 USD');
+  it('renders a figure at the column ceiling without reformatting it', () => {
+    expect(formatMoney('999999999999.99', 'JPY')).toBe('999999999999.99 JPY');
   });
 
   it('renders the figure alone when no currency is recorded', () => {
