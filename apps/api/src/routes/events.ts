@@ -107,11 +107,6 @@ const AUDIT_KINDS: ReadonlySet<string> = new Set(LABEL_AUDIT_KINDS);
 // and says nothing about what it recorded.
 const CONTRACT_KINDS: ReadonlySet<string> = new Set(CONTRACT_AUDIT_KINDS);
 
-// How many created keys an event may report — the same ceiling that bounds the
-// writer, imported rather than restated, so the two cannot disagree about what
-// "all of a tenant's applications" means. It bounds what a payload planted by
-// some other means can make this response carry.
-
 function projectSyncPayload(record: Record<string, unknown>): DiscoveryEventPayload {
   const projected: DiscoveryEventPayload = {};
   if (typeof record.counts === 'object' && record.counts !== null) {
@@ -174,6 +169,10 @@ export function projectContractPayload(record: Record<string, unknown>): Discove
     }
   }
   const keys = record.createdAppKeys;
+  // Bounded by the same ceiling that bounds the writer, imported rather than
+  // restated so the two cannot disagree about how many applications a tenant
+  // can have. It constrains what a payload planted by some other means could
+  // make this response carry.
   if (Array.isArray(keys) && keys.length <= MAX_SAAS_APPS_PER_TENANT) {
     // Every element or none. A partly-projected list would report a smaller
     // set of created applications than the import actually created, which is
