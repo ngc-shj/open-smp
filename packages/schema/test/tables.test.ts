@@ -44,7 +44,7 @@ describe('enum value sets', () => {
 });
 
 describe('tenant-scoped table member set', () => {
-  it('contains exactly the 8 tables from the C1/C10 member-set derivation (tenants excluded)', () => {
+  it('contains exactly the 9 tables from the C1/C10 member-set derivation (tenants excluded)', () => {
     expect(Object.keys(tenantScopedTables).sort()).toEqual(
       [
         'identities',
@@ -55,6 +55,7 @@ describe('tenant-scoped table member set', () => {
         'users',
         'sessions',
         'accountLabels',
+        'saasContracts',
       ].sort(),
     );
   });

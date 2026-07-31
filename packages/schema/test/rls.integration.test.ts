@@ -18,6 +18,7 @@ const MEMBER_TABLES = [
   'users',
   'sessions',
   'account_labels',
+  'saas_contracts',
 ] as const;
 
 // C27 splits the tenant-scoped set by what the app role may do to a row it can
@@ -53,6 +54,14 @@ type SeedIds = {
   userId: string;
   sessionId: string;
   accountLabelId: string;
+  saasContractId: string;
+  // A second application per tenant, existing only so the WITH CHECK arm for
+  // saas_contracts can target a (tenant_id, saas_app_id) pair the seeded
+  // contract does not already occupy. Without it the arm's INSERT collides on
+  // saas_contracts_tenant_id_saas_app_id_key and `rejects.toThrow()` passes on
+  // a 23505 without the policy ever being consulted — measured: the
+  // `WITH CHECK (true)` mutation left the suite green.
+  spareSaasAppId: string;
 };
 
 const seeds = new Map<string, SeedIds>();
@@ -67,6 +76,8 @@ async function seedTenant(tenantId: string): Promise<SeedIds> {
     userId: randomUUID(),
     sessionId: randomUUID(),
     accountLabelId: randomUUID(),
+    saasContractId: randomUUID(),
+    spareSaasAppId: randomUUID(),
   };
 
   await withTenant(appPool, tenantId, async (tx) => {
@@ -74,6 +85,11 @@ async function seedTenant(tenantId: string): Promise<SeedIds> {
       `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_key_version)
        VALUES ($1, $2, 'google-workspace', 'Google Workspace', 1)`,
       [ids.saasAppId, tenantId],
+    );
+    await tx.query(
+      `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_key_version)
+       VALUES ($1, $2, 'spare-app', 'Spare App', 1)`,
+      [ids.spareSaasAppId, tenantId],
     );
     await tx.query(
       `INSERT INTO saas_accounts (id, tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin)
@@ -110,6 +126,11 @@ async function seedTenant(tenantId: string): Promise<SeedIds> {
        VALUES ($1, $2, $3, 'known_shared', $4)`,
       [ids.accountLabelId, tenantId, ids.saasAccountId, ids.userId],
     );
+    await tx.query(
+      `INSERT INTO saas_contracts (id, tenant_id, saas_app_id, plan_name, seats, unit_price, currency, billing_cycle)
+       VALUES ($1, $2, $3, 'Business', 10, '1500.00', 'JPY', 'monthly')`,
+      [ids.saasContractId, tenantId, ids.saasAppId],
+    );
   });
 
   return ids;
@@ -133,6 +154,8 @@ function tableRowId(table: MemberTable, ids: SeedIds): string {
       return ids.sessionId;
     case 'account_labels':
       return ids.accountLabelId;
+    case 'saas_contracts':
+      return ids.saasContractId;
   }
 }
 
@@ -143,6 +166,7 @@ function insertStatementFor(
   rowTenantId: string,
   ids: SeedIds,
   foreignSeed: SeedIds,
+  rowTenantSeed: SeedIds,
 ): { text: string; values: unknown[] } {
   const newId = randomUUID();
   switch (table) {
@@ -200,6 +224,18 @@ function insertStatementFor(
                VALUES ($1, $2, $3, 'known_shared')`,
         values: [newId, rowTenantId, foreignSeed.saasAccountId],
       };
+    case 'saas_contracts':
+      // References the ROW TENANT's application, not the acting tenant's. The
+      // FK is composite over (tenant_id, saas_app_id) and referential-integrity
+      // checks run as the table owner, so they see the foreign row that RLS
+      // hides — which is the point: pointing at the acting tenant's app would
+      // fail on the FK (23503) and the assertion below, a bare rejects.toThrow,
+      // would pass without the policy ever being consulted.
+      return {
+        text: `INSERT INTO saas_contracts (id, tenant_id, saas_app_id, plan_name, seats, unit_price, currency, billing_cycle)
+               VALUES ($1, $2, $3, 'Foreign', 5, '10.00', 'USD', 'monthly')`,
+        values: [newId, rowTenantId, rowTenantSeed.spareSaasAppId],
+      };
   }
 }
 
@@ -237,7 +273,7 @@ afterAll(async () => {
 });
 
 describe('C1 acceptance: RLS enabled on all member tables', () => {
-  it('pg_class.relrowsecurity is true for all 7 member tables', async () => {
+  it('pg_class.relrowsecurity is true for every member table', async () => {
     const { rows } = await adminPool.query<{ relname: string; relrowsecurity: boolean }>(
       `SELECT relname, relrowsecurity
        FROM pg_class
@@ -421,12 +457,123 @@ describe('C1/D7 acceptance: an empty-string (defined but empty) GUC is fail-clos
   });
 });
 
+describe('C1 acceptance: saas_contracts constraints are schema-enforced', () => {
+  // Each case asserts the SQLSTATE *and* the constraint name. SQLSTATE alone
+  // cannot distinguish them: the composite FK and the tenants FK both raise
+  // 23503, and every CHECK raises 23514. Every constraint is named explicitly
+  // in the migration for the same reason — Postgres names a multi-column CHECK
+  // positionally, so an unrelated CHECK added later would move the name.
+  // Every case gets its OWN application, so no case can occupy the
+  // (tenant_id, saas_app_id) pair another one needs. Measured why this matters:
+  // with a shared application, a deny case that a mutation wrongly lets through
+  // takes the unique pair and reds the allow case too — the failure then depends
+  // on execution order rather than on the constraint under test.
+  async function freshApp(tenantId: string): Promise<string> {
+    const appId = randomUUID();
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_key_version)
+         VALUES ($1, $2, $3, 'Case App', 1)`,
+        [appId, tenantId, `case-app-${appId}`],
+      );
+    });
+    return appId;
+  }
+
+  async function insertContract(overrides: Record<string, unknown>): Promise<void> {
+    const row = {
+      id: randomUUID(),
+      tenant_id: tenantA,
+      saas_app_id: overrides.saas_app_id ?? (await freshApp(tenantA)),
+      plan_name: 'Business',
+      seats: 10,
+      unit_price: '1500.00',
+      currency: 'JPY',
+      billing_cycle: 'monthly',
+      term_start: '2026-01-01',
+      term_end: '2026-12-31',
+      note: null,
+      ...overrides,
+    };
+    // Explicit casts: the placeholders are built dynamically, so Postgres has
+    // no literal in the statement to infer a parameter type from.
+    const casts: Record<string, string> = {
+      id: 'uuid',
+      tenant_id: 'uuid',
+      saas_app_id: 'uuid',
+      seats: 'int',
+      unit_price: 'numeric',
+      billing_cycle: 'billing_cycle',
+      term_start: 'date',
+      term_end: 'date',
+    };
+    const cols = Object.keys(row);
+    const text = `INSERT INTO saas_contracts (${cols.join(', ')}) VALUES (${cols
+      .map((col, i) => (casts[col] ? `$${i + 1}::${casts[col]}` : `$${i + 1}`))
+      .join(', ')})`;
+    await withTenant(appPool, tenantA, async (tx) => {
+      await tx.query(text, Object.values(row));
+    });
+  }
+
+  it.each([
+    ['seats below zero', { seats: -1 }, '23514', 'saas_contracts_seats_check'],
+    ['seats above the cap', { seats: 10_000_001 }, '23514', 'saas_contracts_seats_check'],
+    // Postgres defines NaN = NaN as TRUE for numeric and NaN >= 0 as TRUE, so
+    // `unit_price = unit_price` does NOT exclude it — measured, that form stores
+    // NaN. The constraint uses <> 'NaN'::numeric instead.
+    ['unit_price NaN', { unit_price: 'NaN' }, '23514', 'saas_contracts_unit_price_check'],
+    ['unit_price negative', { unit_price: '-1.00' }, '23514', 'saas_contracts_unit_price_check'],
+    ['term_end before term_start', { term_start: '2026-12-31', term_end: '2026-01-01' }, '23514', 'saas_contracts_term_order_check'],
+    ['currency of four letters', { currency: 'USDX' }, '23514', 'saas_contracts_currency_check'],
+    ['currency lowercase', { currency: 'jpy' }, '23514', 'saas_contracts_currency_check'],
+    ['plan_name over 200 chars', { plan_name: 'x'.repeat(201) }, '23514', 'saas_contracts_plan_name_check'],
+    ['note over 500 chars', { note: 'x'.repeat(501) }, '23514', 'saas_contracts_note_check'],
+  ])('rejects %s', async (_label, overrides, code, constraint) => {
+    await expect(insertContract(overrides)).rejects.toMatchObject({ code, constraint });
+  });
+
+  it("rejects a contract referencing another tenant's application", async () => {
+    const foreignAppId = await freshApp(tenantB);
+    await expect(insertContract({ saas_app_id: foreignAppId })).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'saas_contracts_tenant_id_saas_app_id_fkey',
+    });
+  });
+
+  it('rejects a second contract for the same application', async () => {
+    const appId = await freshApp(tenantA);
+    await insertContract({ saas_app_id: appId });
+    await expect(insertContract({ saas_app_id: appId })).rejects.toMatchObject({
+      code: '23505',
+      constraint: 'saas_contracts_tenant_id_saas_app_id_key',
+    });
+  });
+
+  // The allow side (RT10). Without it every CHECK above is satisfied by
+  // CHECK (false), and the deny cases would still pass.
+  it('accepts a contract at the boundary values', async () => {
+    await expect(
+      insertContract({
+        seats: 10_000_000,
+        unit_price: '999999999999.99',
+        currency: 'USD',
+        term_start: '2026-06-01',
+        term_end: '2026-06-01',
+        plan_name: 'x'.repeat(200),
+        note: 'x'.repeat(500),
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe('C1 acceptance: WITH CHECK rejects a foreign tenant_id on INSERT', () => {
   it.each(MEMBER_TABLES)(
     '%s: INSERT with tenant_id = tenant B under tenant A GUC is rejected',
     async (table) => {
       const aIds = seeds.get(tenantA)!;
-      const stmt = insertStatementFor(table, tenantA, tenantB, aIds, aIds);
+      const bIds = seeds.get(tenantB)!;
+      const stmt = insertStatementFor(table, tenantA, tenantB, aIds, aIds, bIds);
 
       await expect(
         withTenant(appPool, tenantA, async (tx: PoolClient) => {
