@@ -132,8 +132,10 @@ jobs:
           images=$(docker compose config --format json | jq -r '.services | to_entries[] | select(.value.build) | .value.image // ("open-smp-" + .key)' | sort -u)
           [ -n "$images" ] || { echo "no built images found in the compose config" >&2; exit 1; }
           fail=0
+          checked=0
           for image in $images; do
             for dir in $members; do
+              checked=$((checked + 1))
               if ! docker run --rm --entrypoint sh "$image" -c "test -f /repo/$dir/package.json"; then
                 echo "$image is missing /repo/$dir/package.json" >&2
                 fail=1
@@ -145,6 +147,15 @@ jobs:
               fail=1
             fi
           done
+          # Silence is not the same as coverage. `test -f` and `find` print
+          # nothing on success, so a loop that never ran and a loop that passed
+          # every check were indistinguishable in the log — the shape this cycle
+          # recorded a dozen times. The count is printed and then asserted against
+          # the two derived sets, so a step that checked nothing reds.
+          expected=$(( $(echo "$images" | wc -l) * $(echo "$members" | wc -l) ))
+          echo "checked $checked image/manifest pairs across $(echo "$images" | wc -l | tr -d ' ') images and $(echo "$members" | wc -l | tr -d ' ') members"
+          [ "$checked" -eq "$expected" ] || { echo "checked $checked pairs, expected $expected" >&2; exit 1; }
+          [ "$checked" -gt 0 ] || { echo "no image/manifest pair was checked" >&2; exit 1; }
           exit "$fail"
 
       - name: Wait for API health endpoint
