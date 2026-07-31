@@ -1,7 +1,14 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { SAAS_APP_KEY } from '../fixtures/seed-facts.js';
+import {
+  CONTRACT_ONLY_APP_KEY,
+  CONTRACT_ONLY_SEATS,
+  SAAS_APP_KEY,
+  SEEDED_CONTRACT_CURRENCY,
+  SEEDED_CONTRACT_SEATS,
+  SEEDED_CONTRACT_UNIT_PRICE,
+} from '../fixtures/seed-facts.js';
 
 // C4 / C5 acceptance against the compose stack.
 //
@@ -56,7 +63,7 @@ test.describe('licences', () => {
     await removeContractApp(request);
   });
 
-  test('reports the seeded application without inventing contract figures', async ({ page }) => {
+  test('opens on the over-allocation the seeded contract creates', async ({ page }) => {
     await page.goto('/licenses');
 
     const row = page.getByTestId(`license-row-${SAAS_APP_KEY}`);
@@ -64,23 +71,58 @@ test.describe('licences', () => {
 
     // Four seeded accounts, all active, all written in ONE transaction — so
     // they share a `last_synced_at` and the sync watermark admits all four.
-    // Asserted on the named cell, not on the row's text: several cells here
-    // render the same digits, and a row-wide match would pass on any of them.
+    // Asserted on the named cell, not on the row's text: several cells render
+    // the same digits, and a row-wide match would pass on any of them.
     await expect(row.getByTestId('assigned')).toHaveText('4');
+    await expect(row.getByTestId('purchased')).toHaveText(String(SEEDED_CONTRACT_SEATS));
 
-    // One ghost (left the company) and one orphan (nobody owns it) are
-    // reclaimable. The ambiguous account is NOT — the matcher could not decide
-    // whose it is, and reclaiming it is the wrong action — so it appears under
-    // needs-review instead.
+    // THE figure. Three purchased against four assigned, unclamped and
+    // labelled — this is what SCL14 recorded as unreachable in E2E, and what
+    // seeding a CONTRACT rather than accounts made reachable without moving a
+    // single account-scoped assertion.
+    await expect(row.getByTestId('unassigned')).toHaveText('-1 (over-allocated)');
+
+    // And it is actionable from the same row: one ghost (left the company) and
+    // one orphan (nobody owns it) are reclaimable, which is more than the
+    // shortfall. The ambiguous account is NOT reclaimable — the matcher could
+    // not decide whose it is — so it appears under needs-review instead.
     await expect(row.getByTestId('reclaimable')).toContainText('2');
     await expect(row.getByTestId('reclaimable')).toContainText('(1 left, 1 unknown)');
     await expect(row.getByTestId('needs-review')).toHaveText('1');
 
-    // No contract, so no figures — an em dash in each, never a zero. A zero
-    // here would report a licence nobody bought and spare seats nobody has.
-    for (const cell of ['purchased', 'unassigned', 'unit-price', 'reclaimable-value']) {
-      await expect(row.getByTestId(cell), `${cell} must not invent a figure`).toHaveText('—');
-    }
+    // 12.00 × 2 reclaimable seats, computed in SQL and rendered as the digits
+    // pg returned. `24` or `24.0` would mean it went through a number.
+    await expect(row.getByTestId('unit-price')).toContainText(
+      `${SEEDED_CONTRACT_UNIT_PRICE} ${SEEDED_CONTRACT_CURRENCY}`,
+    );
+    await expect(row.getByTestId('reclaimable-value')).toContainText(
+      `24.00 ${SEEDED_CONTRACT_CURRENCY}`,
+    );
+  });
+
+  test('shows a contract for an application no connector syncs', async ({ page }) => {
+    await page.goto('/licenses');
+
+    // FR1's demo case, and the one an operator reaches for first: a tool
+    // finance pays for that nothing has ever synced.
+    const row = page.getByTestId(`license-row-${CONTRACT_ONLY_APP_KEY}`);
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId('purchased')).toHaveText(String(CONTRACT_ONLY_SEATS));
+    await expect(row.getByTestId('assigned')).toHaveText('0');
+    await expect(row.getByTestId('match-state')).toContainText('No accounts');
+    await expect(row.getByTestId('match-state')).toContainText('(no connector)');
+
+    // Every one of its 25 seats is unassigned, and that is NOT the same claim
+    // as the row above — there the product knows who holds the seats. A zero
+    // here would be the invented figure.
+    await expect(row.getByTestId('unassigned')).toHaveText(String(CONTRACT_ONLY_SEATS));
+
+    // ANNUAL where the seeded workspace is monthly. The period travels with
+    // the figure on both rows precisely so nothing sums them (SCL4).
+    await expect(row.getByTestId('unit-price')).toContainText('/ annual');
+    await expect(page.getByTestId(`license-row-${SAAS_APP_KEY}`).getByTestId('unit-price')).toContainText(
+      '/ monthly',
+    );
   });
 
   test('an upload creates the application, applies the contract, and reports the rejected row', async ({
