@@ -14,6 +14,7 @@ import { registerAccountLabelsRoute } from './routes/account-labels.js';
 import { registerAccountLabelsBulkRoute } from './routes/account-labels-bulk.js';
 import { registerIdentitiesRoute } from './routes/identities.js';
 import { registerEventsRoute } from './routes/events.js';
+import { registerLicensesRoute } from './routes/licenses.js';
 
 export type RegisteredRoute = { method: string; url: string; hasRateLimit: boolean };
 
@@ -80,6 +81,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         registerLogoutRoute(authenticated, deps);
         registerHrImportRoute(authenticated, deps);
         registerSaasAppsRoute(authenticated, deps);
+        registerLicensesRoute(authenticated, deps);
         registerSyncMatchRoutes(authenticated, deps);
         registerAccountsRoute(authenticated, deps);
         registerAccountLabelsRoute(authenticated, deps);

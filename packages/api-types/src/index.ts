@@ -33,6 +33,36 @@ export const BILLING_CYCLES = Object.freeze(['monthly', 'annual'] as const);
 
 export type BillingCycle = (typeof BILLING_CYCLES)[number];
 
+/** How much of an application's account set the matcher has decided. */
+export type LicenseMatchState = 'no-accounts' | 'not-matched' | 'partially-matched' | 'matched';
+
+export type LicenseRollupItem = {
+  appKey: string;
+  appName: string;
+  /** Derived from credentials presence, not from connector support. */
+  hasConnector: boolean;
+  matchState: LicenseMatchState;
+  planName: string | null;
+  /** numeric(14,2) as the string pg returns; a JSON number would round it. */
+  unitPrice: string | null;
+  currency: string | null;
+  billingCycle: BillingCycle | null;
+  termStart: string | null;
+  termEnd: string | null;
+  purchased: number | null;
+  assigned: number;
+  /** purchased - assigned; negative means over-allocation and is never clamped. */
+  unassigned: number | null;
+  needsReview: number;
+  unlinked: number;
+  reclaimable: { ghost: number; orphan: number; total: number };
+  reclaimableValue: string | null;
+  /** The period reclaimableValue is expressed in; two rows with different periods are not comparable. */
+  reclaimableValuePeriod: BillingCycle | null;
+};
+
+export type LicenseListResponse = { items: LicenseRollupItem[] };
+
 export type AccountLink = {
   status: string;
   confidence: number;
