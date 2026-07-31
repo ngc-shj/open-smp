@@ -1,26 +1,24 @@
-// Bounds shared by the CSV import routes. Named for their SUBJECT, not for
-// their role: `MAX_ROWS` held 20 000 for the HR import, and the contract import
-// needs a different value for a different reason, so one name would have to
-// hold two values — and whichever route imported the other's would be wrong
-// silently, because both are plausible integers.
-
-/**
- * An HR export is one row per employee. The 10 MB byte cap does not bound the
- * row count (minimal rows pack ~150-250k into 10 MB) and the transaction issues
- * one INSERT per row, so an unbounded file holds a shared-pool connection for
- * minutes (CS2).
- */
-export const HR_IMPORT_MAX_ROWS = 20_000;
-
-/**
- * A contract file is one row per application, and SCL1 makes that one row per
- * application in total — so the ceiling below, not the employee count, is the
- * natural order of magnitude. Set above MAX_SAAS_APPS_PER_TENANT rather than
- * equal to it: rows for applications that already exist are legitimate on every
- * re-import, and a file that is exactly the catalog plus a few corrections must
- * not be refused for its length.
- */
-export const CONTRACT_IMPORT_MAX_ROWS = 2_000;
+// Bounds for the CSV import routes that no browser code needs. Named for their
+// SUBJECT, not for their role: `MAX_ROWS` held 20 000 for the HR import, and
+// the contract import needs a different value for a different reason, so one
+// name would have to hold two values — and whichever route imported the other's
+// would be wrong silently, because both are plausible integers.
+//
+// The two ROW caps are not here. They cross into apps/web (@open-smp/api-types)
+// because each route interpolates its cap into an over-limit message and both
+// upload forms key their copy off that exact string:
+//
+//   HR_IMPORT_MAX_ROWS       20 000 — one row per employee. The 10 MB byte cap
+//                            does not bound the row count (minimal rows pack
+//                            ~150-250k into 10 MB) and the transaction issues
+//                            one INSERT per row, so an unbounded file holds a
+//                            shared-pool connection for minutes (CS2).
+//   CONTRACT_IMPORT_MAX_ROWS  2 000 — one row per application, and SCL1 makes
+//                            that one row per application in total, so the
+//                            ceiling below is the order of magnitude. Set above
+//                            it rather than equal: a file that is the whole
+//                            catalog plus corrections must not be refused for
+//                            its length.
 
 /**
  * The per-tenant application-catalog ceiling. It exists because the contract

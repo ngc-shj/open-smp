@@ -8,6 +8,9 @@ export function NavBar() {
         <Link href="/accounts" className="text-sm text-neutral-600 hover:text-neutral-900">
           Accounts
         </Link>
+        <Link href="/licenses" className="text-sm text-neutral-600 hover:text-neutral-900">
+          Licences
+        </Link>
         <Link href="/import" className="text-sm text-neutral-600 hover:text-neutral-900">
           Import
         </Link>

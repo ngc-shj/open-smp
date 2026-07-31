@@ -1,0 +1,3 @@
+app_key,app_name,plan_name,seats,unit_price,currency,billing_cycle,term_start,term_end,note
+e2e-contract-app,E2E Contract App,Business,25,9.99,USD,monthly,2026-01-01,2026-12-31,e2e fixture
+,Missing Key,Starter,5,1.00,USD,monthly,,,rejected on purpose

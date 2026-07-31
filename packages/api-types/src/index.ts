@@ -271,6 +271,18 @@ export type ContractImportResponse = {
 // E2E spec and by the manual-test doc, so deriving them is a separate change.
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+// The row caps cross for the same reason the byte cap does, and for one more:
+// each route's over-limit error message INTERPOLATES its cap, and the upload
+// forms key their friendlier copy off that exact string. A hand-written key
+// stops matching the moment a cap moves, and the page falls back to generic
+// copy — a silent degradation, in the one place that explains a refusal.
+//
+// Named for their subjects. `MAX_SAAS_APPS_PER_TENANT` and `MAX_IMPORT_ERRORS`
+// stay server-side in apps/api: nothing in the browser bounds either.
+export const HR_IMPORT_MAX_ROWS = 20_000;
+
+export const CONTRACT_IMPORT_MAX_ROWS = 2_000;
+
 export type SaasAppListItem = { id: string; key: string; displayName: string };
 
 export type SaasAppListResponse = { items: SaasAppListItem[] };

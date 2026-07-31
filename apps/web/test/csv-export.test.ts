@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildAccountsCsv, neutralizeCell } from '../src/lib/csv-export';
-import type { AccountListItem } from '../src/lib/api-types';
+import { buildAccountsCsv, buildLicensesCsv, neutralizeCell } from '../src/lib/csv-export';
+import type { AccountListItem, LicenseRollupItem } from '../src/lib/api-types';
 
 describe('neutralizeCell', () => {
   const dangerousChars = ['=', '+', '-', '@', '\t', '\r'];
@@ -248,5 +248,107 @@ describe('C24: newline stripping keeps one record per line', () => {
     const csv = buildAccountsCsv([itemWith({ displayName: '\n=cmd|calc' })]);
 
     expect(csv).toContain(`"' =cmd|calc"`);
+  });
+});
+
+describe('buildLicensesCsv', () => {
+  function licenseWith(overrides: Partial<LicenseRollupItem> = {}): LicenseRollupItem {
+    return {
+      appKey: 'acme',
+      appName: 'Acme',
+      hasConnector: false,
+      matchState: 'matched',
+      planName: 'Business',
+      unitPrice: '12.50',
+      currency: 'USD',
+      billingCycle: 'monthly',
+      termStart: '2025-01-01',
+      termEnd: '2025-12-31',
+      purchased: 10,
+      assigned: 8,
+      unassigned: 2,
+      needsReview: 0,
+      unlinked: 0,
+      reclaimable: { ghost: 1, orphan: 0, total: 1 },
+      reclaimableValue: '12.50',
+      reclaimableValuePeriod: 'monthly',
+      ...overrides,
+    };
+  }
+
+  // C5's whole reason for existing. `-` is in DANGEROUS_FIRST_CHARS, so the
+  // sanitizing path turns -2 into '-2 — text, in a spreadsheet, for the one
+  // number this feature exists to make loud. Every zero-waste row exported as a
+  // number and every over-allocated one did not.
+  it('exports an over-allocation as a number, not as apostrophe-prefixed text', () => {
+    const csv = buildLicensesCsv([licenseWith({ purchased: 10, assigned: 12, unassigned: -2 })]);
+
+    expect(csv).toContain('"-2"');
+    expect(csv).not.toContain(`"'-2"`);
+  });
+
+  // The paired direction. An exemption wide enough to pass the case above by
+  // skipping neutralization for the whole row would pass it, so the boundary is
+  // asserted from the other side too (RT10).
+  it('still neutralizes an operator-authored name that looks like a formula', () => {
+    const csv = buildLicensesCsv([licenseWith({ appName: '=cmd|calc' })]);
+
+    expect(csv).toContain(`"'=cmd|calc"`);
+  });
+
+  it('carries the money columns as the exact strings pg returned', () => {
+    // Not through Number(): 1234567890.99 survives a double, 0.1 + 0.2 does
+    // not, and nothing distinguishes them by reading the code.
+    const csv = buildLicensesCsv([
+      licenseWith({ unitPrice: '1234567890.99', reclaimableValue: '10.50' }),
+    ]);
+
+    expect(csv).toContain('"1234567890.99"');
+    expect(csv).toContain('"10.50"');
+  });
+
+  /** The cell under a named column, located through the header rather than by index. */
+  function cellFor(csv: string, column: string): string {
+    const [header, record] = csv.split('\r\n');
+    const index = header!.split(',').indexOf(`"${column}"`);
+    expect(index, `no ${column} column in the header`).toBeGreaterThanOrEqual(0);
+    return record!.split(',')[index]!;
+  }
+
+  it.each(['purchased', 'unassigned', 'unitPrice', 'reclaimableValue'])(
+    'exports an absent %s as empty rather than as zero',
+    (column) => {
+      // `null` means "this application has no contract"; exporting 0 invents a
+      // purchase of no seats, and the two sum differently in the spreadsheet
+      // this export exists to feed.
+      const absent = buildLicensesCsv([
+        licenseWith({ purchased: null, unassigned: null, unitPrice: null, reclaimableValue: null }),
+      ]);
+      const zero = buildLicensesCsv([
+        licenseWith({ purchased: 0, unassigned: 0, unitPrice: '0.00', reclaimableValue: '0.00' }),
+      ]);
+
+      expect(cellFor(absent, column)).toBe('""');
+      expect(cellFor(absent, column)).not.toBe(cellFor(zero, column));
+    },
+  );
+
+  it('carries the period beside the value, so two cycles are never summed silently', () => {
+    // SCL4: a monthly figure and an annual one are not comparable, and a column
+    // without the period is an invitation to add them.
+    const csv = buildLicensesCsv([licenseWith({ reclaimableValuePeriod: 'annual' })]);
+
+    expect(csv.split('\r\n')[0]).toContain('reclaimableValuePeriod');
+    expect(csv).toContain('"annual"');
+  });
+
+  it('emits a header and one record per item', () => {
+    const csv = buildLicensesCsv([licenseWith(), licenseWith({ appKey: 'globex' })]);
+
+    expect(csv.split('\r\n')).toHaveLength(3);
+  });
+
+  it('emits the header alone for no items', () => {
+    expect(buildLicensesCsv([]).split('\r\n')).toHaveLength(1);
   });
 });

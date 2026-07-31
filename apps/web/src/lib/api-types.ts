@@ -22,6 +22,8 @@
 // importing @open-smp/api-types directly.
 export {
   ACCOUNT_LABEL_KINDS,
+  CONTRACT_IMPORT_MAX_ROWS,
+  HR_IMPORT_MAX_ROWS,
   LINK_STATUSES,
   MAX_UPLOAD_BYTES,
   isLabelAuditKind,
@@ -29,6 +31,11 @@ export {
 
 export type {
   LinkStatus,
+  BillingCycle,
+  LicenseMatchState,
+  LicenseRollupItem,
+  LicenseListResponse,
+  ContractImportResponse,
   AccountLink,
   AccountLabelKind,
   AccountLabel,

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
-import { MAX_UPLOAD_BYTES, type HrImportResponse } from '@/lib/api-types';
+import { HR_IMPORT_MAX_ROWS, MAX_UPLOAD_BYTES, type HrImportResponse } from '@/lib/api-types';
 
 // Checked client-side because an over-limit upload aborted mid-stream by the
 // server does not reliably deliver its 400 through the Next proxy. The value is
@@ -18,7 +18,10 @@ const UPLOAD_ERROR_MESSAGES: Record<string, string> = {
   'file is required': 'Please choose a CSV file to upload.',
   'file must be UTF-8 encoded': 'This file is not UTF-8 encoded. Save it as UTF-8 and try again.',
   'malformed CSV': 'This file could not be parsed as CSV.',
-  'too many rows (max 20000)': 'This file has too many rows (max 20,000).',
+  // Keyed off the constant the route interpolates rather than typed out: a
+  // hand-written key stops matching the moment the cap moves, and this map
+  // silently falls through to the generic copy.
+  [`too many rows (max ${HR_IMPORT_MAX_ROWS})`]: `This file has too many rows (max ${HR_IMPORT_MAX_ROWS.toLocaleString('en-US')}).`,
   'file exceeds 10MB limit': 'This file is too large (max 10MB).',
 };
 
