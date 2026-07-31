@@ -590,3 +590,74 @@ other a masking between two self-test cells.
 | VE4 | `verified-local` + `verified-CI` | lint / typecheck / test:unit are three separate steps in `checks`, all pass. |
 | **VE5** | **`verified-CI` — discharged** | `checks` on **Node 22.23.1**: 30 files / 276 tests, zero assertion failures. `assertChildOk` demands byte-exact empty stderr from every child, so the green run *is* the measurement. Corroborated in-image beforehand with a positive control proving the zero was not vacuous. The sanctioned fallback is not needed. |
 | **VE6** | **`verified-CI` — discharged** | The gate's Playwright `--list` ran inside `checks`, which installs no browser, and passed. The browser-install step ran in `compose-smoke` in its shipped `-C` form. |
+
+---
+
+# Code Review: package-test-script-parity — Round 7
+Date: 2026-07-31
+Review round: 7
+
+## Changes from Previous Round
+
+Round 6 changed the method and it held, so round 7 kept it and pushed the question one
+generalisation further. Three disjoint missions: **what are all the ways a runner can be told to
+run less than it appears to** (both runners, by execution); **audit round 6's own fix**; and **what
+decides CI coverage that no gate reads**.
+
+**21 findings, four Critical.** The branch was also pushed and PR #9 opened mid-round, which
+discharged VE5 and VE6 on the runner.
+
+## Convergence summary
+
+| # | Finding | Mission | Severity |
+|---|---|---|---|
+| **S1** | **`globalSetup` calling `process.exit(0)` removes 100 % of e2e coverage.** `playwright test --list` never executes `globalSetup`, and the gate's only Playwright child is a listing. Verified: listing byte-identical (43 specs, 0 annotations, both canaries, `forbidOnly` true), parity gate 12/12, `pnpm -C e2e test` exit 0 with **zero specs run**. Worse than round 6's `test.only`, which left one running. The file already has a `StackNotRunningError` early-return path, so "exit gracefully when the stack is down" is the natural next edit and it is the one silent spelling. | A | **Critical** |
+| **S2** | **`allInstalls` reuses an anchored matcher**, so five working install spellings walk past the uniqueness pin: `apt-get update && pnpm install`, `cd /repo && pnpm install`, **`pnpm i`** (a documented alias), `node …/pnpm/bin/pnpm.cjs install`, and the JSON exec form. The same commit had just derived `isPnpm` as a filename family for C9 and anchored on a literal one level down. | B | **Critical** |
+| **S3** | **The compose `target:` regex requires end-of-line.** `target: base # comment` is dropped from the collected set entirely — the service goes unchecked while docker resolves it to a stage with no install. `target: "api"` captures the quotes and a long-syntax volume's `target:` is collected as a build target: two false reds in the same line. | B | **Critical** |
+| **S4** | **The "independent" exclusion predicate shares its population.** Independent on the exclusion axis, `X \ X` on the population axis — and the `scanned.length > 0` guard that partly covered it was deleted in the same edit. A pathspec on `git ls-files` drops `ci.yml` and `docker-compose.yml` from the scan with both sides agreeing. Third consecutive appearance of `X \ X` in that block. | B | **Critical** |
+| **S5** | **The vitest half observes no skip form at all.** `--filesOnly` is skip-invariant. `describe.skip` on `workflow-pins.test.ts` — the repository's only pin on third-party action SHAs — leaves it claimed, assigned, and the gate 12/12 green, with `pnpm test:unit` exit 0 at `251 passed \| 25 skipped`. SC57's stated reason ("not observable from a listing") is **measurably false**: the same subcommand without `--filesOnly` omits the file. | A | Major |
+| **S6** | **`e2e`'s test script value is unpinned.** `--grep` with nine titles keeps all 9 files and both canaries and cuts 43 specs to 11, gate green. | C | Major |
+| **S7** | **`pnpm typecheck`'s file set is read by nothing.** `apps/api` with `include: ["src"]` → exit 0, planted `TS2322` gone. SC58's asymmetry on the only type gate CI runs, recorded nowhere. | C | Major |
+| **S8** | **SC58's own trigger fired in this cycle and the pin was deferred again.** Its text: "the next cycle touching root tooling — closed there with the three-line pin, not deferred again." This cycle rewrote root `package.json`, `pnpm-workspace.yaml` and `vitest.config.ts`. | C | Major |
+| **S9** | **The seed gate's assertion bodies are unguarded.** `seed-gate-agreement` reconciles the *calls*; changing a comparison to `if false` leaves it 13/13 green while the CI step can no longer fail. | C | Major |
+| **S10** | **SC56's route list omits two cheaper routes** — narrowing `on:` and `paths-ignore` — neither touching a job or a step. | C | Major |
+| **S11** | **Required status checks are 403 on this repository.** `branches/main/protection` and `rulesets` both return `Upgrade to GitHub Pro or make this repository public`. SC56 deferred the out-of-band observer as a cost decision; it is structurally unavailable. **A red check does not block a merge here.** | C | Major |
+| S12–S21 | `rel()` cells built from `workdir` so they pass for every value including the `/nonsense/` mutant they name; `stageOf`/`parentOf`/`inherits`/the 32-hop bound with no self-test; a comment crediting a `--forbid-only` flag the same commit deliberately does not pass; the `isPnpm` anchor cell passing under all four anchor variants; SC57's covered/uncovered boundary mis-stated; vitest `-t`/`--shard` invisible to `--filesOnly`; `allowOnly` environment-derived and unpinned; the `ci.yml` history comment false for the third round running. | all | Minor |
+
+## What was done — the tools adjudicate
+
+The user's decision was to stop widening text scans and move each verdict to whatever can actually
+decide it. Concretely:
+
+- **`globalSetup`/runtime-skip → the run's own report.** Playwright gains a JSON reporter; a CI step
+  compares the *run's* `stats` against the *listing's* spec count and requires `skipped == 0`.
+  Red-proven: with `process.exit(0)` planted, `pnpm test:e2e` still exits 0 and the step exits 1
+  naming the absent report.
+- **vitest whole-file skips → `vitest list --json`.** Compared per tier against `--filesOnly`;
+  passes today, reds on `describe.skip`.
+- **The Dockerfile stage graph → the built images.** The compose-ancestry text parse is **deleted**,
+  not patched, and `compose-smoke` gains a step asserting every built image carries every member
+  manifest from `pnpm list -r` with no dangling workspace symlink. It found a real defect on its
+  first local run — a stale `open-smp-seed` image missing `e2e/package.json`, which text cannot see
+  at all.
+- **The install uniqueness pin → tokenised**, basename-compared, over a subcommand set including the
+  `i` alias.
+- **The scan population → two independent `git ls-files` spawns plus a floor**, and four named
+  artifacts asserted to be in the population.
+- **`typecheck` coverage → `tsc --listFilesOnly` in CI** (SC66), because the resolver's answer costs
+  33 s wall and does not fit the unit tier's budget. The first attempt pattern-matched `include`
+  globs and redded on `apps/web`, whose `**/*.ts` covers `test/` correctly — the contract's own
+  error, committed while writing the assertion against it.
+- **`lint` and `test:e2e` → pinned**, closing SC58 two cycles after its trigger.
+
+## Recurring Issue Check
+
+| Pattern | Status |
+|---|---|
+| "The listing is not the command that runs" | **Third and fourth occurrence** (globalSetup, vitest skips). Now stated as a rule rather than three SC entries: *an assertion whose subject is a listing can only see what collection sees.* |
+| An enumeration written where a derivation belongs | **Recurred** (install spellings, compose `target:`). Nineteenth and twentieth. |
+| A check that compares something to a copy of itself | **Recurred** — `X \ X` on the population axis, third consecutive appearance in that block. |
+| Residue whose stated justification is false | **Recurred** — SC57's "not observable from a listing", the same defect SC60 had. |
+| A derivation with no self-test | **Recurred** — `rel()`, `stageOf`/`parentOf`/`inherits`. |
+| Judging a glob by its spelling instead of asking the resolver | **New, and self-inflicted** — in the assertion written against exactly that error. |
+| The Critical is inside the previous round's fix | **Seventh consecutive round.** |

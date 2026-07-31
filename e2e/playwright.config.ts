@@ -16,7 +16,13 @@ export default defineConfig({
   // (match runs, account_labels). One worker sidesteps intra-suite races.
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  reporter: [['html', { open: 'never' }]],
+  // The JSON reporter is what makes a RUN auditable from outside. `--list` never
+  // executes `globalSetup`, so a `process.exit(0)` there — the natural next edit
+  // against this file's own StackNotRunningError path — leaves the listing
+  // byte-identical (43 specs, 0 annotations, both canaries) and the parity gate
+  // 12/12 green while `pnpm -C e2e test` exits 0 having run nothing. Measured.
+  // Under that edit this file is never written at all, which is the signal.
+  reporter: [['html', { open: 'never' }], ['json', { outputFile: 'test-results/report.json' }]],
   globalSetup: './global-setup.ts',
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:3000',
