@@ -2,6 +2,18 @@
 
 Cycle 7. Branch: `feature/saas-license-cost`.
 
+Revision 5 — **C4 and C5 built and executed.** The reconciliation now has a
+reader, and two of this revision's findings came from that alone: a shape
+consumed by nobody is a shape nobody has validated.
+
+It also corrects revision 4. That revision claimed C4's placement decision
+"either answer changes `page-spec-membership.test.ts`'s member set". Executed:
+the gate keys on the FIRST path segment of a page directory, so a second form on
+`/import` adds no member at all, and even `/import/contracts` would be covered by
+`import.spec.ts`'s existing `goto('/import')`. Only a new top-level route forces
+a spec — which `/licenses` does, regardless of where the upload lives. The
+decision had to be made on other grounds, and was.
+
 Revision 4 — **C2 built and executed.** Revision 3 recorded, per unbuilt
 contract, the findings it had to answer; C2's are answered below, in the same
 form as C1's and C3's — what the execution decided, not what was argued for.
@@ -22,8 +34,8 @@ Revision 4 kept the method and skipped the prose round entirely: the contract
 terms were settled, so the next thing that could falsify anything was an
 artifact, and 15 mutations were executed against the result.
 
-**Shipped: C1, C3 (first PR) and C2 (this one).** C4, C5 and C6 are not
-implemented, and each carries the findings it must answer when it is.
+**Shipped: C1 and C3 (first PR), C2 (second), C4 and C5 (this one).** C6 is not
+implemented and carries the findings it must answer when it is.
 
 ## Project context
 
@@ -44,7 +56,8 @@ implemented, and each carries the findings it must answer when it is.
     new spec inherits the shared session and adds zero login POSTs. Any future
     spec here must not override it.
 - **Per-contract classification**: C1, C2 and C3 `verifiable-local` (integration,
-  Testcontainers) — all three executed. C4 and C5 unbuilt; C6 would be
+  Testcontainers) — all three executed. C4 and C5 `verifiable-CI` (Playwright
+  against the compose stack) — both executed. C6 would be
   `verifiable-CI`.
 
 ## Objective
@@ -98,12 +111,15 @@ Executed against PostgreSQL 16.13 during the review rounds and the build.
   valid row in the same file survived.
 - **FR3** — per application, the product reports purchased, assigned and
   reclaimable seats with a reason for each, every reason derived from evidence the
-  product holds. **Built (C3), executed.**
+  product holds. **Built (C3), executed** — and since C4, reported to a person
+  rather than to a test.
 - **FR4** — money figures are exact, and figures in different currencies or
-  billing cycles are never combined. **Built (C1, C3), executed.**
+  billing cycles are never combined. **Built (C1, C3, C4, C5), executed** — the
+  page and the export both carry the billing period beside the figure, and
+  neither ever holds a money value as a number.
 - **NF1** — no new external integration, no new OAuth scope, no write to any
   connected system, and **no change or extension to the connector interface**.
-  Held: nothing in C1 or C3 touches `packages/connectors`.
+  Held: nothing in C1–C5 touches `packages/connectors`.
 - **NF2** — the new table is enrolled in the repository's existing RLS sweep
   rather than getting a bespoke test. **Built, executed.**
 
@@ -261,21 +277,49 @@ catalog and the contract table.* Not a boundary on WHO may import — no role
 model distinguishes that, and every authenticated session has full tenant write
 (unchanged, still recorded under Risks).
 
-### C4 / C5 — `/licenses` page and CSV export — NOT BUILT
+### C4 / C5 — `/licenses` page and CSV export — BUILT (`apps/web/src/app/licenses/`)
 
-- The response shape exists and is consumed by nothing yet.
-- **The upload has no UI either.** `POST /api/contract-import` is reachable only
-  by an HTTP client, and the existing `/import` page is bound to the HR shape —
-  its error-message map, its response type and its E2E spec are all `hr-import`'s.
-  C4 must decide whether the contract upload is a second form on that page or its
-  own, and either answer changes `page-spec-membership.test.ts`'s member set.
-- **The CSV export needs a numeric-typed path**, not an ordering rule:
-  `neutralizeCell` inspects position 0 and `'-'` is in its dangerous set, so the
-  over-allocation figure — the one number this feature exists to make loud —
-  exports as text while every zero-waste row exports as a number.
-- The `new Blob(` boundary is `CsvExportButton.tsx`, not `csv-export.ts`; derive
-  the exemption with `git grep`, since `grep -rn` also matches the gitignored
-  Playwright report.
+**Where the upload lives, and why it is not a question of the spec gate.** The
+contract CSV's subject is licences, so the form sits beside the table it changes
+and the operator watches the reconciliation move. `/import` was the alternative
+and is bound to the HR flow: one `State` union running upload → match → done, an
+error map keyed to `hr-import`'s strings, and a "Run matching" step that means
+nothing after a contract upload. A second form there is two features in one
+component.
+
+Revision 4 said either answer moved `page-spec-membership.test.ts`'s member set.
+It does not — see the correction at the head of this document. The gate fires
+here because `/licenses` is a new top-level route, and it would have fired for
+that reason wherever the upload went.
+
+**The export needed a numeric-typed path, and got one.** `-` is in
+`DANGEROUS_FIRST_CHARS`, so the sanitizing path renders `-2` as `'-2` — text, in
+a spreadsheet, for the one number this screen exists to make loud, while every
+zero-waste row exports as a number. `csvNumericField` takes a `number`, so the
+exemption is bound to the TYPE: no operator- or connector-supplied string can
+reach it. An ordering rule ("run the numeric columns first", "skip columns 5-9")
+would be a list that drifts the moment a column is added.
+
+The two money columns deliberately KEEP the sanitizing path. They are
+non-negative by C1's CHECK, so `neutralizeCell` is a no-op on them — and relying
+on that at a distance to justify an exemption is the move the type-bound
+exemption exists to refuse.
+
+**`formatMoney` and `unassignedTone` are functions, not JSX**, because each has
+a plausible wrong version that reads as an improvement. The mutation run found
+that the first draft of `formatMoney`'s tests could not fail on the property they
+named — see the Testing section.
+
+**Every figure cell carries a `data-testid`.** The first E2E draft counted em
+dashes across the row and asserted 3; the row renders 5. Corrected to per-cell
+assertions rather than to `5`: a count over a row passes for the wrong reason as
+soon as a neighbouring cell renders the same characters.
+
+The `new Blob(` forbidden pattern that revision 2 proposed was never added to the
+repository, and round 2 had already established it was inverted — the one call
+site is `CsvExportButton.tsx`, which is correct. There is now one download path
+(`downloadCsv`) that both exports share, because a second copy that forgets
+`revokeObjectURL` is invisible to a reader comparing the two.
 
 ### C6 — seed and E2E — NOT BUILT
 
@@ -293,8 +337,8 @@ accounts, or say which existing assertion changes in the same contract.
 | C1 | `saas_contracts` table, composite FK, constraints, RLS enrollment | **locked — built and executed** |
 | C3 | seat reconciliation and `GET /licenses` | **locked — built and executed** |
 | C2 | contract CSV import | **locked — built and executed** |
-| C4 | licences page consumption of the shape | pending — not in this PR |
-| C5 | CSV export | pending — not in this PR |
+| C4 | licences page consumption of the shape | **locked — built and executed** |
+| C5 | CSV export | **locked — built and executed** |
 | C6 | seed data and E2E | pending — not in this PR |
 
 ## Testing strategy, and what was executed
@@ -356,6 +400,45 @@ than passing on a scheduling accident.
 Suite state after C2: unit 375 green (31 files), integration 194 green (8 files,
 full run — a targeted run has a different scope from CI's), lint and typecheck
 clean.
+
+### C4 / C5, and the mutation that should have failed
+
+Nine mutations, eight red. The one that survived is the finding.
+
+| mutation | result |
+|---|---|
+| numeric columns routed back through the sanitizing path | reds the over-allocation case |
+| `unassignedTone` folds "no contract" into "no spare seats" | reds the three-state cases |
+| `unassignedTone` clamps over-allocation away | reds the three-state cases |
+| the export drops the billing-period column | reds the period case |
+| the upload leaves the server-rendered table stale | reds the E2E upload case |
+| the export button offers the wrong filename | reds the E2E download case |
+| the page renders `purchased ?? 0` | reds the E2E "invents no figure" case |
+| `formatMoney` renders through `String(Number(v))` | reds the scale cases |
+| **`formatMoney` renders through `Number(v).toFixed(2)`** | **survived — see below** |
+
+The surviving mutation was run against the FIRST draft of `formatMoney`'s tests,
+which asserted that a value crosses "unparsed" using `1234567890.99` and `0.07`.
+Measured afterwards: `Number(v).toFixed(2)` returns `v` for **every** value
+`numeric(14,2)` can hold, because 14 significant digits fit inside a double. So
+the block's claim — that a number loses the VALUE here — was false at this
+column's bounds, and its assertions could not fail on the property they named.
+They read as coverage of an invariant nothing was checking.
+
+What a number loses at this boundary is the SCALE: `String(Number('10.50'))` is
+`'10.5'`, `String(Number('0.00'))` is `'0'`. That is also the realistic edit —
+`{Number(item.unitPrice)}` in the cell — and it renders a wrong price and turns a
+free plan into an unpriced one. The tests now pin that, and the mutation reds.
+
+`toFixed(2)` still survives and is recorded, not chased: it preserves both the
+value and the scale, which makes it a behaviour-preserving rewrite rather than a
+defect the tests are blind to. The value argument for keeping `numeric` a string
+holds one step out, under ARITHMETIC, which is why C3 computes
+`reclaimableValue` in SQL and nothing on this page computes anything.
+
+Suite state after C4/C5: unit 398 green (32 files), integration 194 green, E2E 46
+green against the compose stack, `assert-seed-preserved.sh` intact, lint and
+typecheck clean.
 
 ## Considerations & constraints
 
@@ -420,6 +503,20 @@ clean.
   fields with one name now mean slightly different things. Trigger: the next
   change to the HR import's response.
 
+- **SCL14** — **over-allocation is not reachable in E2E.** It needs
+  `purchased < assigned`, and only the seeded `google-workspace` has accounts —
+  so showing it means writing a contract against the seeded application, which
+  persists for the life of the volume (`seed.ts` returns the existing row without
+  re-applying anything) and which `assert-seed-preserved.sh` does not inspect.
+  The licences spec therefore mutates only a disposable application, and the
+  negative path is pinned at the unit tier instead. Trigger: C6, which is already
+  required to say which application carries which case.
+- **SCL15** — the upload forms' friendly copy is keyed off the row-cap constants,
+  so a cap change carries; a change to the ROUTE's message FORMAT would still
+  drop each map to its generic fallback. Not guarded: the failure is cosmetic and
+  the guard would be a source-scanning test over an error string. Trigger: any
+  edit to an import route's 400 bodies.
+
 Closed this revision: **SC37** (`MAX_UPLOAD_BYTES` moved into
 `@open-smp/api-types`). It was not on this plan's list — it is inherited, and
 recorded in `sc42-derive-link-status-domain-plan.md` — but the import needed a
@@ -436,5 +533,8 @@ and a manual-test doc assert them, so deriving those is a separate change.
 - **C2 creates catalog rows** and no role model distinguishes who may. Every
   authenticated session has full tenant write, so the ceiling and the audit row
   are what bound and record it — neither is authorisation (SCL12).
-- The reconciliation is exercised by tests and by nothing else until C4/C5 land;
-  a shape consumed by no one is a shape nobody has validated in use.
+- ~~The reconciliation is exercised by tests and by nothing else~~ — closed by
+  C4/C5, and the closing earned its keep: rendering the shape is what found that
+  a no-contract row shows five em dashes rather than three, and that
+  `formatMoney`'s exactness claim was untrue at this column's bounds. Neither was
+  visible while the only consumer was a test asserting the shape it expected.
