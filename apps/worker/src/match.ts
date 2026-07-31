@@ -8,6 +8,7 @@ import {
   type IdentityView,
   type LinkResult,
 } from '@open-smp/matcher';
+import { MATCH_EVENT_SOURCE } from '@open-smp/api-types';
 import type { MatchJobData, MatchJobResult } from '@open-smp/queues';
 
 export interface MatchDeps {
@@ -134,10 +135,13 @@ export async function runMatch(deps: MatchDeps, job: MatchJobData): Promise<Matc
       );
     }
 
+    // The source is bound, not written inline: it is a member of the reserved
+    // set the contract import refuses as a saas_apps.key, and a second literal
+    // spelling here would make that refusal a copy that can drift.
     await tx.query(
       `INSERT INTO discovery_events (tenant_id, source, kind, payload)
-       VALUES ($1, 'matcher', 'match_completed', $2::jsonb)`,
-      [job.tenantId, JSON.stringify({ counts: { links: results.length }, runId })],
+       VALUES ($1, $2, 'match_completed', $3::jsonb)`,
+      [job.tenantId, MATCH_EVENT_SOURCE, JSON.stringify({ counts: { links: results.length }, runId })],
     );
 
     return results.length;

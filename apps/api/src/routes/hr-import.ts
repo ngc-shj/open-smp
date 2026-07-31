@@ -3,11 +3,9 @@ import { parse } from 'csv-parse/sync';
 import { withTenant } from '@open-smp/schema';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT } from '../rate-limits.js';
-import type { ImportRowIssue, HrImportResponse } from '@open-smp/api-types';
+import { HR_IMPORT_MAX_ROWS, MAX_IMPORT_ERRORS } from '../import-limits.js';
+import { MAX_UPLOAD_BYTES, type ImportRowIssue, type HrImportResponse } from '@open-smp/api-types';
 
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-const MAX_ERRORS = 100;
-const MAX_ROWS = 20_000;
 const EMAIL_MAX_LENGTH = 320;
 const NAME_MAX_LENGTH = 200;
 
@@ -148,8 +146,8 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
       // one-INSERT-per-row transaction below would hold a shared-pool
       // connection for minutes, starving other tenants. A realistic HR export
       // is well under this bound.
-      if (records.length > MAX_ROWS) {
-        return reply.code(400).send({ error: `too many rows (max ${MAX_ROWS})` });
+      if (records.length > HR_IMPORT_MAX_ROWS) {
+        return reply.code(400).send({ error: `too many rows (max ${HR_IMPORT_MAX_ROWS})` });
       }
 
       const validRows: ValidRow[] = [];
@@ -161,7 +159,7 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
         const rowNumber = index + 2; // +1 for 1-indexing, +1 for the header row
         const result = validateRow(record, rowNumber);
         if ('error' in result) {
-          if (errors.length < MAX_ERRORS) {
+          if (errors.length < MAX_IMPORT_ERRORS) {
             errors.push(result.error);
           }
           return;

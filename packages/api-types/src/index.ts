@@ -108,6 +108,39 @@ export function isLabelAuditKind(value: string): value is LabelAuditKind {
   return (LABEL_AUDIT_KINDS as readonly string[]).includes(value);
 }
 
+// The audit family C2 adds. Separate from LABEL_AUDIT_KINDS rather than folded
+// into it because the two carry different payload fields, and the events
+// projection allowlists per family — merging them would let a label event
+// project a contract event's fields and the reverse.
+export const CONTRACT_AUDIT_KINDS = Object.freeze(['contract_import'] as const);
+
+export type ContractAuditKind = (typeof CONTRACT_AUDIT_KINDS)[number];
+
+export function isContractAuditKind(value: string): value is ContractAuditKind {
+  return (CONTRACT_AUDIT_KINDS as readonly string[]).includes(value);
+}
+
+// `discovery_events.source` values the PRODUCT writes. Every other source value
+// is a `saas_apps.key`, written by sync — so a tenant that could register an
+// application under one of these keys would emit sync rows indistinguishable
+// from the product's own audit family under `?source=`, and sync payloads carry
+// connector-supplied content. These three are therefore the reserved key set
+// that every write path to `saas_apps.key` must refuse.
+//
+// Declared here, as scalars, and imported by every writer — apps/api's audit
+// module, apps/worker's matcher, and the contract import. The set is only a
+// true derivation of "what the code writes" while the writers hold no literal
+// of their own; saas-app-key-pin.test.ts is what keeps that so.
+export const LABEL_EVENT_SOURCE = 'label';
+export const MATCH_EVENT_SOURCE = 'matcher';
+export const CONTRACT_EVENT_SOURCE = 'contract';
+
+export const RESERVED_EVENT_SOURCES = Object.freeze([
+  LABEL_EVENT_SOURCE,
+  MATCH_EVENT_SOURCE,
+  CONTRACT_EVENT_SOURCE,
+] as const);
+
 export function isAccountLabelKind(value: unknown): value is AccountLabelKind {
   return (
     typeof value === 'string' && (ACCOUNT_LABEL_KINDS as readonly string[]).includes(value)
@@ -182,6 +215,12 @@ export type DiscoveryEventPayload = {
   saasAccountId?: string;
   before?: { kind: AccountLabelKind; note: string | null } | null;
   after?: { kind: AccountLabelKind; note: string | null } | null;
+  // contract_import. `createdAppKeys` is the security-relevant fact — which
+  // catalog rows the upload brought into existence — and it is bounded by the
+  // per-tenant application ceiling, not by the row count.
+  imported?: number;
+  skipped?: number;
+  createdAppKeys?: string[];
 };
 
 export type DiscoveryEventListItem = {
@@ -213,6 +252,24 @@ export type HrImportResponse = {
   errors: ImportRowIssue[];
   warnings: ImportRowIssue[];
 };
+
+// contract-import response (C2). `createdApps` names the saas_apps rows the
+// upload created, because a contract CSV is the only path that writes the
+// application catalog without naming a connector.
+export type ContractImportResponse = {
+  imported: number;
+  skipped: number;
+  createdApps: string[];
+  errors: ImportRowIssue[];
+  warnings: ImportRowIssue[];
+};
+
+// SC37. Both import routes bound the multipart body at this size, and the
+// upload form refuses a larger file before sending it — three sites that were
+// hand-synced comments until C39's gate was widened to admit a scalar. The
+// user-facing "max 10MB" strings are still literals: they are asserted by an
+// E2E spec and by the manual-test doc, so deriving them is a separate change.
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 export type SaasAppListItem = { id: string; key: string; displayName: string };
 
