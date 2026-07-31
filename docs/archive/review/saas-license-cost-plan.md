@@ -2,6 +2,10 @@
 
 Cycle 7. Branch: `feature/saas-license-cost`.
 
+Revision 4 — **C2 built and executed.** Revision 3 recorded, per unbuilt
+contract, the findings it had to answer; C2's are answered below, in the same
+form as C1's and C3's — what the execution decided, not what was argued for.
+
 Revision 3 — **rewritten from what was executed, not from what was argued.** Two
 plan-review rounds returned 4 then 8 Critical findings; the count went up, and
 every round-2 Critical sat inside a round-1 repair. All twelve were claims the
@@ -14,8 +18,12 @@ real Postgres, and this document now records what the execution decided. The
 prose that round 2 falsified is gone rather than patched; what survives is either
 measured or explicitly marked as not yet built.
 
-**Shipped in this PR: C1 and C3.** C2, C4, C5 and C6 are not implemented, and
-each carries the findings it must answer when it is.
+Revision 4 kept the method and skipped the prose round entirely: the contract
+terms were settled, so the next thing that could falsify anything was an
+artifact, and 15 mutations were executed against the result.
+
+**Shipped: C1, C3 (first PR) and C2 (this one).** C4, C5 and C6 are not
+implemented, and each carries the findings it must answer when it is.
 
 ## Project context
 
@@ -35,8 +43,8 @@ each carries the findings it must answer when it is.
     Measured: `e2e/playwright.config.ts:31` sets `use.storageState` globally, so a
     new spec inherits the shared session and adds zero login POSTs. Any future
     spec here must not override it.
-- **Per-contract classification**: C1 and C3 `verifiable-local` (integration,
-  Testcontainers) — both executed. C2, C4, C5 unbuilt; C6 would be
+- **Per-contract classification**: C1, C2 and C3 `verifiable-local` (integration,
+  Testcontainers) — all three executed. C4 and C5 unbuilt; C6 would be
   `verifiable-CI`.
 
 ## Objective
@@ -82,9 +90,12 @@ Executed against PostgreSQL 16.13 during the review rounds and the build.
 ## Requirements
 
 - **FR1** — a contract can be recorded for an application, including one the
-  connectors do not sync. *(C2, unbuilt.)*
+  connectors do not sync. **Built (C2), executed** — the import creates the
+  catalog row, which is the only path to an application with no connector.
 - **FR2** — contracts enter through CSV upload, validated at the boundary, and no
-  rejected row prevents a valid row from being applied. *(C2, unbuilt.)*
+  rejected row prevents a valid row from being applied. **Built (C2), executed** —
+  one acceptance case per constraint the catalog declares, each asserting the
+  valid row in the same file survived.
 - **FR3** — per application, the product reports purchased, assigned and
   reclaimable seats with a reason for each, every reason derived from evidence the
   product holds. **Built (C3), executed.**
@@ -165,39 +176,99 @@ seat := active accounts of the application that were seen in its latest sync run
 
 **Control class**: *detection or audit only.*
 
-### C2 — contract CSV import — NOT BUILT
+### C2 — contract CSV import — BUILT (`apps/api/src/routes/contract-import.ts`)
 
-The one contract all three reviewers converged on (3/3, Critical). What it must
-answer before it is written:
+`POST /api/contract-import`, multipart, one CSV row per application:
+`app_key, app_name, plan_name, seats, unit_price, currency, billing_cycle,
+term_start, term_end, note`. It writes the catalog row as well as the contract,
+because FR1's "an application the connectors do not sync" had no other path —
+`POST /saas-apps` pins its key to one literal and demands credentials.
 
-- **Derive the validator list from C1's constraint list.** Round 2 measured the
-  failure: `hr-import` issues one INSERT per row inside a single transaction with
-  no savepoints, so the first CHECK violation aborts it and every later statement
-  returns `current transaction is aborted` — a 500 that rolls back the rows
-  already applied. Revision 2's hand-written list omitted `plan_name` and the term
-  dates and disagreed with C1 on `seats` (10⁹ vs 10⁷). The contract term is: **no
-  value reaches the transaction that C1 can reject.**
-- **`app_key` must be rejected when it names an event source.** Derived from the
-  code, that set is `{AUDIT_SOURCE, 'matcher'}`, not `{AUDIT_SOURCE}` — the
-  matcher writes `discovery_events.source = 'matcher'` and `GET /events` filters
-  on `source` alone, so a registrable key of either forges an audit family. Pin
-  the normalisation order (trim → lowercase → regex → reserved-set) as a contract
-  term.
-- **`saas-app-key-pin.test.ts` has no owner.** Its regex is unanchored, so a zod
-  field named `app_key` matches as a `key` declaration; it is a `CONTROL_FILES`
-  member, so deleting it reds the parity gate. C2 must state what it becomes.
-- **The per-tenant ceiling does not serialize at READ COMMITTED** — measured, two
-  concurrent transactions overshot a ceiling of 10 to 18 rows. It needs a lock,
-  not a count.
-- **The audit row must be readable.** `GET /events`' projection is a per-kind
-  allowlist and both branches drop an unknown payload, so a `discovery_events` row
-  naming the created keys is stored and never served. It also needs an actor.
-- Caps: name the exports for their subjects (`HR_IMPORT_MAX_ROWS`,
-  `CONTRACT_IMPORT_MAX_ROWS`); one name cannot hold two values.
+**No value reaches the transaction that C1 can reject** — and the shape of the
+transaction is what dictates that. One INSERT per row, no savepoints, so a
+refused value does not degrade its own row: it aborts the transaction, every
+later statement returns `current transaction is aborted`, and the applied rows
+roll back.
+
+Savepoints were considered and **rejected**. They would make the failure
+survivable and would also make a missing validator *invisible*, because the
+valid rows would still land. "The valid row in the same file was still applied"
+is the assertion that proves the derivation complete, and it can only prove it
+while a missed constraint is fatal.
+
+The list is not hand-written. `contract-import.integration.test.ts` reads
+`pg_constraint` for every `c`/`u`/`f`/`p` constraint on `saas_contracts` and
+fails when one has no case — which is what revision 2's hand-written list, short
+of `plan_name` and both term dates and disagreeing with C1 on `seats` (10⁹ vs
+10⁷), would have failed. A second assertion derives the NOT NULL columns without
+defaults from `pg_attribute` and checks them against the shipped INSERT's column
+list, since 23502 aborts a transaction like anything else.
+
+Four rejections come from the **column type** rather than from a constraint, so
+`pg_constraint` cannot enumerate them and the test says so: a calendar-invalid
+date (22008 — `2025-02-30` matches any shape regex), a value outside the
+`billing_cycle` enum (22P02), `numeric(14,2)` overflow (22003), and `int4`
+overflow on `seats`. Excess numeric scale is worse than an error and is refused
+too: Postgres **rounds** it, silently, in the money column.
+
+**`app_key` refuses the reserved set, and the set is derived.** The three
+product-owned `discovery_events.source` values are declared once, as scalars, in
+`@open-smp/api-types`; `audit.ts`, the matcher and the import all import them,
+and `saas-app-key-pin.test.ts` asserts that no source is spelled at its INSERT
+site and that every exported `*_EVENT_SOURCE` is a member. `'contract'` joined
+the set by being introduced, which is the case a copied list gets wrong.
+
+Normalisation is trim → lowercase → shape → reserved, and what makes it correct
+is the consequence rather than the order: **the reserved test runs against the
+exact bytes that will be stored.** Checking the raw cell accepts ` LABEL `.
+
+**`saas-app-key-pin.test.ts` has an owner and a true claim.** Its old one —
+`saas_apps.key` is one literal — stops being true here, so the file now asserts
+the property that literal was protecting, over all three write paths: the zod
+literal (unchanged), the import's reserved-set refusal, and seed.ts. Its regex
+is left-anchored, and both directions are proven — `app_key:` must not match,
+`'key':` and a formatter-split chain must.
+
+**The ceiling is a lock, not a count.** `pg_advisory_xact_lock` keyed on
+(`'saas_apps_catalog'`, tenant), taken before the count. A `tenants` row lock
+was not available — the role holds SELECT and INSERT, and `FOR UPDATE` needs
+UPDATE — and the rows being counted are the rows being created, so there is
+nothing else to lock. Exceeding it is a **per-row** outcome: rows naming
+applications that already exist still apply, so a full catalog cannot stop an
+operator re-pricing what is in it.
+
+The acceptance test drives two real transactions through the shipped lock and
+count, forcing the interleave and waiting on `pg_locks` for a backend actually
+blocked. `Promise.all` of two uploads was rejected as the test: it passes
+whether or not the lock exists.
+
+**The audit row is readable.** It goes through the single INSERT in `audit.ts`
+(generalised over the source, so `audit-append-only.test.ts`'s "exactly one
+occurrence, in audit.ts" still holds) under `source = 'contract'`, `kind =
+'contract_import'`, carrying `actorUserId`, `imported`, `skipped` and
+`createdAppKeys`. `GET /events` gained a third projection branch — without it
+the row is stored, answers `?source=contract`, and serves `{}`. The key list
+projects whole or not at all: a filtered list would report fewer created
+applications than were created, which is the one direction an audit trail must
+not be wrong in.
+
+Caps are named for their subjects in `apps/api/src/import-limits.ts`:
+`HR_IMPORT_MAX_ROWS` (20 000), `CONTRACT_IMPORT_MAX_ROWS` (2 000),
+`MAX_SAAS_APPS_PER_TENANT` (500), `MAX_IMPORT_ERRORS` (100).
+
+**Control class**: *enforceable boundary for the values it admits into the
+catalog and the contract table.* Not a boundary on WHO may import — no role
+model distinguishes that, and every authenticated session has full tenant write
+(unchanged, still recorded under Risks).
 
 ### C4 / C5 — `/licenses` page and CSV export — NOT BUILT
 
 - The response shape exists and is consumed by nothing yet.
+- **The upload has no UI either.** `POST /api/contract-import` is reachable only
+  by an HTTP client, and the existing `/import` page is bound to the HR shape —
+  its error-message map, its response type and its E2E spec are all `hr-import`'s.
+  C4 must decide whether the contract upload is a second form on that page or its
+  own, and either answer changes `page-spec-membership.test.ts`'s member set.
 - **The CSV export needs a numeric-typed path**, not an ordering rule:
   `neutralizeCell` inspects position 0 and `'-'` is in its dangerous set, so the
   over-allocation figure — the one number this feature exists to make loud —
@@ -221,7 +292,7 @@ accounts, or say which existing assertion changes in the same contract.
 |----|---------|--------|
 | C1 | `saas_contracts` table, composite FK, constraints, RLS enrollment | **locked — built and executed** |
 | C3 | seat reconciliation and `GET /licenses` | **locked — built and executed** |
-| C2 | contract CSV import | pending — not in this PR |
+| C2 | contract CSV import | **locked — built and executed** |
 | C4 | licences page consumption of the shape | pending — not in this PR |
 | C5 | CSV export | pending — not in this PR |
 | C6 | seed data and E2E | pending — not in this PR |
@@ -253,8 +324,37 @@ consulted; and the constraint cases shared one application, so a deny case that 
 mutation wrongly let through took the unique pair and redded the allow case too.
 Both are fixed — a per-tenant spare application, and a fresh application per case.
 
-Suite state: `packages/schema` integration 63 green, `apps/api`
-`licenses-rollup.integration.test.ts` 10 green, unit 276 green, lint and typecheck
+C2 was verified the same way, with 15 mutations run from a harness that asserts
+each anchor occurs **exactly once** before editing — a regex that matches nothing
+produces a green run reading as "the mutation survived" when nothing was mutated.
+Every one redded; none survived.
+
+| mutation | result |
+|---|---|
+| currency validator widened to `{2,4}` | reds the currency acceptance case |
+| `unit_price` validator admits `NaN` and negatives | reds integration + unit |
+| reserved-key check removed from `normalizeAppKey` | reds the pin test + integration |
+| catalog advisory lock made a no-op | reds the serialisation case |
+| contract projection branch removed | reds the audit-readability case |
+| matcher writes `'matcher'` inline again | reds the pin test |
+| one constraint dropped from the coverage map | reds the catalog-derivation case |
+| `saas_app_id` dropped from the INSERT column list | reds the NOT NULL case |
+| key-declaration regex loses its left anchor | reds the `app_key` over-match case |
+| date validation reduced to the shape regex | reds integration + unit |
+| catalog ceiling never refuses | reds the ceiling case |
+| `ON CONFLICT` retargeted to the wrong constraint | reds the re-import case |
+| projection accepts any number as a count | reds the projection unit cases |
+| created-key list projected element-wise | reds the projection unit cases |
+| `seats` ceiling raised to revision 2's 10⁹ | reds the seats acceptance case |
+
+The concurrency case earns its place separately: its interleave is **forced**,
+not hoped for. The first transaction signals after taking the lock, the second is
+started only then, and the assertion waits on `pg_locks` for a backend actually
+blocked — so removing the lock times out with a message naming the cause rather
+than passing on a scheduling accident.
+
+Suite state after C2: unit 375 green (31 files), integration 194 green (8 files,
+full run — a targeted run has a different scope from CI's), lint and typecheck
 clean.
 
 ## Considerations & constraints
@@ -302,6 +402,30 @@ clean.
   it. `saas_apps` now carries the prerequisite constraint. Trigger: the next cycle
   touching the schema; derive the member set from `pg_constraint`, not from this
   list.
+- **SCL11** — the catalog lock serialises the import **against itself**, not
+  against `POST /saas-apps`, which sits outside it. The ceiling still holds today
+  only because that route can create one key and `UNIQUE (tenant_id, key)` caps
+  it at one row. Trigger: the cycle that widens `saas_apps.key` past the literal
+  — that route then needs the same lock, and the reserved-set refusal with it.
+- **SCL12** — **the import has no authorisation.** Every authenticated session of
+  a tenant may create catalog rows and rewrite every contract in it. The ceiling
+  bounds the damage and the audit row records the actor; neither decides who may.
+  Trigger: the first role model. Do not read the ceiling as a control over *who*
+  — an overstated control is what makes a later cycle skip the real one.
+- **SCL13** — `hr-import`'s `skipped` reports the length of its truncated error
+  list, so a file with more than 100 rejected rows under-reports how many were
+  skipped. Pre-existing, not introduced here, and not fixed here because the
+  figure belongs to a shipped response shape the web app renders.
+  `contract-import` counts every rejected row instead, which is why the two
+  fields with one name now mean slightly different things. Trigger: the next
+  change to the HR import's response.
+
+Closed this revision: **SC37** (`MAX_UPLOAD_BYTES` moved into
+`@open-smp/api-types`). It was not on this plan's list — it is inherited, and
+recorded in `sc42-derive-link-status-domain-plan.md` — but the import needed a
+fourth site for the constant, and a hand-synced comment across four files was no
+longer defensible. The user-facing "max 10MB" strings stay literals: an E2E spec
+and a manual-test doc assert them, so deriving those is a separate change.
 
 ### Risks
 
@@ -309,7 +433,8 @@ clean.
   JavaScript re-introduces the float error the column type exists to avoid; the
   arithmetic belongs in SQL. `tx.query<Row>` is an unchecked assertion, so a wrong
   declaration is invisible to typecheck — it took a failing test to find one.
-- **C2 will create catalog rows** and no role model distinguishes who may. Every
-  authenticated session has full tenant write.
+- **C2 creates catalog rows** and no role model distinguishes who may. Every
+  authenticated session has full tenant write, so the ceiling and the audit row
+  are what bound and record it — neither is authorisation (SCL12).
 - The reconciliation is exercised by tests and by nothing else until C4/C5 land;
   a shape consumed by no one is a shape nobody has validated in use.
