@@ -161,11 +161,39 @@ jobs:
           done
 
       - name: Wait for seed job to complete
-        # `docker compose wait` blocks until the service's container stops
-        # and exits with that container's own exit code — the gate here is
-        # judged by this step's own exit status (R44), not by grepping logs.
-        timeout-minutes: 2
-        run: docker compose wait seed
+        # NOT `docker compose wait`: measured, it reports `no containers for
+        # project` and exits 1 once the container has already stopped. That step
+        # passed for two cycles only because it happened to run while the seed was
+        # still in flight; inserting a 20-second step above it was enough to make
+        # it fail on a run where the seed had succeeded. A gate whose verdict
+        # depends on how fast the preceding step is, is not a gate.
+        #
+        # The state and the exit code are read directly, so a seed that has
+        # already finished is a pass and a seed that failed is a fail, in either
+        # order. Judged by this step's own exit status (R44), not by grepping logs.
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 150))
+          while :; do
+            state=$(docker compose ps -a --format json seed | jq -r '.State')
+            code=$(docker compose ps -a --format json seed | jq -r '.ExitCode')
+            case "$state" in
+              exited)
+                [ "$code" = "0" ] || { echo "seed exited with $code" >&2; docker compose logs seed || true; exit 1; }
+                echo "seed completed, exit 0"
+                break
+                ;;
+              running|created|restarting) ;;
+              *) echo "seed is in unexpected state '$state'" >&2; docker compose logs seed || true; exit 1 ;;
+            esac
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "seed did not finish within 150s (last state: $state)" >&2
+              docker compose logs seed || true
+              exit 1
+            fi
+            sleep 2
+          done
 
       - name: Log in as the seeded demo admin
         run: |
