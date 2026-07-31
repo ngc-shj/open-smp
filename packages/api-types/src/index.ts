@@ -27,6 +27,12 @@ export const LINK_STATUSES = Object.freeze([
 
 export type LinkStatus = (typeof LINK_STATUSES)[number];
 
+// Frozen for the same reason as LINK_STATUSES. Declaration order is the
+// Postgres enum's sort order, so it must match migrations/0006_saas_contracts.sql.
+export const BILLING_CYCLES = Object.freeze(['monthly', 'annual'] as const);
+
+export type BillingCycle = (typeof BILLING_CYCLES)[number];
+
 export type AccountLink = {
   status: string;
   confidence: number;

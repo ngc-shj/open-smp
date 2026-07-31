@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   customType,
+  date,
   integer,
   jsonb,
   numeric,
@@ -14,7 +15,7 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { ACCOUNT_LABEL_KINDS, LINK_STATUSES } from '@open-smp/api-types';
+import { ACCOUNT_LABEL_KINDS, BILLING_CYCLES, LINK_STATUSES } from '@open-smp/api-types';
 import { sql } from 'drizzle-orm';
 
 const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
@@ -45,6 +46,7 @@ export const accountStatusEnum = pgEnum('account_status', [
 // order is its sort order, and api.integration.test.ts asserts pg_enum's order
 // against this same domain.
 export const accountLabelKindEnum = pgEnum('account_label_kind', ACCOUNT_LABEL_KINDS);
+export const billingCycleEnum = pgEnum('billing_cycle', BILLING_CYCLES);
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -204,7 +206,47 @@ export const accountLabels = pgTable(
   ],
 );
 
-/** Tenant-scoped tables subject to RLS (the 8-table member set from C1/C10; excludes `tenants`). */
+export const saasContracts = pgTable(
+  'saas_contracts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    // No `.references()`: the real constraint is composite over
+    // (tenant_id, saas_app_id), which Drizzle's column-level form cannot
+    // express. Declared in migrations/0006_saas_contracts.sql, where the
+    // reason it must be composite is recorded.
+    saasAppId: uuid('saas_app_id').notNull(),
+    planName: text('plan_name'),
+    seats: integer('seats'),
+    unitPrice: numeric('unit_price', { precision: 14, scale: 2 }),
+    currency: text('currency'),
+    billingCycle: billingCycleEnum('billing_cycle'),
+    termStart: date('term_start'),
+    termEnd: date('term_end'),
+    note: text('note'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('saas_contracts_tenant_id_saas_app_id_key').on(table.tenantId, table.saasAppId),
+    check('saas_contracts_seats_check', sql`${table.seats} >= 0 AND ${table.seats} <= 10000000`),
+    check(
+      'saas_contracts_unit_price_check',
+      sql`${table.unitPrice} >= 0 AND ${table.unitPrice} <> 'NaN'::numeric`,
+    ),
+    check(
+      'saas_contracts_term_order_check',
+      sql`${table.termEnd} IS NULL OR ${table.termStart} IS NULL OR ${table.termEnd} >= ${table.termStart}`,
+    ),
+    check('saas_contracts_currency_check', sql`${table.currency} ~ '^[A-Z]{3}$'`),
+    check(
+      'saas_contracts_plan_name_check',
+      sql`${table.planName} IS NULL OR char_length(${table.planName}) <= 200`,
+    ),
+    check('saas_contracts_note_check', sql`${table.note} IS NULL OR char_length(${table.note}) <= 500`),
+  ],
+);
+
+/** Tenant-scoped tables subject to RLS (the 9-table member set from C1/C10; excludes `tenants`). */
 export const tenantScopedTables = {
   identities,
   saasApps,
@@ -214,4 +256,5 @@ export const tenantScopedTables = {
   users,
   sessions,
   accountLabels,
+  saasContracts,
 } as const;
