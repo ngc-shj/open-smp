@@ -96,6 +96,58 @@ const IDENTITIES: SeedIdentity[] = [
   },
 ];
 
+// C6. Keep in sync with e2e/fixtures/seed-facts.ts, which
+// seed-gate-agreement.test.ts cross-checks against the shell gate.
+const CONTRACT_ONLY_APP_KEY = 'notion';
+const CONTRACT_ONLY_APP_DISPLAY_NAME = 'Notion';
+
+type SeedContract = {
+  planName: string;
+  seats: number;
+  /** A string, never a number: `numeric(14,2)` is exact and a double is not. */
+  unitPrice: string;
+  currency: string;
+  billingCycle: 'monthly' | 'annual';
+  termStart: string;
+  termEnd: string;
+  note: string;
+};
+
+/**
+ * Three seats against four assigned, so the demo opens ON the number the
+ * screen exists to make loud: `unassigned` is -1, unclamped. And two of those
+ * four seats are reclaimable — one held by someone who left, one by nobody —
+ * so the over-allocation is not just visible, it is ACTIONABLE from the same
+ * row. That pairing is the product's whole argument in one line.
+ */
+const SEEDED_CONTRACT: SeedContract = {
+  planName: 'Business Standard',
+  seats: 3,
+  unitPrice: '12.00',
+  currency: 'USD',
+  billingCycle: 'monthly',
+  termStart: '2026-01-01',
+  termEnd: '2026-12-31',
+  note: 'Demo contract for the seeded workspace.',
+};
+
+/**
+ * Deliberately ANNUAL where the other is monthly. The two rows are then not
+ * comparable, and the page and the export both carry the period beside the
+ * figure so nobody sums them — SCL4 made visible rather than merely written
+ * down.
+ */
+const CONTRACT_ONLY_CONTRACT: SeedContract = {
+  planName: 'Team',
+  seats: 25,
+  unitPrice: '96.00',
+  currency: 'USD',
+  billingCycle: 'annual',
+  termStart: '2026-04-01',
+  termEnd: '2027-03-31',
+  note: 'Bought by finance, connected to nothing.',
+};
+
 const ACCOUNTS: SeedAccount[] = [
   {
     externalId: 'gws-user-001',
@@ -203,6 +255,100 @@ async function ensureSaasApp(
     );
 
     return saasAppId;
+  });
+}
+
+/**
+ * The application the connectors do not sync (C6, FR1's demo case).
+ *
+ * No credentials, so `GET /licenses` reports `hasConnector: false`, and no
+ * accounts, so it reports `matchState: 'no-accounts'` — the state a contract
+ * uploaded for a tool nobody has connected produces, and the one the licences
+ * screen would otherwise never show.
+ */
+async function ensureContractOnlyApp(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+): Promise<string> {
+  return withTenant(pool, tenantId, async (tx) => {
+    // Idempotent by the same rule as ensureSaasApp: the seeder runs on every
+    // `docker compose up`, and a second row would violate UNIQUE (tenant_id,
+    // key) and take the whole seed down.
+    const inserted = await tx.query<{ id: string }>(
+      `INSERT INTO saas_apps (tenant_id, key, display_name)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (tenant_id, key) DO NOTHING
+       RETURNING id`,
+      [tenantId, CONTRACT_ONLY_APP_KEY, CONTRACT_ONLY_APP_DISPLAY_NAME],
+    );
+    const insertedId = inserted.rows[0]?.id;
+    if (insertedId) {
+      return insertedId;
+    }
+
+    const { rows } = await tx.query<{ id: string }>(
+      'SELECT id FROM saas_apps WHERE tenant_id = $1 AND key = $2',
+      [tenantId, CONTRACT_ONLY_APP_KEY],
+    );
+    const existingId = rows[0]?.id;
+    if (!existingId) {
+      throw new Error('seed: contract-only app neither inserted nor found');
+    }
+    return existingId;
+  });
+}
+
+/**
+ * Writes a contract for one application.
+ *
+ * The seed adds CONTRACTS and not accounts, which is what makes C6 possible at
+ * all. Round 2 established that the licences cases were not jointly reachable,
+ * and every constraint behind that finding is about accounts: the seeded
+ * application's count is pinned at 4 by `e2e/specs/apps.spec.ts`, and any new
+ * unmatched account reds the tenant-scoped orphan count in
+ * `e2e/specs/accounts.spec.ts`. Measured: no test pins the number of
+ * applications, and none pins contract state except the licences spec, which
+ * changes in this same contract.
+ *
+ * DO UPDATE rather than DO NOTHING: a figure edited here must reach a stack
+ * whose volume already carries the previous seed, or the demo silently keeps
+ * showing the old one.
+ */
+async function ensureContract(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  saasAppId: string,
+  contract: SeedContract,
+): Promise<void> {
+  await withTenant(pool, tenantId, async (tx) => {
+    await tx.query(
+      `INSERT INTO saas_contracts
+         (tenant_id, saas_app_id, plan_name, seats, unit_price, currency, billing_cycle,
+          term_start, term_end, note)
+       VALUES ($1, $2, $3, $4, $5::numeric, $6, $7::billing_cycle, $8::date, $9::date, $10)
+       ON CONFLICT ON CONSTRAINT saas_contracts_tenant_id_saas_app_id_key DO UPDATE SET
+         plan_name = EXCLUDED.plan_name,
+         seats = EXCLUDED.seats,
+         unit_price = EXCLUDED.unit_price,
+         currency = EXCLUDED.currency,
+         billing_cycle = EXCLUDED.billing_cycle,
+         term_start = EXCLUDED.term_start,
+         term_end = EXCLUDED.term_end,
+         note = EXCLUDED.note,
+         updated_at = now()`,
+      [
+        tenantId,
+        saasAppId,
+        contract.planName,
+        contract.seats,
+        contract.unitPrice,
+        contract.currency,
+        contract.billingCycle,
+        contract.termStart,
+        contract.termEnd,
+        contract.note,
+      ],
+    );
   });
 }
 
@@ -373,6 +519,9 @@ async function main(): Promise<void> {
     const tenantId = await ensureTenant(pool);
     await ensureAdminUser(pool, tenantId);
     const saasAppId = await ensureSaasApp(pool, tenantId, encryptionKeys);
+    await ensureContract(pool, tenantId, saasAppId, SEEDED_CONTRACT);
+    const contractOnlyAppId = await ensureContractOnlyApp(pool, tenantId);
+    await ensureContract(pool, tenantId, contractOnlyAppId, CONTRACT_ONLY_CONTRACT);
     const identityIdByEmployeeId = await ensureIdentities(pool, tenantId);
     const accountIdByExternalId = await ensureAccounts(pool, tenantId, saasAppId);
     const counts = await computeAndPersistLinks(
@@ -390,9 +539,24 @@ async function main(): Promise<void> {
       );
     }
 
+    // C6's own bar, checked here rather than trusted: the demo exists to open
+    // on an over-allocation, and `seats` is the only figure in this file that
+    // can silently stop producing one. The account count is derived — a link
+    // that stops resolving, or a fifth account, moves it without touching the
+    // contract — so the comparison is made against the accounts that actually
+    // landed rather than against the 4 this file expects.
+    const assigned = accountIdByExternalId.size;
+    if (SEEDED_CONTRACT.seats >= assigned) {
+      throw new Error(
+        `seed: acceptance bar not met (seats=${SEEDED_CONTRACT.seats}, assigned=${assigned}); ` +
+          'the seeded contract must be over-allocated',
+      );
+    }
+
     console.log(
       `seed: tenant=${TENANT_SLUG} admin=${ADMIN_EMAIL} ` +
-        `matched=${counts.matched} orphan=${counts.orphan} ghost=${counts.ghost} ambiguous=${counts.ambiguous}`,
+        `matched=${counts.matched} orphan=${counts.orphan} ghost=${counts.ghost} ambiguous=${counts.ambiguous} ` +
+        `contracts=2 purchased=${SEEDED_CONTRACT.seats} assigned=${assigned}`,
     );
   } finally {
     await pool.end();

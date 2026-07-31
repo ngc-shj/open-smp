@@ -122,6 +122,24 @@ describe('C29/I29.5 control 3: no write path registers a product-owned event sou
     expect(seed).toContain(`'${SEEDED_KEY}'`);
   });
 
+  it('seeds no reserved key at all', async () => {
+    // C6 gave seed.ts a SECOND application, so "it contains the pinned literal"
+    // stopped being a statement about every key it writes. This file claims the
+    // refusal holds on all three write paths; without this, the seed was the
+    // one making that claim true by having only one key.
+    //
+    // A whole-file literal scan, not an app-key-position scan: locating the
+    // argument would need the shape of two call sites, and the false-positive
+    // cost here is a seed that may not spell 'label' in quotes anywhere — which
+    // it has no reason to.
+    const seed = normalizeSource(await readFile(path.join(API_SRC, 'seed.ts'), 'utf8'));
+
+    const found = [...RESERVED_EVENT_SOURCES].filter(
+      (source) => seed.includes(`'${source}'`) || seed.includes(`"${source}"`),
+    );
+    expect(found, `seed.ts spells a reserved event source: ${found.join(', ')}`).toEqual([]);
+  });
+
   it('refuses every reserved source, in every spelling a CSV cell can carry', () => {
     expect(RESERVED_APP_KEYS.size).toBeGreaterThan(0);
 

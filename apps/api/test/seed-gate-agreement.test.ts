@@ -50,6 +50,17 @@ function fixtureConst(source: string, name: string): string | undefined {
   return source.match(new RegExp(`export const ${name} = '([^']+)'`))?.[1];
 }
 
+function fixtureNumber(source: string, name: string): number | undefined {
+  const raw = source.match(new RegExp(`export const ${name} = (\\d+)`))?.[1];
+  return raw === undefined ? undefined : Number(raw);
+}
+
+// `assert_license <app_key> <field> <expected>`, end-anchored for the same
+// reason GATE_CALL is: an unanchored trailing group crosses a newline under /gm
+// and swallows the next call. The expected value admits a leading `-`, because
+// the figure the demo exists for is negative.
+const LICENSE_CALL = /^\s*assert_license\s+(["'])([^"']+)\1\s+(["'])([a-zA-Z]+)\3\s+(["'])(-?[a-zA-Z0-9.]+)\5\s*$/gm;
+
 describe('C38 acceptance: the seed gate and the e2e fixture assert the same facts', () => {
   it('agrees on every seeded email and its link status, in both directions', async () => {
     const [gateSource, fixtureSource] = await Promise.all([
@@ -100,6 +111,83 @@ describe('C38 acceptance: the seed gate and the e2e fixture assert the same fact
     expect(gateName).toBeDefined();
     expect(gateKey).toBe(fixtureConst(fixtureSource, 'SAAS_APP_KEY'));
     expect(gateName).toBe(fixtureConst(fixtureSource, 'SAAS_APP_DISPLAY_NAME'));
+  });
+
+  // C6's contracts. Same hazard as the account facts above, one table over: the
+  // gate hardcodes the figures it asserts and the fixture holds them for the
+  // specs, so a seed change mirrored into one and not the other passes every
+  // gate. The licences spec is the first e2e path that can write these rows,
+  // which is what made them worth asserting in the first place.
+  it('agrees on every seeded contract figure it asserts', async () => {
+    const [gateSource, fixtureSource] = await Promise.all([
+      readFile(GATE, 'utf8'),
+      readFile(FIXTURE, 'utf8'),
+    ]);
+
+    const calls = [...gateSource.matchAll(LICENSE_CALL)].map((m) => ({
+      appKey: m[2]!,
+      field: m[4]!,
+      expected: m[6]!,
+    }));
+
+    // Anti-vacuity: an extractor that matches nothing satisfies every
+    // per-field assertion below by iterating an empty list.
+    expect(calls.length, 'no assert_license calls extracted from the gate').toBeGreaterThan(0);
+
+    const seatsFor = new Map([
+      [fixtureConst(fixtureSource, 'SAAS_APP_KEY'), fixtureNumber(fixtureSource, 'SEEDED_CONTRACT_SEATS')],
+      [
+        fixtureConst(fixtureSource, 'CONTRACT_ONLY_APP_KEY'),
+        fixtureNumber(fixtureSource, 'CONTRACT_ONLY_SEATS'),
+      ],
+    ]);
+
+    // Every app the gate names must be one the fixture knows, or the two are
+    // describing different seeds.
+    for (const call of calls) {
+      expect(seatsFor.has(call.appKey), `gate asserts an app the fixture does not know: ${call.appKey}`).toBe(
+        true,
+      );
+    }
+    // And both fixture apps must appear, or half the seed goes unguarded.
+    expect([...new Set(calls.map((c) => c.appKey))].sort()).toEqual([...seatsFor.keys()].sort());
+
+    for (const call of calls.filter((c) => c.field === 'purchased')) {
+      expect(Number(call.expected), `${call.appKey} purchased`).toBe(seatsFor.get(call.appKey));
+    }
+
+    const unitPrice = calls.find((c) => c.appKey === fixtureConst(fixtureSource, 'SAAS_APP_KEY') && c.field === 'unitPrice');
+    expect(unitPrice?.expected).toBe(fixtureConst(fixtureSource, 'SEEDED_CONTRACT_UNIT_PRICE'));
+
+    // The demo's argument: purchased must be BELOW assigned, or the licences
+    // page opens on a row with nothing to say. Read from the gate's own two
+    // assertions rather than from either file's prose.
+    const purchased = calls.find(
+      (c) => c.appKey === fixtureConst(fixtureSource, 'SAAS_APP_KEY') && c.field === 'purchased',
+    );
+    const assigned = calls.find(
+      (c) => c.appKey === fixtureConst(fixtureSource, 'SAAS_APP_KEY') && c.field === 'assigned',
+    );
+    expect(purchased, 'the gate must assert purchased').toBeDefined();
+    expect(assigned, 'the gate must assert assigned').toBeDefined();
+    expect(Number(purchased!.expected)).toBeLessThan(Number(assigned!.expected));
+  });
+
+  it.each([
+    ["assert_license 'notion' 'purchased' '25'", { appKey: 'notion', field: 'purchased', expected: '25' }],
+    [
+      `assert_license 'google-workspace' 'unassigned' '-1'`,
+      { appKey: 'google-workspace', field: 'unassigned', expected: '-1' },
+    ],
+  ])('extracts %s', (line, expected) => {
+    // The extractor's own allow side. Without it, a rewritten gate that this
+    // regex stops matching would fail the count assertion above with no
+    // indication of which spelling broke it.
+    expect([...line.matchAll(LICENSE_CALL)].map((m) => ({
+      appKey: m[2],
+      field: m[4],
+      expected: m[6],
+    }))).toEqual([expected]);
   });
 
   // What the extractor does NOT match, recorded rather than claimed complete.
