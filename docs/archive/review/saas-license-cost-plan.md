@@ -2,6 +2,23 @@
 
 Cycle 7. Branch: `feature/saas-license-cost`.
 
+Revision 6 — **C6 built and executed. SC5 is complete.**
+
+C6's own premise was the thing that gave way. Round 2 concluded the four cases
+were "not jointly reachable", and every constraint behind that conclusion is
+about ACCOUNTS: `apps.spec.ts` pins the seeded application's count at 4, a new
+unmatched account reds the tenant-scoped orphan count in `accounts.spec.ts`, and
+`ensureAccounts` binds to one application. All three hold, and all three were
+measured again here.
+
+What nobody had checked is whether the cases need accounts. They do not — they
+need **contracts**, and measured: no test pins the number of applications, and
+none pins contract state except the licences spec, which changes in the same
+contract as the plan allowed. So the seed writes contracts, adds no account, and
+the cases come free. **SCL14 is closed** by the same move: it recorded
+over-allocation as unreachable in E2E, having reasoned from the account
+constraints rather than from what the figure actually requires.
+
 Revision 5 — **C4 and C5 built and executed.** The reconciliation now has a
 reader, and two of this revision's findings came from that alone: a shape
 consumed by nobody is a shape nobody has validated.
@@ -34,8 +51,8 @@ Revision 4 kept the method and skipped the prose round entirely: the contract
 terms were settled, so the next thing that could falsify anything was an
 artifact, and 15 mutations were executed against the result.
 
-**Shipped: C1 and C3 (first PR), C2 (second), C4 and C5 (this one).** C6 is not
-implemented and carries the findings it must answer when it is.
+**Shipped: C1 and C3 (first PR), C2 (second), C4 and C5 (third), C6 (this one).**
+Every contract in the Go/No-Go gate is built and executed.
 
 ## Project context
 
@@ -56,9 +73,8 @@ implemented and carries the findings it must answer when it is.
     new spec inherits the shared session and adds zero login POSTs. Any future
     spec here must not override it.
 - **Per-contract classification**: C1, C2 and C3 `verifiable-local` (integration,
-  Testcontainers) — all three executed. C4 and C5 `verifiable-CI` (Playwright
-  against the compose stack) — both executed. C6 would be
-  `verifiable-CI`.
+  Testcontainers) — all three executed. C4, C5 and C6 `verifiable-CI` (Playwright
+  against the compose stack) — all three executed.
 
 ## Objective
 
@@ -321,14 +337,52 @@ site is `CsvExportButton.tsx`, which is correct. There is now one download path
 (`downloadCsv`) that both exports share, because a second copy that forgets
 `revokeObjectURL` is invisible to a reader comparing the two.
 
-### C6 — seed and E2E — NOT BUILT
+### C6 — seed and E2E — BUILT (`apps/api/src/seed.ts`)
 
-Round 2 measured that the four cases are **not jointly reachable**: only
-`google-workspace` can report `assigned > 0`, its account count is pinned at 4 by
-`e2e/specs/apps.spec.ts:161`, any new unmatched account becomes an orphan and reds
-`e2e/specs/accounts.spec.ts:66` (tenant-scoped), and `seed.ts` binds
-`ensureAccounts` to a single application. C6 must name each case's application and
-accounts, or say which existing assertion changes in the same contract.
+Round 2's four constraints all still hold, re-measured: only `google-workspace`
+has accounts, `apps.spec.ts:161` pins its count at 4, a new unmatched account
+becomes an orphan and reds the tenant-scoped count in `accounts.spec.ts:66`, and
+`ensureAccounts` binds to one application.
+
+**The premise was the error.** Every one of those constraints is about accounts,
+and the cases do not need accounts — they need contracts. Measured: nothing pins
+the number of applications, and nothing pins contract state except the licences
+spec, which changes here in the same contract, as this section required. So the
+seed writes two contracts and adds no account, and the constraint that framed C6
+never applies.
+
+**Which application carries which case:**
+
+| case | application | how |
+|---|---|---|
+| over-allocation | `google-workspace` | 3 seats against 4 assigned → `unassigned = -1`, unclamped |
+| reclaimable value | `google-workspace` | 1 ghost + 1 orphan × 12.00 USD → 24.00, computed in SQL |
+| needs review, not reclaimable | `google-workspace` | the ambiguous account, which the matcher could not attribute |
+| contract with no connector | `notion` | a contract, no credentials, no accounts |
+| two periods that must not be summed | both | `notion` is annual where the workspace is monthly (SCL4) |
+
+The first two are the product's argument in one row: the demo opens
+over-allocated, and the seats that would fix it are the reclaimable ones sitting
+beside the figure. `seats: 3` is not a magic number — the seeder **checks its own
+bar** and refuses to finish if the contract is not over-allocated, comparing
+against the accounts that actually landed rather than the 4 this file expects,
+because the count is derived and a link that stops resolving would move it
+without anyone touching the contract.
+
+**The case that is NOT covered**, stated rather than left to be discovered: an
+application with accounts and *no* contract. It is the pre-seed state, and
+showing it alongside the others needs a second account-bearing application —
+which is precisely what reds the two assertions above. Trigger: the first cycle
+that needs a second connector (SC2 on the roadmap), which brings its own
+application and its own accounts, and which must then decide what
+`accounts.spec.ts`'s tenant-scoped orphan count becomes.
+
+`assert-seed-preserved.sh` grew the contract figures, because the licences spec
+is the first E2E path that can write `saas_contracts` and `saas_apps` — a seeded
+fact no gate inspects is the leak that gate exists to catch.
+`seed-gate-agreement.test.ts` cross-checks them against `seed-facts.ts` in the
+`checks` job, including that purchased is **below** assigned, so "the demo still
+demonstrates something" is asserted from the two figures rather than from prose.
 
 ## Go/No-Go Gate
 
@@ -339,7 +393,7 @@ accounts, or say which existing assertion changes in the same contract.
 | C2 | contract CSV import | **locked — built and executed** |
 | C4 | licences page consumption of the shape | **locked — built and executed** |
 | C5 | CSV export | **locked — built and executed** |
-| C6 | seed data and E2E | pending — not in this PR |
+| C6 | seed data and E2E | **locked — built and executed** |
 
 ## Testing strategy, and what was executed
 
@@ -440,6 +494,34 @@ Suite state after C4/C5: unit 398 green (32 files), integration 194 green, E2E 4
 green against the compose stack, `assert-seed-preserved.sh` intact, lint and
 typecheck clean.
 
+### C6
+
+Five mutations, all red.
+
+| mutation | result |
+|---|---|
+| the seeded contract stops being over-allocated | reds the **seed job itself** |
+| the gate asserts a seat count the fixture does not hold | reds the C38 agreement |
+| the gate stops guarding the contract-only application | reds the C38 agreement |
+| the gate asserts a seed that is no longer over-allocated | reds the C38 agreement |
+| the seed registers an application under a reserved source | reds the key pin |
+
+The first is the one worth having: the seeder refuses to finish rather than
+producing a demo whose opening screen has nothing to say, and it fails in
+`compose-smoke` before the E2E suite runs, so the cause is named where it happens
+rather than three steps later.
+
+**A gap this run cannot cover.** `ensureContract` upserts with `DO UPDATE`, so an
+edited figure reaches a stack whose volume already holds the previous seed.
+Mutating it to `DO NOTHING` is invisible in CI, because CI boots a fresh volume
+and the two forms are then identical — the failure only exists for a developer
+re-seeding an existing stack, which is where it was found. Recorded rather than
+guarded; a test would have to provision a stale volume.
+
+Suite state after C6: unit 402 green (32 files), integration 194 green, E2E 47
+green against the compose stack, `assert-seed-preserved.sh` intact including the
+eight new contract assertions, lint and typecheck clean.
+
 ## Considerations & constraints
 
 ### Scope contract
@@ -503,14 +585,26 @@ typecheck clean.
   fields with one name now mean slightly different things. Trigger: the next
   change to the HR import's response.
 
-- **SCL14** — **over-allocation is not reachable in E2E.** It needs
-  `purchased < assigned`, and only the seeded `google-workspace` has accounts —
-  so showing it means writing a contract against the seeded application, which
-  persists for the life of the volume (`seed.ts` returns the existing row without
-  re-applying anything) and which `assert-seed-preserved.sh` does not inspect.
-  The licences spec therefore mutates only a disposable application, and the
-  negative path is pinned at the unit tier instead. Trigger: C6, which is already
-  required to say which application carries which case.
+- ~~**SCL14** — over-allocation is not reachable in E2E~~ — **closed by C6**, and
+  wrong when written. It reasoned that showing the figure meant writing a
+  contract against the seeded application "which persists for the life of the
+  volume and which the gate does not inspect". Both halves are true; the
+  conclusion was not. The seed writes that contract *deliberately*, and the gate
+  now inspects it. What made the item look binding was reading persistence as a
+  hazard rather than as the mechanism.
+- **SCL16** — an application with accounts and **no** contract is no longer
+  visible in the demo, because the only account-bearing application now carries
+  one. Showing both states at once needs a second account-bearing application,
+  which reds `apps.spec.ts`'s account count and `accounts.spec.ts`'s
+  tenant-scoped orphan count. Trigger: SC2, the second connector, which brings an
+  application and accounts of its own and must decide what those two assertions
+  become.
+- **SCL17** — `ensureContract` upserts with `DO UPDATE` so an edited figure
+  reaches a stack whose volume already holds the previous seed. The `DO NOTHING`
+  regression is **invisible in CI**, which boots a fresh volume and cannot tell
+  the two apart; it only exists for a developer re-seeding an existing stack.
+  Not guarded — a test would have to provision a stale volume. Trigger: any
+  change to the seeder's write strategy.
 - **SCL15** — the upload forms' friendly copy is keyed off the row-cap constants,
   so a cap change carries; a change to the ROUTE's message FORMAT would still
   drop each map to its generic fallback. Not guarded: the failure is cosmetic and
