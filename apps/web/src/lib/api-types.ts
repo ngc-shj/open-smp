@@ -20,7 +20,12 @@
 // crosses at this one place: a guard like isAccountLabelKind is the consumer
 // this anticipates, and leaving it out is what pushes the next one into
 // importing @open-smp/api-types directly.
-export { ACCOUNT_LABEL_KINDS, LINK_STATUSES, isLabelAuditKind } from '@open-smp/api-types';
+export {
+  ACCOUNT_LABEL_KINDS,
+  LINK_STATUSES,
+  MAX_UPLOAD_BYTES,
+  isLabelAuditKind,
+} from '@open-smp/api-types';
 
 export type {
   LinkStatus,

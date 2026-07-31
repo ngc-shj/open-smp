@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
-import { projectAuditPayload } from '../src/routes/events.js';
+import { projectAuditPayload, projectContractPayload } from '../src/routes/events.js';
+import { MAX_SAAS_APPS_PER_TENANT } from '../src/import-limits.js';
 
 // C29: the audit read path must not serve a snapshot whose kind is outside the
 // label-kind domain. Before C29 the check was `typeof kind === 'string'` plus a
@@ -78,5 +79,69 @@ describe('C29 acceptance: the projection validates the label-kind domain', () =>
     const projected = projectAuditPayload(auditRecord('a string', 7));
     expect(projected).not.toHaveProperty('before');
     expect(projected).not.toHaveProperty('after');
+  });
+});
+
+// C2's family. The allowlist is per kind, so a contract event projected by the
+// label branch (or by the sync default) is served empty — stored, filterable,
+// and silent about what it recorded.
+describe('C2 acceptance: the contract-import projection serves what it recorded', () => {
+  const ACTOR = '33333333-3333-3333-3333-333333333333';
+
+  it('preserves every field the writer records', () => {
+    expect(
+      projectContractPayload({
+        actorUserId: ACTOR,
+        imported: 3,
+        skipped: 1,
+        createdAppKeys: ['acme', 'globex'],
+      }),
+    ).toEqual({ actorUserId: ACTOR, imported: 3, skipped: 1, createdAppKeys: ['acme', 'globex'] });
+  });
+
+  it('keeps a zero count, which is a fact and not an absence', () => {
+    const projected = projectContractPayload({ actorUserId: ACTOR, imported: 0, skipped: 0, createdAppKeys: [] });
+
+    // A truthiness guard would drop all three and report a rejected upload as
+    // an upload with no figures.
+    expect(projected).toEqual({ actorUserId: ACTOR, imported: 0, skipped: 0, createdAppKeys: [] });
+  });
+
+  it.each([
+    ['a fractional count', { imported: 1.5 }],
+    ['a negative count', { imported: -1 }],
+    ['an infinite count', { imported: Number.POSITIVE_INFINITY }],
+    ['a numeric string', { imported: '3' }],
+  ])('omits %s rather than rendering it', (_label, corrupt) => {
+    const projected = projectContractPayload({ actorUserId: ACTOR, skipped: 2, ...corrupt });
+
+    expect(projected).not.toHaveProperty('imported');
+    // The uncorrupted sibling still projects: one bad field must not take the
+    // whole payload down.
+    expect(projected.skipped).toBe(2);
+  });
+
+  it.each([
+    ['a non-array key list', { createdAppKeys: 'acme' }],
+    ['a list holding a non-string', { createdAppKeys: ['acme', 7] }],
+    ['a list past the per-tenant ceiling', { createdAppKeys: Array(MAX_SAAS_APPS_PER_TENANT + 1).fill('a') }],
+  ])('omits %s entirely', (_label, corrupt) => {
+    const projected = projectContractPayload({ actorUserId: ACTOR, imported: 1, ...corrupt });
+
+    // Omitted, not filtered. A partly-projected list reports fewer created
+    // applications than the import created, which is the one direction an
+    // audit trail must not be wrong in.
+    expect(projected).not.toHaveProperty('createdAppKeys');
+    expect(projected.imported).toBe(1);
+  });
+
+  it('omits fields the label family carries but this one does not', () => {
+    const projected = projectContractPayload({
+      actorUserId: ACTOR,
+      saasAccountId: '44444444-4444-4444-4444-444444444444',
+      before: { kind: 'known_shared', note: null },
+    });
+
+    expect(projected).toEqual({ actorUserId: ACTOR });
   });
 });

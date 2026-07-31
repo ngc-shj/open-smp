@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
 import {
+  CONTRACT_AUDIT_KINDS,
   isAccountLabelKind,
   type DiscoveryEventListItem,
   type DiscoveryEventPayload,
@@ -10,6 +11,7 @@ import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
 import { PAGE_SIZE } from '../page-size.js';
 import { LABEL_AUDIT_KINDS } from '../audit.js';
+import { MAX_SAAS_APPS_PER_TENANT } from '../import-limits.js';
 import {
   CURSOR_MAX_LENGTH,
   decodeCursor,
@@ -99,6 +101,12 @@ function toIsoTimestamp(value: Date): string {
 // added here — leaks nothing. Fail-closed by construction.
 const AUDIT_KINDS: ReadonlySet<string> = new Set(LABEL_AUDIT_KINDS);
 
+// C2's family. A separate allowlist rather than a widened one: the label
+// projection would drop every field a contract import carries, so a stored
+// audit row would be served empty — a row that exists, answers ?source=contract,
+// and says nothing about what it recorded.
+const CONTRACT_KINDS: ReadonlySet<string> = new Set(CONTRACT_AUDIT_KINDS);
+
 function projectSyncPayload(record: Record<string, unknown>): DiscoveryEventPayload {
   const projected: DiscoveryEventPayload = {};
   if (typeof record.counts === 'object' && record.counts !== null) {
@@ -143,12 +151,51 @@ export function projectAuditPayload(record: Record<string, unknown>): DiscoveryE
   return projected;
 }
 
+// Exported for the same reason projectAuditPayload is: reaching the reject
+// branches through HTTP would need a planted corrupt row, which C27's
+// append-only privilege exists to prevent.
+export function projectContractPayload(record: Record<string, unknown>): DiscoveryEventPayload {
+  const projected: DiscoveryEventPayload = {};
+  if (typeof record.actorUserId === 'string') {
+    projected.actorUserId = record.actorUserId;
+  }
+  for (const field of ['imported', 'skipped'] as const) {
+    const value = record[field];
+    // Integer, not merely a number: a fractional or infinite count is
+    // corruption, and rendering it would give a forged figure the same
+    // authority as a real one.
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+      projected[field] = value;
+    }
+  }
+  const keys = record.createdAppKeys;
+  // Bounded by the same ceiling that bounds the writer, imported rather than
+  // restated so the two cannot disagree about how many applications a tenant
+  // can have. It constrains what a payload planted by some other means could
+  // make this response carry.
+  if (Array.isArray(keys) && keys.length <= MAX_SAAS_APPS_PER_TENANT) {
+    // Every element or none. A partly-projected list would report a smaller
+    // set of created applications than the import actually created, which is
+    // the one direction an audit trail must not be wrong in.
+    if (keys.every((key) => typeof key === 'string')) {
+      projected.createdAppKeys = keys as string[];
+    }
+  }
+  return projected;
+}
+
 function projectPayload(kind: string, payload: unknown): DiscoveryEventPayload {
   if (typeof payload !== 'object' || payload === null) {
     return {};
   }
   const record = payload as Record<string, unknown>;
-  return AUDIT_KINDS.has(kind) ? projectAuditPayload(record) : projectSyncPayload(record);
+  if (AUDIT_KINDS.has(kind)) {
+    return projectAuditPayload(record);
+  }
+  if (CONTRACT_KINDS.has(kind)) {
+    return projectContractPayload(record);
+  }
+  return projectSyncPayload(record);
 }
 
 function toListItem(row: EventRow): DiscoveryEventListItem {

@@ -2,11 +2,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
+import { MAX_UPLOAD_BYTES } from '@open-smp/api-types';
 import type { AppDeps } from './deps.js';
 import { requireSession, UnauthorizedError } from './auth.js';
 import { registerLoginRoute } from './routes/login.js';
 import { registerLogoutRoute } from './routes/logout.js';
 import { registerHrImportRoute } from './routes/hr-import.js';
+import { registerContractImportRoute } from './routes/contract-import.js';
 import { registerSaasAppsRoute } from './routes/saas-apps.js';
 import { registerSyncMatchRoutes } from './routes/sync-match.js';
 import { registerAccountsRoute } from './routes/accounts.js';
@@ -37,7 +39,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.decorate('apiRoutes', apiRoutes);
 
   void app.register(cookie);
-  void app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
+  void app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES } });
   // In-memory store: MVP runs a single api instance (docker-compose), so a
   // shared external rate-limit store is not required. Revisit if the api
   // service is ever scaled horizontally.
@@ -80,6 +82,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
         registerLogoutRoute(authenticated, deps);
         registerHrImportRoute(authenticated, deps);
+        registerContractImportRoute(authenticated, deps);
         registerSaasAppsRoute(authenticated, deps);
         registerLicensesRoute(authenticated, deps);
         registerSyncMatchRoutes(authenticated, deps);

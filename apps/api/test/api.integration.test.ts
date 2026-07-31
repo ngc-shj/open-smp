@@ -1625,6 +1625,7 @@ describe('C11 acceptance: account labeling', () => {
         'POST /api/accounts/labels/bulk',
         'POST /api/auth/login',
         'POST /api/auth/logout',
+        'POST /api/contract-import',
         'POST /api/hr-import',
         'POST /api/match',
         'POST /api/saas-apps',
