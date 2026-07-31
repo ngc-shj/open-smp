@@ -156,9 +156,18 @@ function startExecutableListing(tier: Tier): Promise<Set<string>> {
   return (async () => {
     const child = await runChild(['-w', 'exec', 'vitest', 'list', '--project', tier, '--json']);
     assertChildOk(`root executable listing (${tier})`, child);
-    return new Set(
-      (JSON.parse(child.stdout) as { file: string }[]).map((t) => path.relative(REPO_ROOT, t.file)),
-    );
+    const entries = JSON.parse(child.stdout) as { file: string }[];
+    const files = new Set(entries.map((t) => path.relative(REPO_ROOT, t.file)));
+    // This listing is only worth anything if it COLLECTED. Adding `--filesOnly`
+    // back emits the identical `{file, projectName}` shape — measured, 30 entries
+    // for 30 files — so the comparison downstream silently becomes `X \ X`, the
+    // same tautology this assertion exists to replace. A collected listing has
+    // one entry per TEST: 276 for 30 unit files, 143 for 6 integration files.
+    expect(
+      entries.length,
+      `the ${tier} executable listing has one entry per file, not per test — it did not collect, and the comparison against the claimed set is vacuous`,
+    ).toBeGreaterThan(files.size);
+    return files;
   })();
 }
 
