@@ -409,9 +409,11 @@ Each mutation is **executed**, and its **observed failing assertion message** re
 - **M28b** — narrow root `test:unit` to `vitest run --project unit packages/` → **must stay green**. The gate lives in `apps/api/test/`, so it does not run at all and nothing can observe the narrowing. This is SC56's residue, converted from a stated caveat into an observed one. Revision 5 listed this as a mutation expected to red, which contradicted its own SC55.
 - `git rm` (index **and** file together) → **stays green**, correctly: a legitimate deletion.
 
-**71 mutations executed against the shipped tree in revision 11** — 57 red-proofs and 14 allow-side controls.
+**78 mutations executed against the shipped tree in revision 12** — 64 red-proofs and 14 allow-side controls. Counts generated from the code and the results, never typed: **15** deny and **5** allow `selectorLines` cells, **5** `isExcluded` cells, **11** `runChild` sites, **12** `it` blocks, **116** assertions.
 
-**Every count in this section is generated, not typed.** Revision 10 stated the in-gate self-test count three different ways in one document — in the revision whose stated purpose was to make that quantity code-derived. Round 6's reconciliation established the rule the rest of the cycle already demonstrated: *every count that was derived reproduced; every count that was typed drifted.* Generated from the code at HEAD: **15** deny and **5** allow `selectorLines` cells, **5** `isExcluded` cells, **10** `runChild` call sites, **12** `it` blocks, **110** assertions.
+**The set caught the round-7 fix reproducing the shape it was written to remove.** `vitest list --json --filesOnly` emits entries identical to `--filesOnly` alone (30 for 30 files, measured), so restoring the flag turned the comparison against the claimed set back into `X \ X` — third consecutive appearance of that tautology in this area, second inside code written to replace it. The guard now derives from the data: a collected listing has one entry per *test*, 276 for 30 unit files.
+
+Two expectations were corrected rather than the code — **M-X1** reds on the named-artifact population assertion, which fires first and names the artifact actually lost; **M-D2** is retired because the stage-ancestry property moved to a `compose-smoke` step against the built images, and that loss of local coverage is recorded as SC70 rather than dropped silently.
 
 | # | Mutation | Observed |
 |---|---|---|
@@ -465,11 +467,18 @@ Each mutation is **executed**, and its **observed failing assertion message** re
 | MP1 | a committed test.only removes 42 of 43 E2E specs | exit 1 — `playwright listing: exited 1` |
 | MP2 | test.fail inverts the login proof | exit 1 — `playwright specs carrying a declaration-level annotation` |
 | MP3 | forbidOnly removed from the playwright config | exit 1 — `e2e/playwright.config.ts no longer sets forbidOnly, so a committed test.only would run alone in CI` |
-| MD1 | a second pnpm install outside the verified deps stage | exit 1 — ``pnpm install` runs somewhere other than the verified deps stage` |
-| MD2 | the shipped images stop inheriting the verified stage | exit 1 — `compose build targets that do not inherit the verified `deps` stage, so their dependencies are installed by something this gate never read` |
-| MX1 | a third exclusion folded into the markdown clause | exit 1 — `the scanned set does not match the sanctioned exclusions` |
+| MD1 | a second pnpm install outside the verified deps stage | exit 1 — `a pnpm install-family command runs somewhere other than the verified deps stage` |
+| MX1 | a third exclusion folded into the markdown clause | exit 1 — ``.github/workflows/ci.yml` is not in the selector scan's population` |
 | MX2 | pnpm matched by one filename again, not the family | exit 1 — `the predicate no longer detects the .cjs entrypoint npm i -g installs` |
 | MX3 | the rel() resolver ignores the derived workdir | exit 1 — `a WORKDIR-absolute destination no longer resolves to a repo-relative path` |
+| MV1 | a whole-file skip on the workflow-pins SHA gate | exit 1 — `unit files that are claimed and assigned but contribute no executable test — a whole-file skip` |
+| MV2 | the executable listing falls back to --filesOnly | exit 1 — `the unit executable listing has one entry per file, not per test — it did not collect, and the comparison against the claimed set is vacuous` |
+| MI1 | a chained pnpm install outside the deps stage | exit 1 — `a pnpm install-family command runs somewhere other than the verified deps stage` |
+| MI2 | the `pnpm i` alias outside the deps stage | exit 1 — `a pnpm install-family command runs somewhere other than the verified deps stage` |
+| MI3 | the pnpm.cjs entrypoint installing outside the deps stage | exit 1 — `a pnpm install-family command runs somewhere other than the verified deps stage` |
+| MX4 | the scan population is narrowed by a pathspec | exit 1 — `files on disk vs files claimed by a runner` |
+| ME1 | eslint's ignore list widened to skip a package | exit 1 — `eslint's ignore list changed; `pnpm lint`'s file set is not what it was` |
+| ME2 | e2e's test script narrowed with --grep | exit 1 — `no session-expiry spec discovered; titles were:` |
 | MB7 | the impossible name collides with a real member | exit 1 — `the impossible name collides with a real workspace member` |
 | MB8 | the run-family allow cell reverts to the short-circuiting --help | exit 1 — `a legitimate selector using a run-family subcommand exited 1:` |
 
@@ -492,7 +501,7 @@ Each mutation is **executed**, and its **observed failing assertion message** re
 | MA10 | indented Dockerfile instructions | exit 0 |
 | MA11 | a comment explaining the abandoned form in an executable artifact | exit 0 |
 
-**Not falsifiability mutations**: `docker build --target deps` and the in-image probes (SC62, manual steps 4/4b) are positive controls.
+**Not falsifiability mutations**: `docker build --target deps`, the in-image manifest adjudication, the e2e execution assertion and the typecheck-coverage step are CI-side positive controls; the first three were additionally red-proven locally by planting `process.exit(0)` in `globalSetup` and by narrowing `apps/api`'s tsconfig `include`.
 
 ### Other verification
 
