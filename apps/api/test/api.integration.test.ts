@@ -1611,6 +1611,7 @@ describe('C11 acceptance: account labeling', () => {
         'GET /api/events',
         'GET /api/identities/:identityId',
         'GET /api/jobs/:jobId',
+        'GET /api/licenses',
         'GET /api/saas-apps',
         // Fastify registers a HEAD companion for every GET; they are listed so
         // the count stays exact rather than approximately right.
@@ -1618,6 +1619,7 @@ describe('C11 acceptance: account labeling', () => {
         'HEAD /api/events',
         'HEAD /api/identities/:identityId',
         'HEAD /api/jobs/:jobId',
+        'HEAD /api/licenses',
         'HEAD /api/saas-apps',
         'PATCH /api/saas-apps/:saasAppId',
         'POST /api/accounts/labels/bulk',
