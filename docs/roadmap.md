@@ -115,12 +115,7 @@ it reports what ONE audit run observed rather than a durable inventory (`SCT3`).
 
    It also confirmed the entry's own caution about evidence. No test in this
    repository can show the Google call works (no real tenant), so the connector
-   is proven by injection and the plan says so rather than implying otherwise. The cheapest route into discovery: `admin.directory
-   .tokens.list` on the connector that is already wired, writing into
-   `discovery_events`, which is already append-only. Converts "accounts we know
-   about" into "applications nobody registered", which is the discovery half of the
-   category, without the MV3 build and distribution chain the browser extension
-   would add.
+   is proven by injection and the plan says so rather than implying otherwise.
 3. **SC2 — a second connector.** *Next.* The reason it was third rather than
    first is argued below, and SC3's completion changed the balance — see the
    second data point there.
