@@ -5,6 +5,10 @@ plan does not overrule that — it makes the decision answerable with numbers
 instead of impressions, and states the one condition under which the order
 should change.
 
+Revision 3 — **C2's detector built, and the remainder ratcheted.** 128 strings
+across 14 files remain; four components are migrated to prove the ratchet moves.
+C3 is not built.
+
 Revision 2 — **C1 built and executed**, with `NavBar` as its first consumer so
 the dictionary is not a shape nobody renders. C2 (the remaining 85 strings) and
 C3 (the switch control) are not built.
@@ -89,7 +93,7 @@ place the switch is actually exercised.
   `Record` and a hook; `next-intl` brings routing this plan has just decided
   against.
 
-### C2 — the strings — NOT BUILT
+### C2 — the strings — DETECTOR BUILT, 128 remaining
 
 - 92 sites, and the risk is not the count but the **silent partial migration**:
   a page half-extracted looks finished and reads correctly in English.
@@ -154,3 +158,38 @@ while translating nothing.
 
 Suite state after C1: unit 468 green (38 files), integration 227 green, E2E 53
 green against the compose stack, lint and typecheck clean.
+
+## What C2's detector cost to get right
+
+**It found its own false positives twice.** `>` and `<` are also TypeScript
+generics and comparisons, so the text-node regex matched across
+`useState<Status>('idle')` and `a.n > 0 && a.n < 9` and reported the code
+between them as copy — inflating the first count from 128 to 147.
+
+The discriminator is deliberately **one rule** — copy contains a run of two or
+more letters — rather than a list of operators to exclude. That list grows with
+every new expression shape, and **a filter whose exclusion list keeps acquiring
+members is at the wrong level**; `SC60` is where this repository paid for that
+lesson the first time. Its paired direction is asserted: `"(1 left, 1 unknown)"`
+is real copy with punctuation, and a discriminator wide enough to remove the
+false positives by excluding punctuation would drop it silently.
+
+**The remainder is asserted in both directions.** Over budget fails, and *under*
+budget fails too — a budget that has gone slack stops resisting the next literal
+added to that file. An entry reaching zero is deleted rather than left at 0.
+
+**The addition-guard caught the new test**: it reads repository files and was not
+listed as a control. Family (a) working exactly as designed, in the same session
+that extended family (b) by hand (`SC61`).
+
+### C2's mutations
+
+| mutation | result |
+|---|---|
+| a budget is loosened | reds |
+| the detector stops reading copy attributes | reds |
+| the word rule is widened to a single letter | reds |
+| the allowlist swallows real copy | reds |
+
+Suite state: unit 478 green (39 files), integration 227 green, E2E 53 green,
+lint and typecheck clean.
