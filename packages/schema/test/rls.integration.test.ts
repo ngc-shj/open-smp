@@ -526,6 +526,174 @@ describe('SCL8 acceptance: a transaction cannot re-point itself at another tenan
   });
 });
 
+describe('SCL10 acceptance: no foreign key accepts a cross-tenant parent', () => {
+  // Referential-integrity checks run as the REFERENCED table's OWNER and bypass
+  // RLS, so a single-column FK accepts a child pointing at another tenant's
+  // parent: the row's own tenant_id satisfies WITH CHECK while the RI check
+  // sees a row the same transaction cannot SELECT. Migration 0006 closed it for
+  // saas_contracts; 0008 closes it for the rest.
+  //
+  // Attempted through adminPool, which bypasses RLS entirely. That is the
+  // point: the refusal has to come from the CONSTRAINT, not from a policy the
+  // attacker is already inside of.
+
+  it('no single-column foreign key remains between two tenant-scoped tables', async () => {
+    // Derived from pg_constraint, and deriving is what found the recorded list
+    // was short: SCL10 named four, the catalog returned six. The two it omitted
+    // were added to account_labels a cycle after the entry was written.
+    const { rows } = await adminPool.query<{ conname: string }>(
+      `SELECT c.conname
+         FROM pg_constraint c
+         JOIN pg_class src ON src.oid = c.conrelid
+        WHERE c.contype = 'f'
+          AND src.relnamespace = 'public'::regnamespace
+          AND cardinality(c.conkey) = 1
+          AND EXISTS (SELECT 1 FROM pg_attribute a
+                       WHERE a.attrelid = c.conrelid AND a.attname = 'tenant_id' AND a.attnum > 0)
+          AND EXISTS (SELECT 1 FROM pg_attribute a
+                       WHERE a.attrelid = c.confrelid AND a.attname = 'tenant_id' AND a.attnum > 0)`,
+    );
+
+    expect(rows.map((r) => r.conname)).toEqual([]);
+  });
+
+  it('every remaining tenant-to-tenant foreign key carries tenant_id', async () => {
+    // Anti-vacuity for the assertion above: an empty foreign-key set satisfies
+    // it. This counts the composite ones, so a migration that DROPPED the keys
+    // instead of re-declaring them fails here.
+    const { rows } = await adminPool.query<{ n: string }>(
+      `SELECT count(*) AS n
+         FROM pg_constraint c
+         JOIN pg_class src ON src.oid = c.conrelid
+        WHERE c.contype = 'f'
+          AND src.relnamespace = 'public'::regnamespace
+          AND cardinality(c.conkey) = 2
+          AND EXISTS (SELECT 1 FROM pg_attribute a
+                       WHERE a.attrelid = c.confrelid AND a.attname = 'tenant_id' AND a.attnum > 0)`,
+    );
+
+    // Six from 0008 plus saas_contracts' own from 0006.
+    expect(Number(rows[0]!.n)).toBe(7);
+  });
+
+  /**
+   * A parent set nothing else references, created per case.
+   *
+   * The first draft reused the seeded rows and three cases failed on 23505
+   * instead of 23503 — tenant B already had a link and a label on its seeded
+   * account, so the deny cases collided on a UNIQUE pair and took the allow
+   * case with them. That is the defect C1's own history records, reproduced
+   * here; pinning the SQLSTATE rather than asserting `rejects.toThrow()` is
+   * what made it visible instead of green.
+   */
+  async function freshParents(tenantId: string) {
+    const ids = {
+      saasAppId: randomUUID(),
+      saasAccountId: randomUUID(),
+      identityId: randomUUID(),
+      userId: randomUUID(),
+    };
+    const suffix = ids.saasAppId.slice(0, 8);
+    await adminPool.query(
+      `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_key_version)
+       VALUES ($1, $2, 'fk-probe-' || $3, 'FK Probe', 1)`,
+      [ids.saasAppId, tenantId, suffix],
+    );
+    await adminPool.query(
+      `INSERT INTO saas_accounts (id, tenant_id, saas_app_id, external_id, account_status, is_admin)
+       VALUES ($1, $2, $3, 'fk-probe-' || $4, 'active', false)`,
+      [ids.saasAccountId, tenantId, ids.saasAppId, suffix],
+    );
+    await adminPool.query(
+      `INSERT INTO identities (id, tenant_id, employee_id, primary_email, display_name, status)
+       VALUES ($1, $2, 'fk-probe-' || $3, 'fk-probe-' || $3 || '@example.com', 'FK Probe', 'active')`,
+      [ids.identityId, tenantId, suffix],
+    );
+    await adminPool.query(
+      `INSERT INTO users (id, tenant_id, email, password_hash)
+       VALUES ($1, $2, 'fk-probe-' || $3 || '@example.com', 'argon2id$dummy')`,
+      [ids.userId, tenantId, suffix],
+    );
+    return ids;
+  }
+
+  type Parents = Awaited<ReturnType<typeof freshParents>>;
+
+  const crossTenantInserts: [string, (a: Parents, b: Parents) => { text: string; values: unknown[] }][] = [
+    [
+      'saas_accounts.saas_app_id',
+      (a) => ({
+        text: `INSERT INTO saas_accounts (tenant_id, saas_app_id, external_id, account_status, is_admin)
+               VALUES ($1, $2, 'cross-' || gen_random_uuid()::text, 'active', false)`,
+        values: [tenantB, a.saasAppId],
+      }),
+    ],
+    [
+      'account_links.saas_account_id',
+      (a, b) => ({
+        text: `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence)
+               VALUES ($1, $2, $3, 'matched', 1.0)`,
+        values: [tenantB, a.saasAccountId, b.identityId],
+      }),
+    ],
+    [
+      'account_links.identity_id',
+      (a, b) => ({
+        text: `INSERT INTO account_links (tenant_id, saas_account_id, identity_id, status, confidence)
+               VALUES ($1, $2, $3, 'matched', 1.0)`,
+        values: [tenantB, b.saasAccountId, a.identityId],
+      }),
+    ],
+    [
+      'sessions.user_id',
+      (a) => ({
+        text: `INSERT INTO sessions (tenant_id, user_id, token_hash, expires_at)
+               VALUES ($1, $2, 'cross-' || gen_random_uuid()::text, now() + interval '1 day')`,
+        values: [tenantB, a.userId],
+      }),
+    ],
+    [
+      'account_labels.saas_account_id',
+      (a) => ({
+        text: `INSERT INTO account_labels (tenant_id, saas_account_id, kind) VALUES ($1, $2, 'known_shared')`,
+        values: [tenantB, a.saasAccountId],
+      }),
+    ],
+    [
+      'account_labels.created_by',
+      (a, b) => ({
+        text: `INSERT INTO account_labels (tenant_id, saas_account_id, kind, created_by)
+               VALUES ($1, $2, 'known_shared', $3)`,
+        values: [tenantB, b.saasAccountId, a.userId],
+      }),
+    ],
+  ];
+
+  it.each(crossTenantInserts)('%s refuses a parent in another tenant', async (_label, build) => {
+    const [a, b] = await Promise.all([freshParents(tenantA), freshParents(tenantB)]);
+    const { text, values } = build(a, b);
+
+    // The SQLSTATE, not just "it threw". 23505 would mean the fixture collided
+    // and the foreign key was never consulted.
+    await expect(adminPool.query(text, values)).rejects.toMatchObject({ code: '23503' });
+  });
+
+  it('still accepts a parent in the SAME tenant', async () => {
+    // The paired allow case. A migration that made every one of these fail —
+    // by referencing a column that is never populated, say — would satisfy
+    // every rejection above (RT10).
+    const b = await freshParents(tenantB);
+
+    await expect(
+      adminPool.query(
+        `INSERT INTO account_labels (tenant_id, saas_account_id, kind, created_by)
+         VALUES ($1, $2, 'service_account', $3) RETURNING id`,
+        [tenantB, b.saasAccountId, b.userId],
+      ),
+    ).resolves.toMatchObject({ rowCount: 1 });
+  });
+});
+
 describe('C1 acceptance: saas_contracts constraints are schema-enforced', () => {
   // Each case asserts the SQLSTATE *and* the constraint name. SQLSTATE alone
   // cannot distinguish them: the composite FK and the tenants FK both raise
