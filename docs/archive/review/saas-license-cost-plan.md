@@ -556,10 +556,17 @@ eight new contract assertions, lint and typecheck clean.
   2. **What it does not close**: an injection still reads and writes everything
   the current tenant can. This turned a whole-database bypass into a
   whole-tenant one.
-- **SCL9** — neither `MEMBER_TABLES` nor `tenantScopedTables` is catalog-derived,
-  so the next tenant-scoped table has the same exposure C1 closed by hand.
-  Trigger: the next new table; the fix is one query against
-  `information_schema.columns`.
+- ~~**SCL9**~~ — **CLOSED in cycle 8.** `tenantScopedTables` is derived from the
+  schema module (every exported Drizzle table carrying a `tenantId`, `tenants`
+  excluded because it IS the tenant), and `MEMBER_TABLES` — which `it.each`
+  needs at collection time, so it stays a literal — is checked against
+  `pg_policies` rather than trusted. A wider net was added that the first check
+  cannot cast: every table carrying a `tenant_id` must be a member or a stated
+  exception, because starting from the policies cannot see a table that has the
+  column and no policy at all. `tenant_context` is that exception, named with
+  its reason. The entry's predicted fix — "one query against
+  `information_schema.columns`" — was close: it took two, in two tiers, because
+  the unit side has no database to query.
 - ~~**SCL10**~~ — **CLOSED in cycle 8** (migration 0008). Every foreign key
   between two tenant-scoped tables now carries `tenant_id` into the reference,
   so the RI check — which runs as the referenced table's owner and bypasses RLS

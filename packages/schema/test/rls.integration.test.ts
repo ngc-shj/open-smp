@@ -526,6 +526,51 @@ describe('SCL8 acceptance: a transaction cannot re-point itself at another tenan
   });
 });
 
+describe('SCL9 acceptance: the member list is the catalog\'s, not a copy of it', () => {
+  // MEMBER_TABLES drives every matrix in this file, and it was hand-kept. A
+  // tenant-scoped table added without being added to it gets no sweep coverage
+  // at all — silently, because every existing case still passes. That is the
+  // exposure C1 closed for saas_contracts BY HAND, and would have had to close
+  // again for the next one.
+  //
+  // The list stays, because `it.each` needs it at collection time and the
+  // per-table test names are worth having. What changes is that it is now
+  // CHECKED against the catalog rather than trusted.
+  it('names exactly the tables carrying a tenant_isolation policy', async () => {
+    const { rows } = await adminPool.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_policies
+        WHERE policyname = 'tenant_isolation' AND schemaname = 'public'
+        ORDER BY tablename`,
+    );
+    const fromCatalog = rows.map((r) => r.tablename);
+
+    // Non-empty, or the comparison below is between two empty sets.
+    expect(fromCatalog.length).toBeGreaterThan(0);
+    expect([...MEMBER_TABLES].sort()).toEqual([...fromCatalog].sort());
+  });
+
+  it('every table with a tenant_id column is either a member or a stated exception', async () => {
+    // The wider net. A table could carry tenant_id and have no policy at all —
+    // which the assertion above cannot see, because it starts from the policies.
+    const { rows } = await adminPool.query<{ tablename: string }>(
+      `SELECT c.relname AS tablename
+         FROM pg_class c
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND a.attnum > 0
+        WHERE c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace
+        ORDER BY c.relname`,
+    );
+
+    // `tenant_context` (migration 0007) is the one table that carries a
+    // tenant_id and must NOT have a policy: it is what the policies READ, and a
+    // policy on it would be circular. The app role holds no privilege on it at
+    // all, which is asserted separately above.
+    const EXCEPTIONS = ['tenant_context'];
+    const expected = [...MEMBER_TABLES, ...EXCEPTIONS].sort();
+
+    expect(rows.map((r) => r.tablename).sort()).toEqual(expected);
+  });
+});
+
 describe('SCL10 acceptance: no foreign key accepts a cross-tenant parent', () => {
   // Referential-integrity checks run as the REFERENCED table's OWNER and bypass
   // RLS, so a single-column FK accepts a child pointing at another tenant's
