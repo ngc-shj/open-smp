@@ -621,6 +621,12 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       'apps/web/test/page-spec-membership.test.ts', // I26.6 — every page under apps/web/src/app has an E2E spec
       'apps/worker/test/upsert-link-domain.test.ts', // the last type-level checkpoint before a status reaches the enum
       'packages/matcher/test/package-edge.test.ts', // pins a manifest dependency edge pnpm hoisting would hide
+      // SC61 family (b), added in cycle 8. Each derives a domain rather than
+      // reading a repository file, so the addition-guard below — which is
+      // mechanical for family (a) only — cannot see any of them.
+      'packages/schema/test/tables.test.ts', // SCL9 — the tenant-scoped member set derives from the schema module
+      'packages/queues/test/job-ids.test.ts', // SC47 — job ids are dedupe keys; a tenant collision merges two tenants' work
+      'apps/api/test/mutate-anchor.test.ts', // the mutation harness's own failing state; without it every mutation reads as red
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

@@ -567,7 +567,29 @@ Two expectations were corrected rather than the code — **M-X1** reds on the na
 - **SC60** *(code review round 3; rewritten in revision 8; REOPENED in revision 9)* — revision 8 closed this outright with "Trigger: none — closed" on the strength of C11 being an enforceable boundary. It is not: `--no-fail-if-no-match` disables it per invocation. **What C11 closed is the notation half** — a selector held in a variable, in the environment, behind a wrapper, quoted, or folded by YAML is genuinely covered, because the decision happens inside pnpm. **What remains open is an invocation that asks to be exempted**, and the only observer of that is C9, a text scan with its own stated residue. Revision 9 recorded that observer as covering the exemption surface; it covered two spellings of eleven, which is why revision 10 replaced the enumeration with a derivation over the setting's name. The residue that survives is C9's own — the YAML folded scalar and the quoted `#` — not a gap in which exemptions it recognises. So the residue is now two-sided and neither side is closed by the other: C11 sees selectors C9 cannot read, C9 sees exemptions C11 cannot refuse. Trigger: a pnpm release changing the opt-out surface (asserted, so it reds), or any artifact that needs `--no-fail-if-no-match` for a legitimate reason — at which point the sanctioned repair is `|| true` at the call site, visible and local, never the global flag.
 - **SC60-original** *(what revision 8 wrote, kept because the correction is the lesson)* — **C11 closed this, and the rewrite is the point.** For three rounds this entry recorded the scan's residue — a selector held in a variable, read from the environment, or hidden behind a wrapper script — as something only "a runtime observer of the invocation" could close, and then deferred it. Round 6 added two more members to the same residue (quoted and JSON-array forms, YAML folded scalars) and asked the obvious next question: if no text scan can decide this, why is the control a text scan? `failIfNoMatch: true` is the runtime observer, it is one line, and it was available the whole time. **Every route listed here for three rounds is now covered by C11**, because the decision happens inside pnpm rather than over the text that invokes it. What remains under this ID is C9's residue *as a tripwire* — the YAML folded scalar and the quoted-`#` case, both measured MISS, neither a hole in the hazard. The lesson worth carrying: a residue that keeps acquiring members is evidence the control is at the wrong level, not evidence the needle needs widening. Trigger: none — closed.
 - **SC63** *(revision 8, with C11)* — `pnpm --filter <real-pkg> test` where the package has no `test` script exits **0**, with or without `failIfNoMatch`, because the filter *did* match and pnpm's `test` shorthand treats a missing script as a no-op (measured both ways). This is channel 3's second route. It is closed for the repository's own artifacts by C2 clause 3, which requires a declared runner to have a `test` script, and by C7's choice of `-C` (measured: `pnpm -C <pkg-without-script> test` → exit 254). What is not closed is a *future* artifact that uses `--filter <real-pkg> test`. Trigger: any new artifact dispatching by `--filter`; C9 reds on it, which is the tripwire doing the job it is scoped for.
-- **SC61** *(code review round 3)* — control 6's list covers two families: tests that read repository files, and tests that import a domain and compare it against a second declaration. The addition-guard is mechanical for the first family only; the second must still be added by hand. A control of the second family added without being listed is invisible, and its later deletion would then be invisible too — two events rather than one, which is why it is recorded rather than blocking. Trigger: adding a domain-derivation pin, or finding a mechanical discriminator for family (b).
+- **SC61** *(code review round 3; trigger fired in cycle 8)* — control 6's list
+  covers two families: tests that read repository files, and tests that import a
+  domain and compare it against a second declaration. The addition-guard is
+  mechanical for the first only.
+
+  **The trigger fired and the entry was nearly missed.** Cycle 8 added three
+  family-(b) controls — `packages/schema/test/tables.test.ts` (SCL9's member-set
+  derivation), `packages/queues/test/job-ids.test.ts` (SC47's dedupe-key pins)
+  and `apps/api/test/mutate-anchor.test.ts` (the mutation harness's own failing
+  state) — and none appeared in `CONTROL_FILES`, because none reads a
+  repository file. All three are listed now.
+
+  **No mechanical discriminator was found, and what was considered is recorded
+  so the next attempt does not re-derive it.** "Imports from `../src/`" matches
+  most unit tests in the repository. "Compares against a frozen domain constant"
+  matches genuine controls and ordinary domain tests equally — `tables.test.ts`
+  was both for cycles before it became a control. "Asserts `toEqual` on an
+  array" is a spelling, and binding to spellings is the defect this plan spends
+  its length on. The honest position is that family (b) is a judgement about
+  what a test's DELETION would remove, which no regex reads.
+
+  Trigger: adding another domain-derivation pin — list it in the same commit —
+  or finding a discriminator that survives the three rejections above.
 - **SC62** *(revision 7, with C10; measurements sourced in revision 8)* — C10 reads the Dockerfile as **text**. The strong form is the built image, and the two differ in a direction worth naming rather than implying.
 
   Executed this cycle, with the command and status behind each figure (R50):
