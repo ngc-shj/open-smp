@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "members": [
+    {
+      "id": "U0000000003",
+      "team_id": "T0001",
+      "name": "hanako",
+      "real_name": "Hanako Suzuki",
+      "deleted": true,
+      "is_admin": false,
+      "is_bot": false,
+      "updated": 1750000003,
+      "profile": { "email": "hanako.suzuki@corp.example", "display_name": "hanako" }
+    },
+    {
+      "id": "U0000000004",
+      "team_id": "T0001",
+      "name": "contractor",
+      "real_name": "Ken Contractor",
+      "deleted": false,
+      "is_admin": false,
+      "is_bot": false,
+      "is_restricted": true,
+      "is_ultra_restricted": false,
+      "updated": 1750000004,
+      "profile": { "email": "ken@partner.example", "display_name": "contractor" }
+    }
+  ],
+  "response_metadata": { "next_cursor": "cursor-page3" }
+}
