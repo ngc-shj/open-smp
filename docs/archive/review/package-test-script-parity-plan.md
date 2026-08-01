@@ -579,9 +579,34 @@ Two expectations were corrected rather than the code — **M-X1** reds on the na
 
   **CLOSED at the start of cycle 7 — the trigger fired and was acted on.** The repository was made **public**, and the two calls that returned 403 now return `404 Branch not protected` and `[]`: readable, and empty because nothing was configured yet. `main` now requires the status checks `checks`, `integration` and `compose-smoke`, with `strict: true`, `enforce_admins: true`, a pull request required at **zero** approvals, and force pushes and branch deletion denied. The approval count is zero by necessity, not by preference: GitHub does not let an author approve their own pull request, so on a single-contributor repository with admins enforced any non-zero count is a deadlock. **Measured to have teeth rather than assumed** — PR #11 reported `mergeable: MERGEABLE` with `mergeStateStatus: BLOCKED` while `integration` was still running, and flipped to `CLEAN` only when all three checks passed. The merge was held by the checks, not by the diff. What this does *not* do is make the checks honest about what they ran; that remains SC56's class, and SC69 is now the live question rather than a foregone one.
 - **SC68** *(revision 12)* — SC56's route list is incomplete in a way that matters, because it is the licence for the plan's largest deferral. Two measured-green routes are absent and are *cheaper* than anything listed, since they touch neither jobs nor steps: **narrowing `on:`** (deleting `pull_request:` leaves the workflow and every job intact while no PR is ever checked) and **`paths`/`paths-ignore` filters** (`paths-ignore: ['**']`). Job-level `continue-on-error` is listed only in its step form. Rather than extend the enumeration a fourth time — the shape this cycle records eighteen instances of — the item is restated as a closed-form property: **nothing in the repository reads `ci.yml`'s structure, so any edit to it that changes what runs is unobserved.** A measured observer exists and is recorded under SC69.
-- **SC69** *(revision 12)* — a fail-closed-*enough* observer for the `ci.yml` class needs no YAML parser: `GET /repos/{repo}/actions/runs/{run_id}/jobs` returns, in **0.88 s** measured, every job and **every step name with its own conclusion** — a record of what *executed*, produced by GitHub rather than inferred from dialect-bearing text, which is the objection that killed revision 5's substring read. A final `audit` job with `if: always()`, `needs: [checks, integration, compose-smoke]` and `permissions: actions: read` could assert a committed `(job, step)` manifest, catching a commented-out step, `if: false` at either level, a deleted or renamed job, and a narrowed matrix — all three forms the substring read passed on. It does **not** catch its own deletion, the workflow being deleted, or SC68's `on:` narrowing: SC56 applied to the observer. Cost: ~10–20 s of runner time, one committed manifest whose drift direction is a false red, and widening `permissions:` to add `actions: read` — non-trivial in a file whose comment explains why the floor is declared explicitly. **Not implemented**, because SC67 establishes that no check blocks a merge here anyway; recorded with its measurement so the next cycle decides on evidence rather than re-deriving it.
+- **SC69** — **BUILT in cycle 8** (`scripts/assert-ci-executed.sh` + the `audit`
+  job + `.github/ci-executed-manifest.json`). The entry deferred it on the
+  grounds that "SC67 establishes that no check blocks a merge here anyway";
+  SC67 is closed — measured this cycle, `main`'s protection carries
+  `["checks","integration","compose-smoke"]` with `strict: true` and
+  `enforce_admins: true` — so the reason expired and the item was built at its
+  own stated cost.
 
-  **That reason is void as of cycle 7.** SC67 is closed and the three CI jobs are required on `main`, so an `audit` job that reds *would* hold the merge — the observer would be enforcing rather than annotating. Nothing about the measurement changed (0.88 s, one request, no YAML parser); what changed is that the deferral is now a **cost** decision — ~10–20 s of runner time, a committed manifest whose drift direction is a false red, and `actions: read` added to a `permissions:` floor whose narrowness is deliberate — rather than a decision that the control could not matter. The one part to re-derive before implementing, not to inherit from this entry: whether `if: always()` on a job whose `needs` failed still reaches the API call, since `checks` failing skips `integration` and `compose-smoke` and the manifest would then be compared against a run that legitimately did not execute them.
+  The manifest was **derived from a run, not typed**: `gh api
+  .../actions/runs/<id>/jobs` filtered to successful steps, minus the runner's
+  implicit ones and the `if: always()` teardown. Red-proven three ways before it
+  ever ran in CI — a manifest step the run did not execute, a manifest job the
+  run did not have, and a job the run had that the manifest omitted.
+
+  `needs:` without `if: always()` does double duty: it confines the assertion to
+  runs whose gates all succeeded (on a red run a failed job's later steps are
+  `skipped`, indistinguishable from `if: false`, so the observer would report
+  the failure twice under a misleading name), and it makes a **deleted or
+  renamed gate job invalidate the whole workflow**, which is louder than
+  anything the script could say.
+
+  **Step coverage is one-directional and says so**: a step added and not listed
+  is not asserted. The JOB set is checked by equality instead, so a whole gate
+  job added without being observed is a false red until the manifest names it.
+  Residue, per SC56 applied to the observer: its own deletion, this workflow's
+  deletion, and SC68's `on:` narrowing. **It is not a required check**, so today
+  it reports rather than blocks — that is a branch-protection setting, not a
+  property of this job.
 - **SC70** *(revision 12)* — the stage-ancestry property — *is the verified install the one every shipped image inherits?* — **is no longer checked in the unit tier**, and its mutation (M-D2, `FROM deps AS source` → `FROM base AS source`) is retired rather than passing. Revision 11 checked it by regexing `target:` out of `docker-compose.yml`, which had three measured defects in one line; the check moved to a `compose-smoke` step that asserts against the **built images** instead. The consequence is stated rather than implied: between CI runs, a local edit that detaches a shipped image from the verified stage is unobserved, where previously a broken text parse observed it unreliably. That is a deliberate trade — an unreliable local signal for a reliable remote one — and it is the shape SC56 already covers, since the observer now lives in CI. Trigger: any move to check image contents locally, e.g. if `docker build --target deps` becomes cheap enough for a pre-push hook.
 - Out of scope: adding tests, changing CI job structure, filling `packages/queues`' coverage.
 

@@ -1,0 +1,36 @@
+{
+  "checks": [
+    "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "Run pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+    "Run actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "Run pnpm install --frozen-lockfile",
+    "Run pnpm lint",
+    "Run pnpm typecheck",
+    "Run pnpm test:unit",
+    "Every assigned test file is inside a typecheck program"
+  ],
+  "integration": [
+    "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "Run pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+    "Run actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "Run pnpm install --frozen-lockfile",
+    "Run pnpm test:integration"
+  ],
+  "compose-smoke": [
+    "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "Run pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+    "Run actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "Run pnpm install --frozen-lockfile",
+    "Build and start the stack",
+    "Every built image carries every workspace manifest",
+    "Wait for API health endpoint",
+    "Wait for seed job to complete",
+    "Log in as the seeded demo admin",
+    "Assert seeded demo shows >=1 orphan account",
+    "Assert seeded demo shows >=1 ghost account",
+    "Install Playwright chromium browser",
+    "Run the e2e suite",
+    "The e2e suite actually executed its whole discovered set",
+    "Assert seed acceptance bar survived the e2e suite"
+  ]
+}
