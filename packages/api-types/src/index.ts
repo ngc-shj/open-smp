@@ -257,6 +257,14 @@ export type DiscoveryEventPayload = {
   scanned?: number;
   failed?: number;
   applications?: DiscoveredApplication[];
+  /**
+   * The application that was AUDITED — not one that was discovered. Sync events
+   * name their application through `source`; an audit cannot, because `source`
+   * is the reserved family value that makes `?source=token-audit` select the
+   * audits. Without this field two audits in one tenant differ only by `runId`,
+   * which is what building the reader found.
+   */
+  auditedAppKey?: string;
 };
 
 export type DiscoveryEventListItem = {

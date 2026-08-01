@@ -31,6 +31,7 @@ export {
 
 export type {
   LinkStatus,
+  DiscoveredApplication,
   BillingCycle,
   LicenseMatchState,
   LicenseRollupItem,

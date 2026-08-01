@@ -25,6 +25,13 @@ export const SEEDED_CONTRACT_SEATS = 3;
 export const SEEDED_CONTRACT_UNIT_PRICE = '12.00';
 export const SEEDED_CONTRACT_CURRENCY = 'USD';
 
+// C4. The two grants the seeded audit reports. The second is the finding: an
+// application Google does not recognise, holding a mail scope, that nobody
+// registered here.
+export const SEEDED_DISCOVERED_KNOWN_CLIENT_ID = '407408718192.apps.googleusercontent.com';
+export const SEEDED_DISCOVERED_ANONYMOUS_CLIENT_ID = 'shadow-it-client.example.com';
+export const SEEDED_DISCOVERED_UNSTATED_CLIENT_ID = 'unstated-client.example.com';
+
 // The application the connectors do not sync: no credentials, no accounts, and
 // an ANNUAL cycle where the other is monthly, so the two rows are visibly not
 // comparable (SCL4).

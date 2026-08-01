@@ -224,6 +224,11 @@ export function projectTokenAuditPayload(record: Record<string, unknown>): Disco
   if (typeof record.runId === 'string') {
     projected.runId = record.runId;
   }
+  // Which application the run audited. Two audits in one tenant are otherwise
+  // distinguishable only by runId, which names nothing a reader knows.
+  if (typeof record.auditedAppKey === 'string' && record.auditedAppKey !== '') {
+    projected.auditedAppKey = record.auditedAppKey;
+  }
   for (const field of ['scanned', 'failed'] as const) {
     const value = record[field];
     if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {

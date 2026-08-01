@@ -191,6 +191,7 @@ export async function runTokenAudit(
     // different fact from finding nothing.
     await recordEvent(deps, job.tenantId, 'token_audit_failed', {
       runId,
+      auditedAppKey: appKey,
       error: `connector ${appKey} does not support token audit`,
     });
     return { runId, scanned: 0, failed: 0, applications: 0 };
@@ -221,6 +222,7 @@ export async function runTokenAudit(
       if (repeatsForEveryAccount) {
         await recordEvent(deps, job.tenantId, 'token_audit_failed', {
           runId,
+          auditedAppKey: appKey,
           scanned,
           failed,
           error: error.message,
@@ -238,6 +240,7 @@ export async function runTokenAudit(
   const applications = aggregate(grants);
   await recordEvent(deps, job.tenantId, 'token_audit_completed', {
     runId,
+    auditedAppKey: appKey,
     scanned,
     failed,
     applications,

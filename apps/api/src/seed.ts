@@ -10,7 +10,9 @@ import { createPool, withTenant } from '@open-smp/schema';
 import { encryptCredentials, parseEncryptionKeys } from '@open-smp/crypto';
 import { defaultRules, matchAccounts, type AccountView, type IdentityView } from '@open-smp/matcher';
 import { z } from 'zod';
+import { TOKEN_AUDIT_EVENT_SOURCE } from '@open-smp/api-types';
 import { ARGON2ID_OPTIONS } from './auth.js';
+import { recordTokenAudit } from './audit.js';
 
 // Demo credentials are duplicated as a raw curl payload in
 // .github/workflows/ci.yml (compose-smoke) — YAML cannot import these
@@ -147,6 +149,37 @@ const CONTRACT_ONLY_CONTRACT: SeedContract = {
   termEnd: '2027-03-31',
   note: 'Bought by finance, connected to nothing.',
 };
+
+// C4. One grant everybody made to a tool IT knows about, and one that nobody
+// registered — `anonymous: true` is the discovery signal, and the demo exists to
+// put those two side by side.
+const SEEDED_AUDIT_RUN_ID = '00000000-0000-4000-8000-00000000a0d1';
+const SEEDED_DISCOVERED_APPLICATIONS = [
+  {
+    clientId: '407408718192.apps.googleusercontent.com',
+    displayName: 'Approved Analytics',
+    userCount: 4,
+    anonymous: false,
+    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+  },
+  {
+    clientId: 'shadow-it-client.example.com',
+    displayName: 'Unreviewed Mail Plugin',
+    userCount: 2,
+    anonymous: true,
+    scopes: ['https://mail.google.com/', 'https://www.googleapis.com/auth/contacts.readonly'],
+  },
+  {
+    // The third state, seeded so something renders it. `anonymous: null` is
+    // "the provider did not say", and a demo carrying only true and false
+    // leaves the branch that distinguishes them observed by nothing.
+    clientId: 'unstated-client.example.com',
+    displayName: null,
+    userCount: 1,
+    anonymous: null,
+    scopes: [],
+  },
+];
 
 const ACCOUNTS: SeedAccount[] = [
   {
@@ -352,6 +385,55 @@ async function ensureContract(
   });
 }
 
+/**
+ * Plants one completed token audit (SC3/C4).
+ *
+ * Fabricated, like every other seeded fact here: VE1 means no real Google
+ * tenant exists, `sync` fails against the demo's fake credentials by design,
+ * and an audit therefore cannot run end to end anywhere this repository can
+ * reach. Without this the discovery page has only an empty state to show, and
+ * SC5 recorded what shipping an unrendered shape costs.
+ *
+ * `discovery_events` is append-only by privilege (migration 0005 revokes UPDATE
+ * and DELETE from opensmp_app), so there is no upsert to reach for: a re-seed
+ * can only add a row or add nothing. It adds one when the seeded findings
+ * differ from the newest run's, which is what makes an edit here reach a stack
+ * that already carries one — and the page shows the newest run per
+ * application, so the superseded row stays in the log where an audit trail
+ * wants it.
+ */
+async function ensureTokenAudit(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+): Promise<void> {
+  await withTenant(pool, tenantId, async (tx) => {
+    // Guarded on the CONTENT, not on existence. An existence guard is the only
+    // form available for an append-only table — and it means an edit to the
+    // seeded findings never reaches a stack whose volume already carries a
+    // run, which is SCL17's shape in a table where DO UPDATE is not merely
+    // unused but revoked. Measured here: adding a third application produced a
+    // green seed and an unchanged page.
+    const { rows } = await tx.query(
+      `SELECT 1 FROM discovery_events
+       WHERE tenant_id = $1 AND source = $2 AND kind = 'token_audit_completed'
+         AND payload -> 'applications' = $3::jsonb
+       LIMIT 1`,
+      [tenantId, TOKEN_AUDIT_EVENT_SOURCE, JSON.stringify(SEEDED_DISCOVERED_APPLICATIONS)],
+    );
+    if (rows.length > 0) {
+      return;
+    }
+
+    await recordTokenAudit(tx, tenantId, 'token_audit_completed', {
+      runId: SEEDED_AUDIT_RUN_ID,
+      auditedAppKey: SAAS_APP_KEY,
+      scanned: ACCOUNTS.length,
+      failed: 0,
+      applications: SEEDED_DISCOVERED_APPLICATIONS,
+    });
+  });
+}
+
 async function ensureIdentities(
   pool: ReturnType<typeof createPool>,
   tenantId: string,
@@ -522,6 +604,7 @@ async function main(): Promise<void> {
     await ensureContract(pool, tenantId, saasAppId, SEEDED_CONTRACT);
     const contractOnlyAppId = await ensureContractOnlyApp(pool, tenantId);
     await ensureContract(pool, tenantId, contractOnlyAppId, CONTRACT_ONLY_CONTRACT);
+    await ensureTokenAudit(pool, tenantId);
     const identityIdByEmployeeId = await ensureIdentities(pool, tenantId);
     const accountIdByExternalId = await ensureAccounts(pool, tenantId, saasAppId);
     const counts = await computeAndPersistLinks(
