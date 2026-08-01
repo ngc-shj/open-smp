@@ -546,14 +546,17 @@ eight new contract assertions, lint and typecheck clean.
   double-counted the most ordinary reclaimable seat. Trigger: a connector that
   declares per-application activity, read as a static credential-free descriptor.
 - **SCL8** — **`withTenant` does not pin `app.tenant_id` for the life of the
-  transaction.** Measured: `set_config('app.tenant_id', …, true)` inside an open
-  transaction re-points every RLS predicate, and `REVOKE SET ON PARAMETER` is
-  accepted but not enforced for a placeholder GUC. Pre-existing and not introduced
-  here, but it sets the blast radius of any SQL injection at *full tenant-isolation
-  bypass*. Not fixed: the fix is a connection/role change affecting every route.
-  Trigger: the next cycle touching `packages/schema`'s connection handling — where
-  the `withTenant` docstring should also be corrected, since it claims a stronger
-  property than the GUC has.
+  transaction**, so the blast radius of any SQL injection here is full
+  tenant-isolation bypass. Re-measured in cycle 8 and **the recorded fix was
+  wrong**: this entry priced it at "a connection/role change affecting every
+  route", and measuring found table privileges are enforced where parameter
+  privileges are not — `REVOKE SET ON PARAMETER … FROM PUBLIC` is accepted and
+  enforces nothing, but a context table the app role holds no grant on cannot be
+  written, read, or replaced. The fix is a migration, one connection helper and
+  one test file: no route changes, no per-tenant pools. Planned in
+  `docs/archive/review/tenant-context-pinning-plan.md`, revision 1, with the
+  prototype's measurements. **Still open** — the plan is written, nothing is
+  built.
 - **SCL9** — neither `MEMBER_TABLES` nor `tenantScopedTables` is catalog-derived,
   so the next tenant-scoped table has the same exposure C1 closed by hand.
   Trigger: the next new table; the fix is one query against
