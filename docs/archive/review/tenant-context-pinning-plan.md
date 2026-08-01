@@ -5,6 +5,9 @@ recorded it and priced the fix at "a connection/role change affecting every
 route". **That price is wrong, and this plan exists because measuring it made the
 fix an order of magnitude smaller.**
 
+Revision 2 — **built and executed.** C1, C2 and C3 shipped together; the plan's
+own split would have left a migration whose policies nobody moved.
+
 Revision 1 — written from measurement. Nothing is built.
 
 ## The defect, re-measured rather than inherited
@@ -82,7 +85,7 @@ pools, no new connection strings.
 
 ## Contracts
 
-### C1 — the context table and its two functions — NOT BUILT
+### C1 — the context table and its two functions — BUILT (`migrations/0007_tenant_context.sql`)
 
 - The **write-once predicate is the whole control** and must be red-proven by
   calling the setter twice, not by reading it.
@@ -91,7 +94,7 @@ pools, no new connection strings.
 - No grant on the table, ever — `GRANT USAGE` on the schema and `EXECUTE` on the
   two functions is the entire surface the app role gets.
 
-### C2 — the policies — NOT BUILT
+### C2 — the policies — BUILT
 
 - All 18 expressions move together. A policy left on the GUC is a table that is
   still re-pointable, and it would be invisible: the sweep's per-table matrices
@@ -105,7 +108,7 @@ pools, no new connection strings.
   table this migration might also miss. Derive the policy set from
   `pg_policies` in the same test rather than from the list.
 
-### C3 — `withTenant` and its docstring — NOT BUILT
+### C3 — `withTenant` and its docstring — BUILT
 
 - The docstring currently claims a stronger property than the GUC has. It is
   corrected in the same contract that makes the claim true, not before.
@@ -141,3 +144,57 @@ pools, no new connection strings.
   catalog-derived) or `SCL10` (four single-column FKs accept cross-tenant
   references). Both are adjacent and both stay open; C2 borrows `SCL9`'s fix for
   its own test only.
+
+## What execution added
+
+**The policy move is a loop over `pg_policies`, and the migration checks its own
+work.** Writing the member set as a list was the obvious form and it is the one
+that leaves a table behind; the migration refuses to finish if it moved none, or
+if any `tenant_isolation` policy still matches `%current_setting%`.
+
+**`SET search_path` on both functions**, which revision 1 did not mention and
+which is not decoration: a `SECURITY DEFINER` function without it resolves
+`tenant_context` through the CALLER's path, and `pg_temp` is searched first when
+it is not named — so a caller could plant a temp table of that name and have the
+setter write there. `pg_temp` is named last on both.
+
+**Two claims elsewhere had gone false and are corrected in the same change.**
+`withTenant`'s docstring claimed the property the GUC did not have. And
+`auth.ts` explained that an unvalidated non-UUID reaches `set_config` and then
+the RLS predicate's `::uuid` cast — after 0007 it is refused at the function
+call instead, measured as `invalid input syntax for type uuid`. The validation
+is still required and the failure shape is unchanged; only the location moved,
+and a comment naming the wrong location is the class `SC65` records.
+
+**A fake caught the change.** `auth.test.ts` allowlists the statements its fake
+pool expects and threw on `SELECT set_tenant_context($1)`. That is the fake
+doing its job — one that accepted anything would have let a connection-layer
+change through untested.
+
+### The mutations
+
+Five run: three red, two survivals declared in advance.
+
+| mutation | result |
+|---|---|
+| the setter loses its write-once predicate | reds |
+| the app role is granted SELECT/DELETE on the context table | reds |
+| one policy is left on the GUC | reds |
+| the migration stops checking its own work | survives — **declared** |
+| the reader stops being `STABLE` | survives — **declared** |
+
+The fourth is a belt on a fastened belt: the sweep asserts the same property
+independently, so the migration's self-check has no failing state while the loop
+above it is correct. The fifth is a performance property — per-row instead of
+per-statement evaluation inside an RLS predicate — and nothing here measures it.
+Both are recorded rather than chased.
+
+### Suite state
+
+unit 440 green (36 files), integration 215 green (9 files; the RLS sweep went 63
+to 76), E2E 49 green, `assert-seed-preserved.sh` intact, lint and typecheck
+clean.
+
+The E2E run was against a stack rebuilt with `docker compose down` **without**
+`-v`, so 0007 was applied to a database that already carried data — the upgrade
+path, not just the fresh-install one.

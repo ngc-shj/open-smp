@@ -408,12 +408,14 @@ describe('C1 acceptance: cross-tenant SELECT and UPDATE/DELETE are no-ops', () =
   });
 });
 
-describe('C1 acceptance: fail-closed with no GUC set', () => {
-  it.each(MEMBER_TABLES)('%s: a session with no app.tenant_id GUC reads zero rows', async (table) => {
+describe('C1 acceptance: fail-closed with no tenant claimed', () => {
+  it.each(MEMBER_TABLES)('%s: a transaction that claimed no tenant reads zero rows', async (table) => {
     const client = await appPool.connect();
     try {
       await client.query('BEGIN');
-      // Deliberately do not call set_config('app.tenant_id', ...).
+      // Deliberately do not call set_tenant_context(...). current_tenant_id()
+      // returns NULL, which every policy compares as false — the same
+      // fail-closed shape the GUC form had for an unset setting (SCL8).
       const { rows } = await client.query(`SELECT * FROM ${table}`);
       expect(rows).toHaveLength(0);
       await client.query('ROLLBACK');
@@ -423,37 +425,104 @@ describe('C1 acceptance: fail-closed with no GUC set', () => {
   });
 });
 
-describe('C1/D7 acceptance: an empty-string (defined but empty) GUC is fail-closed, not a cast error', () => {
-  it('SELECT under a pooled client with app.tenant_id set to the empty string reads zero rows and does not throw', async () => {
+describe('SCL8 acceptance: a transaction cannot re-point itself at another tenant', () => {
+  // THE assertion this change exists to make possible, and one no earlier test
+  // could fail on: the per-table matrices answer correctly under both the old
+  // GUC predicate and the new one, because both are right for a well-behaved
+  // transaction. What was wrong was what a MISbehaving one could do.
+  //
+  // Measured before the fix, as the application's own role: set the GUC to
+  // tenant A, read 2 rows, call set_config again with another uuid, read 0 —
+  // so any SQL injection was a full tenant-isolation bypass rather than one
+  // query's rows.
+
+  it('refuses a second claim inside one transaction', async () => {
     const client = await appPool.connect();
     try {
-      // First exercise one complete, normal withTenant-shaped transaction on
-      // this same pooled client, so the GUC has definitely been set to a real
-      // value at least once on this connection before we probe the empty-GUC
-      // path — this is the pooled-connection reuse scenario D7 addresses,
-      // distinct from the "GUC never set on this connection" case covered by
-      // the no-GUC test above.
       await client.query('BEGIN');
-      await client.query('SELECT set_config($1, $2, true)', ['app.tenant_id', tenantA]);
-      const { rows: warmupRows } = await client.query('SELECT * FROM identities WHERE tenant_id = $1', [
-        tenantA,
-      ]);
-      expect(warmupRows.length).toBeGreaterThan(0);
-      await client.query('COMMIT');
+      await client.query('SELECT set_tenant_context($1)', [tenantA]);
 
-      // Now, on the SAME client/connection, open a fresh transaction and set
-      // the GUC to the empty string — defined but empty, not unset. Without
-      // the D7 NULLIF fix, `''::uuid` throws a cast error inside the RLS
-      // predicate instead of yielding zero rows.
-      await client.query('BEGIN');
-      await client.query("SELECT set_config('app.tenant_id', '', true)");
-
-      await expect(client.query('SELECT * FROM identities')).resolves.toMatchObject({ rows: [] });
+      await expect(
+        client.query('SELECT set_tenant_context($1)', [tenantB]),
+      ).rejects.toMatchObject({ code: '42501' });
 
       await client.query('ROLLBACK');
     } finally {
       client.release();
     }
+  });
+
+  it.each(MEMBER_TABLES)('%s: the visible rows do not move when a re-point is attempted', async (table) => {
+    const client = await appPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT set_tenant_context($1)', [tenantA]);
+      const before = await client.query(`SELECT id FROM ${table}`);
+
+      // The attempt aborts the transaction, so the row set is compared across
+      // a fresh one on the same pooled connection — which also proves the
+      // refusal did not leave the claim in a state the next transaction
+      // inherits.
+      await expect(client.query('SELECT set_tenant_context($1)', [tenantB])).rejects.toThrow();
+      await client.query('ROLLBACK');
+
+      await client.query('BEGIN');
+      await client.query('SELECT set_tenant_context($1)', [tenantA]);
+      const after = await client.query(`SELECT id FROM ${table}`);
+      await client.query('ROLLBACK');
+
+      // Non-empty, or "unchanged" is a comparison between two empty sets — the
+      // vacuous shape this suite exists to refuse.
+      expect(before.rows.length).toBeGreaterThan(0);
+      expect(after.rows).toEqual(before.rows);
+    } finally {
+      client.release();
+    }
+  });
+
+  it.each(['SELECT * FROM tenant_context', 'DELETE FROM tenant_context'])(
+    'denies the application role direct access: %s',
+    async (statement) => {
+      // The setter's refusal is only a control while the table underneath it is
+      // unreachable. Without these, an injection could delete its own row and
+      // claim again.
+      const client = await appPool.connect();
+      try {
+        await expect(client.query(statement)).rejects.toMatchObject({ code: '42501' });
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  it('cannot replace the reader function', async () => {
+    const client = await appPool.connect();
+    try {
+      await expect(
+        client.query('CREATE OR REPLACE FUNCTION current_tenant_id() RETURNS uuid LANGUAGE sql AS $$ SELECT NULL::uuid $$'),
+      ).rejects.toThrow();
+    } finally {
+      client.release();
+    }
+  });
+
+  it('no tenant_isolation policy still reads the GUC', async () => {
+    // Derived from pg_policies, not from MEMBER_TABLES — that list is hand-kept
+    // (SCL9), so a table missing from it is a table the migration might also
+    // have missed, and this is the assertion that would not notice.
+    const { rows } = await adminPool.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_policies
+        WHERE policyname = 'tenant_isolation'
+          AND (coalesce(qual, '') LIKE '%current_setting%'
+            OR coalesce(with_check, '') LIKE '%current_setting%')`,
+    );
+    expect(rows.map((r) => r.tablename)).toEqual([]);
+
+    const { rows: total } = await adminPool.query<{ n: string }>(
+      "SELECT count(*) AS n FROM pg_policies WHERE policyname = 'tenant_isolation'",
+    );
+    // Anti-vacuity: an empty policy set satisfies the assertion above.
+    expect(Number(total[0]!.n)).toBeGreaterThan(0);
   });
 });
 
