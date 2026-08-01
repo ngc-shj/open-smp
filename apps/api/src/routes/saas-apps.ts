@@ -2,13 +2,27 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { encryptCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
+import { CONNECTOR_APP_KEYS } from '@open-smp/api-types';
 import type { SaasAppListItem, SaasAppCreateResponse } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
+import { countTenantApps, lockTenantAppCatalog } from '../app-catalog.js';
+import { MAX_SAAS_APPS_PER_TENANT } from '../import-limits.js';
 import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 
-const saasAppBodySchema = z
+/** The catalog is full. Thrown inside the transaction so the ceiling is read under the lock. */
+class CatalogFullError extends Error {}
+
+// SC2/C2. `z.enum` over a NAMED constant, not an inline array — and not only
+// for the usual reason. saas-app-key-pin.test.ts locates this declaration with
+// a regex that stops at the first comma, so an inline `z.enum(['a', 'b'])`
+// truncates and the control compares a fragment.
+//
+// Exported so that same file can assert what this schema ACCEPTS rather than
+// how it is spelled. A source scan cannot tell `z.enum(CONNECTOR_APP_KEYS)`
+// from a field that was quietly widened to `z.string()`.
+export const saasAppBodySchema = z
   .object({
-    key: z.literal('google-workspace'),
+    key: z.enum(CONNECTOR_APP_KEYS),
     displayName: z.string().min(1),
     credentials: z.record(z.string(), z.string()),
   })
@@ -42,6 +56,23 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
       let created: SaasAppCreateResponse;
       try {
         created = await withTenant(deps.pool, tenantId, async (tx) => {
+          // SCL11's trigger, closed. Until C2 this route had NO ceiling at all:
+          // `MAX_SAAS_APPS_PER_TENANT` was counted only by the contract import,
+          // and what bounded this path was `UNIQUE (tenant_id, key)` against a
+          // one-literal field — an accident of the schema doing a limit's job.
+          // Widening the field to the connector set moves that bound from 1 to
+          // |CONNECTOR_APP_KEYS| rather than removing it, so this is not yet a
+          // reachable overrun; it is the control the route was asserted to have
+          // and did not.
+          //
+          // Under the lock, because `SELECT count(*)` takes none at READ
+          // COMMITTED and two concurrent creates would otherwise both read the
+          // same pre-insert count.
+          await lockTenantAppCatalog(tx, tenantId);
+          if ((await countTenantApps(tx, tenantId)) >= MAX_SAAS_APPS_PER_TENANT) {
+            throw new CatalogFullError();
+          }
+
           const insertResult = await tx.query<{ id: string }>(
             `INSERT INTO saas_apps (tenant_id, key, display_name)
              VALUES ($1, $2, $3)
@@ -67,6 +98,9 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
           return { id: saasAppId, key, displayName };
         });
       } catch (err: unknown) {
+        if (err instanceof CatalogFullError) {
+          return reply.code(409).send({ error: 'catalog_full' });
+        }
         // Scoped to this insert's known unique constraint only — any other
         // error (or a future unique constraint added to this same path)
         // rethrows rather than being mismapped to duplicate_key.

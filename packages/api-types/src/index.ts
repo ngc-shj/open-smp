@@ -171,6 +171,47 @@ export const RESERVED_EVENT_SOURCES = Object.freeze([
   TOKEN_AUDIT_EVENT_SOURCE,
 ] as const);
 
+// SC2/C2. The `saas_apps.key` values a connector exists for, and the domain
+// `POST /saas-apps` accepts.
+//
+// It lives HERE and not in the worker's connector registry, though the registry
+// is what actually resolves a key to an implementation. Two reasons, and both
+// are properties of this repository rather than preferences:
+//
+//   1. `apps/api` depends on no connector package. Deriving the route's domain
+//      from the registry needs a dependency edge that does not exist, and
+//      creating it would pull every provider SDK into the API process to read a
+//      list of strings.
+//   2. The registry is INJECTABLE, so tests can register a fake. A route whose
+//      accepted domain derives from an injectable map has a runtime-mutable
+//      domain, and `SaaSConnector.id` is an unconstrained `string` authored
+//      inside a connector package.
+//
+// So the arrow points from here TO the registry, and the registry is asserted
+// to hold exactly these keys — not the other way round.
+export const CONNECTOR_APP_KEYS = Object.freeze(['google-workspace'] as const);
+
+export type ConnectorAppKey = (typeof CONNECTOR_APP_KEYS)[number];
+
+// Enforced here, at module init, rather than only in a test.
+//
+// The property — no application registerable under a key that collides with a
+// product-owned `discovery_events.source` — held until C2 because the route
+// pinned one literal. It now holds because these two sets are disjoint, and
+// they have different owners: a connector author picks the left, an audit
+// family picks the right. A build-time check on two independently-changing sets
+// is not a boundary, so the collision refuses to load rather than shipping.
+{
+  const collisions = CONNECTOR_APP_KEYS.filter((key) =>
+    (RESERVED_EVENT_SOURCES as readonly string[]).includes(key),
+  );
+  if (collisions.length > 0) {
+    throw new Error(
+      `connector app keys collide with reserved event sources: ${collisions.join(', ')}`,
+    );
+  }
+}
+
 export function isAccountLabelKind(value: unknown): value is AccountLabelKind {
   return (
     typeof value === 'string' && (ACCOUNT_LABEL_KINDS as readonly string[]).includes(value)
