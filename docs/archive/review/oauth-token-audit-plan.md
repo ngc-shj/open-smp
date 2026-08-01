@@ -2,6 +2,11 @@
 
 Cycle 8. `SC3` on `docs/roadmap.md`, which put it second and said why.
 
+Revision 2 — **C1 built and executed.** Three of its four questions turned out to
+be answerable from the installed `googleapis` types rather than from
+documentation, and the measurements decided them; the fourth remains VE3 and the
+code says so at the site that depends on it.
+
 Revision 1 — **written from measurement, not from argument.** Cycle 7 recorded
 that its plan-review rounds returned 4 then 8 Critical findings, every round-2
 Critical inside a round-1 repair, and all twelve claims the plan had asserted
@@ -10,7 +15,8 @@ record what the execution decided — is the method here. This document states
 what was measured and what each contract must answer; it does not argue for a
 design it has not run.
 
-**Nothing is built yet.** Every contract below is NOT BUILT.
+**Built: C1.** C2, C3 and C4 are not, and each carries the findings it must
+answer when it is.
 
 ## The order decision this plan already triggered
 
@@ -123,28 +129,44 @@ Read from the source this cycle, not recalled:
 
 ## Contracts
 
-### C1 — `listTokens` on the connector — NOT BUILT
+### C1 — `listTokens` on the connector — BUILT
 
-What it must answer before it is written:
+**Three of the four questions were measurable after all**, from the installed
+`googleapis` types rather than from documentation. Revision 1 framed them as
+design choices; the types decided them:
 
-- **One auth client per capability, or one widened client?** Widening
-  `scopes: [SCOPE]` to include `admin.directory.user.security` means an operator
-  who has not updated domain-wide delegation gets `unauthorized_client` on the
-  **whole assertion** — so a missing token scope would break `listUsers` and take
-  `sync` down for every existing deployment. A second client, built only when
-  `listTokens` is called, confines that failure to the capability that needs it.
-  C1 must state which, and why, and mark the claim VE3.
-- **The signature.** `listUsers(ctx)` streams a domain; tokens are per user. Does
-  `listTokens(ctx, userKey)` take one user, or does it take the account set and
-  own its own fan-out? The first keeps the connector dumb and puts the bound in
-  the worker; the second hides N calls behind one iterable.
-- **What `RawToken` carries.** `RawAccount` exists as a shared shape with a zod
-  schema (`raw-account.schema.ts`). A token shape needs the same treatment or an
-  explicit reason not to.
-- **The `raw` field.** `RawAccount.raw` is "provider payload, stored in
-  `discovery_events` only", gated by `DISCOVERY_STORE_RAW`. Token payloads name
-  third-party applications and the scopes granted — decide whether that is
-  raw-payload material at all.
+- `Schema$Tokens` carries `{kind, etag, items}` and **no `nextPageToken`**, and
+  `Params$Resource$Tokens$List` accepts **`userKey` alone** — no `pageToken`, no
+  `maxResults`, no `customer`.
+- So the return is `Promise<readonly RawToken[]>`, **not** an `AsyncIterable`
+  like `listUsers`: a streaming signature would promise paging the endpoint does
+  not have.
+- And the per-user fan-out is **forced by the provider**, not chosen — which is
+  why it belongs to the caller, where C2 can state its bound.
+
+**`RawToken` carries no `raw` field**, unlike `RawAccount`. The provider payload
+adds `kind` and `etag` and nothing else; every field an audit needs is projected,
+so storing the blob would be a retention and disclosure surface with no consumer.
+It gets `rawTokenSchema` for the same reason `RawAccount` has one — the worker
+parses what crosses rather than trusting it.
+
+`anonymous` and `nativeApp` are **`boolean | null`, never coerced**. Google
+returns them as optional, and `Boolean(undefined)` reports an application Google
+does not recognise as one it does — the direction that hides the discovery this
+feature exists for. `null` is "the provider did not say", which is a third state.
+
+**The fourth question stays VE3, and the code says so where it matters.**
+`tokens.list` needs `admin.directory.user.security`, requested by its **own JWT
+client**: domain-wide delegation authorizes a scope SET, so widening
+`scopes: [SCOPE]` would fail `unauthorized_client` for the *whole assertion* and
+take `listUsers` — and `sync`, the entire inventory — down for any operator who
+had not yet updated the admin console. Two clients confine that to the capability
+needing the scope. The constant's comment states this as the reason for the
+design and explicitly **not** as a measured fact.
+
+The shared retry helper now takes an operation name. It hardcoded `users.list` in
+both its messages, and a token failure reporting a user-list failure sends the
+reader to the wrong call.
 
 ### C2 — the worker job — NOT BUILT
 
@@ -184,7 +206,7 @@ gap is not re-opened, not to be designed now.
 
 | ID | Subject | Status |
 |----|---------|--------|
-| C1 | `listTokens` on the interface and the Google connector | pending |
+| C1 | `listTokens` on the interface and the Google connector | **locked — built and executed** |
 | C2 | the worker job and its bound | pending |
 | C3 | storage, reserved source, projection branch | pending |
 | C4 | the read surface | pending |
@@ -206,6 +228,38 @@ survived and that survivor was the cycle's most valuable finding — a test bloc
 that could not fail on the property it named. The harness asserts each anchor
 occurs exactly once before editing, because a regex that matches nothing produces
 a green run that reads as "the mutation survived" when nothing was mutated.
+
+### C1's mutations, and the one that repeated cycle 7's lesson
+
+Nine run. Eight red; one survival was **predicted and recorded**, and one was not
+— and the unpredicted one was the finding.
+
+| mutation | result |
+|---|---|
+| absent `anonymous`/`nativeApp` coerced to `false` | reds |
+| the token request carries `users.list`'s parameters | reds |
+| a failed token read reports `users.list` again | reds |
+| a missing `clientId` is yielded rather than refused | reds |
+| the schema makes the three-state fields optional booleans | reds |
+| the schema stops requiring the aggregation key | reds |
+| the abort check is removed entirely | reds |
+| the abort check moves after the client build | **survives — expected** |
+| **a missing scope list becomes `undefined`** | **survived — see below** |
+
+The expected survival is recorded rather than chased: building the JWT client
+issues no request, so moving the check across it is behaviour-preserving. The
+assertion is about the check existing before the *request*, and the mutation that
+removes it entirely reds.
+
+The unexpected one is the same shape cycle 7 found in `formatMoney`. The test
+named "defaults a missing scope list to empty", and the fixture grant it read
+carried `"scopes": []` — **present and empty, not absent**. Both inputs produce
+`[]`, so dropping the `?? []` changed nothing the assertion could see. The
+fixture did not contain the case the test was named for. Corrected by removing
+the key, after which the mutation reds.
+
+Suite state after C1: unit 417 green (34 files), integration 194 green, lint and
+typecheck clean.
 
 ## Considerations & constraints
 
