@@ -525,7 +525,14 @@ Two expectations were corrected rather than the code — **M-X1** reds on the na
 
 ### Scope contract
 
-- **SC47** — `packages/queues` has zero test coverage. Removing its `test` script makes the gap visible; C2 clause 1's symmetry keeps the cycle that fills it from minting an always-failing script. Owner: the next cycle touching queue code.
+- ~~**SC47**~~ — **CLOSED in cycle 8**, at the owner this entry named: "the next
+  cycle touching queue code". Cycle 8 added a third queue, its job data and its
+  id function, so the trigger fired on that cycle's own work. `packages/queues`
+  now has tests and its `test` script and `vitest` devDependency return
+  together, which is what C2 clause 1's symmetry requires. What they assert is
+  the property a job id actually carries — it is a DEDUPE KEY, so a collision
+  between two tenants silently merges their work — rather than that the strings
+  are these strings. Four mutations, four red.
 - **SC49** — `e2e` is outside C1's domain, derived from its own declared runner dependency. Control 5 has **no carve-out**.
 - **SC50** — no change to the root config's project definitions or the CI job structure. C6 removes a dead key; C7 changes two commands; C8 adds assertions only.
 - **SC51** — the gate proves `vitest list` with the canonical arguments resolves the assigned set, and separately that the script is byte-identical to the canonical `run` form. It does not prove `run` and `list` resolve identically; that is vitest's invariant and cannot be closed from outside without recursion. Trigger: a vitest major upgrade, or any observed divergence.
