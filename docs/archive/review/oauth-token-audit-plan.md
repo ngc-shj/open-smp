@@ -2,6 +2,12 @@
 
 Cycle 8. `SC3` on `docs/roadmap.md`, which put it second and said why.
 
+Revision 3 — **C2 and C3 built and executed, together.** The plan drew C2 at
+"the job" and C3 at "where its output goes", and that split did not survive
+contact: a job whose result is stored nowhere cannot be executed, and execution
+is this cycle's standard for a contract being done. The aggregation half of C3
+is deliberately still out — see below.
+
 Revision 2 — **C1 built and executed.** Three of its four questions turned out to
 be answerable from the installed `googleapis` types rather than from
 documentation, and the measurements decided them; the fourth remains VE3 and the
@@ -15,8 +21,8 @@ record what the execution decided — is the method here. This document states
 what was measured and what each contract must answer; it does not argue for a
 design it has not run.
 
-**Built: C1.** C2, C3 and C4 are not, and each carries the findings it must
-answer when it is.
+**Built: C1, C2, C3 (minus aggregation).** C4 is not, and neither is a durable
+per-application view; each carries the findings it must answer.
 
 ## The order decision this plan already triggered
 
@@ -168,32 +174,68 @@ The shared retry helper now takes an operation name. It hardcoded `users.list` i
 both its messages, and a token failure reporting a user-list failure sends the
 reader to the wrong call.
 
-### C2 — the worker job — NOT BUILT
+### C2 — the worker job — BUILT (`apps/worker/src/token-audit.ts`)
 
-- **N accounts → N calls.** The bound belongs here, named for its subject the way
-  SC5 named its caps (`HR_IMPORT_MAX_ROWS` / `CONTRACT_IMPORT_MAX_ROWS`), not
-  `MAX_USERS`.
-- **Its own queue, or a phase of `sync`?** A phase inherits `sync`'s
-  all-or-nothing transaction and its dedupe; a queue needs its own `*JobData`,
-  `*JobId` and worker registration. Neither is obviously right and the plan does
-  not guess.
-- **Failure model.** `sync` records `sync_failed` in its own committed
-  transaction so a failed run leaves a trail. A per-user fan-out fails
-  *partially*, which `sync` never does — the contract must say what a run that
-  read 900 of 1000 users records.
+**Its own queue.** Three measured reasons, and the third is the one revision 1
+did not have: its input is `saas_accounts` rather than the connector's user
+stream, so it runs without re-syncing; it fails partially, which `sync`'s
+all-or-nothing transaction cannot express; and **`runSync` holds one transaction
+open across its entire connector stream**, so a phase inside it would hold a
+pooled connection for as many HTTP round-trips as the tenant has accounts. This
+job reads the account list in one short transaction, runs the fan-out with no
+connection held, and writes in another.
 
-### C3 — storage and the read path — NOT BUILT
+**`TOKEN_AUDIT_MAX_ACCOUNTS`**, named for its subject. The fan-out is one request
+per account — forced by the provider, per C1 — so an unbounded run on a large
+tenant is thousands of sequential calls against a rate-limited API. The account
+query is `ORDER BY external_id LIMIT n`, so the cap selects a deterministic
+subset rather than whatever the planner returned first.
 
-- **A new source, reserved.** NF4 is mechanical; what C3 decides is the value and
-  the kinds.
-- **A projection branch is not optional.** SC5/C2 measured the failure: a stored
-  row under an unbranched kind serves `{}`. Whatever payload this writes needs
-  its branch and its allowlist in the same contract.
-- **Aggregation.** FR1 asks for applications and a count of granting users;
-  `discovery_events` is a log of runs. Where the "one row per discovered
-  application" view comes from — a query over events, or a table — is C3's
-  subject, and a table means `SCL9`'s catalog-derivation gap and `SCL10`'s
-  composite-FK obligation both come due.
+**Partial success is the ordinary outcome**, and this is the first job in the
+codebase that has one. The rule is not "how bad is the error" but **"will it
+repeat for every account"**: `auth` and `fatal` abort the run, because 999
+further attempts cannot improve a delegation problem and issuing them is the cost
+the branch exists to avoid. Everything else counts against that account and the
+run continues.
+
+A **malformed grant** is the same case, and the first draft of its test assumed
+otherwise. The boundary `rawTokenSchema.parse` rejection costs its own account,
+not the audit: killing the run would be the all-or-nothing behaviour this job
+deliberately does not have, and the alternative is not silence — a systematic
+connector defect surfaces as `scanned: 0` beside a `failed` equal to the account
+count, which is louder than one thrown error.
+
+### C3 — storage and the read path — BUILT, except aggregation
+
+**The source is `token-audit`, and reserving it was not a decision.**
+`saas-app-key-pin.test.ts` asserts every `*_EVENT_SOURCE` the shared package
+exports is a member of `RESERVED_EVENT_SOURCES` — so SC5's control did the work,
+mechanically, the first time the constant was added.
+
+**The run aggregates; no table.** FR1's figure — applications and how many users
+granted each — is computed in the job over one run and stored as the event's
+payload. A table was the alternative and would have brought `SCL9`'s
+catalog-derivation gap and `SCL10`'s composite-FK obligation due inside this
+contract. The cost is stated rather than hidden: **this reports what ONE run
+observed, and cross-run history does not exist** (`SCT3`).
+
+The payload is bounded twice — `TOKEN_AUDIT_MAX_APPLICATIONS` and
+`TOKEN_AUDIT_MAX_SCOPES_PER_APPLICATION` — and the application list is sorted
+**most-granted first**, so a truncated list keeps the row an operator most needs
+to see rather than an arbitrary one.
+
+**The projection branch, and the test that can actually see it.** The unit tests
+call `projectTokenAuditPayload` directly, so they pass whether or not
+`projectPayload` routes the kind to it — and an unrouted kind falls through to
+the sync branch, which drops every field. That is precisely SC5/C2's measured
+defect. Only the HTTP-level assertion in `api.integration.test.ts` observes the
+routing, and the mutation that deletes the branch reds exactly that one.
+
+Corrupt entries are dropped **entry-wise**, unlike the contract import's
+all-or-nothing key list. The difference is the claim each makes: that list says
+"these are the applications created", where a dropped entry falsifies it; this
+one says "what the run observed", already truncated by the writer's own cap, so a
+corrupt entry costs only itself.
 
 ### C4 — the read surface — NOT BUILT
 
@@ -207,8 +249,8 @@ gap is not re-opened, not to be designed now.
 | ID | Subject | Status |
 |----|---------|--------|
 | C1 | `listTokens` on the interface and the Google connector | **locked — built and executed** |
-| C2 | the worker job and its bound | pending |
-| C3 | storage, reserved source, projection branch | pending |
+| C2 | the worker job and its bound | **locked — built and executed** |
+| C3 | storage, reserved source, projection branch | **locked — built and executed** |
 | C4 | the read surface | pending |
 
 ## Testing strategy
@@ -261,6 +303,30 @@ the key, after which the mutation reds.
 Suite state after C1: unit 417 green (34 files), integration 194 green, lint and
 typecheck clean.
 
+### C2 / C3's mutations
+
+Nine run, nine red — no survivors and no anchor misses.
+
+| mutation | result |
+|---|---|
+| the fan-out loses its bound | reds |
+| an auth failure is counted like any other | reds |
+| every error aborts the run | reds |
+| the run reports no failure count | reds |
+| an unsupported connector reads as a clean empty run | reds |
+| the aggregate stops counting users per application | reds |
+| **the projection branch is never routed to** | **reds — the HTTP test only** |
+| the projection coerces "did not say" into false | reds |
+| a corrupt entry takes the whole list down | reds |
+
+The seventh is the one worth naming. It is caught by exactly one assertion — the
+HTTP-level read in `api.integration.test.ts` — and by none of the seven unit
+cases that exercise the same function directly. A projection tested only through
+its own export is a projection whose *registration* nothing observes.
+
+Suite state after C2/C3: unit 428 green (34 files), integration 202 green (9
+files), lint and typecheck clean.
+
 ## Considerations & constraints
 
 ### Scope contract
@@ -275,6 +341,25 @@ typecheck clean.
   the second implementation; the evidence it should use is this plan's measured
   facts about how the second capability differs from the first (per-user
   fan-out, a second scope, partial failure).
+- **SCT3** — **there is no cross-run history.** The audit stores what one run
+  observed, so "which applications exist" is the latest event's payload and a
+  grant revoked between runs simply stops appearing, with nothing recording that
+  it was there. A table would fix it and would bring `SCL9` and `SCL10` due;
+  deliberately not paid inside this contract. Trigger: the first question this
+  cannot answer — "when did this application first appear", or any comparison
+  between two runs.
+- **SCT4** — **the audit is enqueued and never scheduled.** `POST
+  /api/token-audit/:saasAppId` is the only trigger; nothing runs it periodically,
+  and nothing runs it after a sync. Deliberate, because the repository has no
+  scheduler and C5 forbids dispatch from inside the worker — chaining it to
+  sync's completion would be exactly that. Trigger: the first scheduling
+  requirement.
+- **SCT5** — **C2 and C3 were built together and the plan's split is recorded as
+  wrong rather than quietly re-drawn.** The boundary was "the job" against "where
+  its output goes", and a job whose output goes nowhere cannot be executed. The
+  general form is worth keeping: a contract boundary that separates an action
+  from its only observable effect makes the first half unverifiable, which is the
+  one property this cycle's method depends on.
 - **SCT2** — a scope added to domain-wide delegation is an **operator action
   outside this repository**. Nothing here can verify it was taken, and VE3 means
   nothing here can even verify what happens when it was not. Trigger: the first
