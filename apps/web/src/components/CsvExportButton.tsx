@@ -1,6 +1,7 @@
 'use client';
 
 import { buildAccountsCsv, buildLicensesCsv } from '@/lib/csv-export';
+import { useTranslator } from '@/lib/i18n/locale-context';
 import type { AccountListItem, LicenseRollupItem } from '@/lib/api-types';
 
 /**
@@ -28,6 +29,8 @@ const BUTTON_CLASS =
   'rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50';
 
 export function CsvExportButton({ items, status }: { items: AccountListItem[]; status: string }) {
+  const t = useTranslator();
+
   return (
     <button
       type="button"
@@ -35,12 +38,14 @@ export function CsvExportButton({ items, status }: { items: AccountListItem[]; s
       disabled={items.length === 0}
       className={BUTTON_CLASS}
     >
-      Export CSV
+      {t('export.csv')}
     </button>
   );
 }
 
 export function LicensesCsvExportButton({ items }: { items: LicenseRollupItem[] }) {
+  const t = useTranslator();
+
   return (
     <button
       type="button"
@@ -48,7 +53,7 @@ export function LicensesCsvExportButton({ items }: { items: LicenseRollupItem[] 
       disabled={items.length === 0}
       className={BUTTON_CLASS}
     >
-      Export CSV
+      {t('export.csv')}
     </button>
   );
 }

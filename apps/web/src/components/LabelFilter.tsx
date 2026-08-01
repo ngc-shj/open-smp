@@ -1,3 +1,4 @@
+import { getTranslator } from '@/lib/i18n/server';
 import Link from 'next/link';
 import { LABEL_FILTER_OPTIONS, type LabelFilterValue } from '@/lib/label-filters';
 
@@ -9,10 +10,12 @@ export type { LabelFilterValue };
  * current status tab forward — the filter composes with it rather than
  * replacing it.
  */
-export function LabelFilter({ status, active }: { status: string; active: LabelFilterValue | null }) {
+export async function LabelFilter({ status, active }: { status: string; active: LabelFilterValue | null }) {
+  const t = await getTranslator();
+
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
-      <span className="text-neutral-500">Label:</span>
+      <span className="text-neutral-500">{t('filter.label')}</span>
       {LABEL_FILTER_OPTIONS.map((filter) => {
         const href = filter.value
           ? `/accounts?status=${status}&label=${filter.value}`

@@ -619,6 +619,7 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       'apps/web/test/label-filters.test.ts', // I37.3 — the label bar's options and order, which no E2E spec asserts
       'apps/web/test/link-statuses.test.ts', // SC42 — status chips derive from one declaration
       'apps/web/test/page-spec-membership.test.ts', // I26.6 — every page under apps/web/src/app has an E2E spec
+      'apps/web/test/untranslated-literals.test.ts', // i18n/C2 — the untranslated remainder is a ratcheted number; deleting this lets it grow
       'apps/worker/test/upsert-link-domain.test.ts', // the last type-level checkpoint before a status reaches the enum
       'packages/matcher/test/package-edge.test.ts', // pins a manifest dependency edge pnpm hoisting would hide
       // SC61 family (b), added in cycle 8. Each derives a domain rather than

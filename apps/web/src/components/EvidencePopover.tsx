@@ -1,8 +1,11 @@
+import { getTranslator } from '@/lib/i18n/server';
 import type { AccountLink } from '@/lib/api-types';
 
 // AMBIGUOUS links never resolve to a single identity (C1 CHECK, C4 F2) — the
 // evidence renders the tied candidate list only, never link.identityName.
-export function EvidencePopover({ link }: { link: AccountLink | null }) {
+export async function EvidencePopover({ link }: { link: AccountLink | null }) {
+  const t = await getTranslator();
+
   if (!link || !link.evidence) {
     return <span className="text-xs text-neutral-400">—</span>;
   }
@@ -17,12 +20,12 @@ export function EvidencePopover({ link }: { link: AccountLink | null }) {
       <div className="mt-1 max-w-xs rounded-md border border-neutral-200 bg-white p-2 shadow-sm">
         <dl className="space-y-1">
           <div>
-            <dt className="inline font-medium text-neutral-700">rule: </dt>
+            <dt className="inline font-medium text-neutral-700">{t('evidence.rule')} </dt>
             <dd className="inline text-neutral-600">{evidence.rule}</dd>
           </div>
           {status === 'ambiguous' ? (
             <div>
-              <dt className="font-medium text-neutral-700">candidates:</dt>
+              <dt className="font-medium text-neutral-700">{t('evidence.candidates')}</dt>
               <dd>
                 <ul className="list-inside list-disc text-neutral-600">
                   {(evidence.candidates ?? []).map((candidate) => (
@@ -36,7 +39,7 @@ export function EvidencePopover({ link }: { link: AccountLink | null }) {
             </div>
           ) : (
             <div>
-              <dt className="inline font-medium text-neutral-700">matched: </dt>
+              <dt className="inline font-medium text-neutral-700">{t('evidence.matched')} </dt>
               <dd className="inline text-neutral-600">{evidence.matchedValue}</dd>
             </div>
           )}

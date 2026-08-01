@@ -1,3 +1,4 @@
+import { getTranslator } from '@/lib/i18n/server';
 import Link from 'next/link';
 
 // The audit family is namespaced by source (every label event carries
@@ -18,10 +19,12 @@ const FILTERS: { value: string | null; label: string }[] = [
  * forward — a cursor is bound to the filter it was minted under, so changing
  * the filter necessarily restarts paging from the first page.
  */
-export function SourceFilter({ active }: { active: string | undefined }) {
+export async function SourceFilter({ active }: { active: string | undefined }) {
+  const t = await getTranslator();
+
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
-      <span className="text-neutral-500">Source:</span>
+      <span className="text-neutral-500">{t('filter.source')}</span>
       {FILTERS.map((filter) => {
         const isActive = filter.value === (active ?? null);
         return (
