@@ -2,6 +2,10 @@
 
 Cycle 8. `SC3` on `docs/roadmap.md`, which put it second and said why.
 
+Revision 4 — **C4 built and executed. SC3 is complete**, and deferring the
+reader earned its keep twice: building it found that the audit event named no
+application, and that the seeded audit could not be edited.
+
 Revision 3 — **C2 and C3 built and executed, together.** The plan drew C2 at
 "the job" and C3 at "where its output goes", and that split did not survive
 contact: a job whose result is stored nowhere cannot be executed, and execution
@@ -21,8 +25,9 @@ record what the execution decided — is the method here. This document states
 what was measured and what each contract must answer; it does not argue for a
 design it has not run.
 
-**Built: C1, C2, C3 (minus aggregation).** C4 is not, and neither is a durable
-per-application view; each carries the findings it must answer.
+**Built: C1, C2, C3, C4.** Every contract in the Go/No-Go gate is built and
+executed. A durable per-application view is not (`SCT3`), and neither is any
+scheduling (`SCT4`).
 
 ## The order decision this plan already triggered
 
@@ -237,12 +242,44 @@ all-or-nothing key list. The difference is the claim each makes: that list says
 one says "what the run observed", already truncated by the writer's own cap, so a
 corrupt entry costs only itself.
 
-### C4 — the read surface — NOT BUILT
+### C4 — the read surface — BUILT (`apps/web/src/app/discovery/`)
 
-Deferred until C1–C3 are executed. SC5 shipped `GET /licenses` one PR before its
-page and recorded what that cost: *"a shape consumed by no one is a shape nobody
-has validated in use"*, and rendering it found two defects. C4 exists so the same
-gap is not re-opened, not to be designed now.
+Deferring it earned its keep. SC5 recorded that *"a shape consumed by no one is a
+shape nobody has validated in use"*, and building the reader found two defects
+that nothing before it could have noticed:
+
+**The audit event named no application.** `source` is the reserved family value
+that makes `?source=token-audit` select the audits, so unlike a sync event it
+cannot carry the app — and without a payload field, two audits in one tenant
+differed only by `runId`, which names nothing a reader knows. `auditedAppKey`
+was added through the write path, the projection and the page in the same PR.
+C3 shipped without it because nothing read it.
+
+**The seeded audit could not be edited.** `discovery_events` is append-only by
+privilege, so the first guard was "insert only if the tenant has no audit yet" —
+and adding a third seeded application produced a green seed and an unchanged
+page. That is `SCL17`'s shape in a table where `DO UPDATE` is not merely unused
+but revoked. The guard is now on the payload's content, so an edit lands as a new
+run and the superseded row stays in the log where an audit trail wants it.
+
+**`latestRuns` lives in `lib/`, not in the page**, for the reason
+`licenses-format.ts` does: a page module reaches `next/headers` through
+`api-server`, so nothing in it is unit-testable — measured, not assumed, when the
+first draft imported the page into a unit test and the suite failed to parse it.
+
+Its rule is that a **failed run does not supersede the last completed one**.
+Reporting zero applications because the newest attempt could not authenticate
+would erase a finding rather than update it.
+
+The seed carries an application with `anonymous: null`, because two states render
+identically to three until something holds the third — and "the provider did not
+say" shown as "yes" vouches for an application on no evidence, the direction this
+whole feature exists to avoid.
+
+The seed's audit row goes through `audit.ts`: `audit-append-only.test.ts` asserts
+apps/api holds exactly one `INSERT INTO discovery_events` and that it lives
+there, and widening that control for demo data would trade a real invariant for a
+convenience.
 
 ## Go/No-Go Gate
 
@@ -251,7 +288,7 @@ gap is not re-opened, not to be designed now.
 | C1 | `listTokens` on the interface and the Google connector | **locked — built and executed** |
 | C2 | the worker job and its bound | **locked — built and executed** |
 | C3 | storage, reserved source, projection branch | **locked — built and executed** |
-| C4 | the read surface | pending |
+| C4 | the read surface | **locked — built and executed** |
 
 ## Testing strategy
 
@@ -326,6 +363,28 @@ its own export is a projection whose *registration* nothing observes.
 
 Suite state after C2/C3: unit 428 green (34 files), integration 202 green (9
 files), lint and typecheck clean.
+
+### C4's mutations
+
+Six run, six red.
+
+| mutation | result |
+|---|---|
+| `latestRuns` keeps the superseded run | reds |
+| a failed run supersedes the last completed one | reds |
+| a run naming no application is rendered anyway | reds |
+| absent counts become `undefined` | reds |
+| the page renders "did not say" as registered | reds — E2E |
+| the projection drops the audited application | reds — E2E |
+
+The last two are only reachable because the seed carries the data that makes
+them observable: an application with `anonymous: null`, and an `auditedAppKey` on
+the row the page groups by. A mutation with no seeded case to contradict it is
+not a passing test, it is an unwatched branch.
+
+Suite state after C4: unit 434 green (35 files), integration 202 green, E2E 49
+green against the compose stack, `assert-seed-preserved.sh` intact, lint and
+typecheck clean.
 
 ## Considerations & constraints
 
