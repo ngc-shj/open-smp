@@ -12,6 +12,19 @@ export type Locale = (typeof LOCALES)[number];
 
 export const DEFAULT_LOCALE: Locale = 'en';
 
+// i18n/C3. What the switch calls each locale — and deliberately NOT a message
+// key. A language picker names every language in that language, because the
+// person who most needs it is the one who cannot read the language currently
+// showing: translating these would render the Japanese option as "Japanese" to
+// exactly the reader looking for 日本語.
+//
+// Typed over `Locale`, so a third locale is a compile error here rather than an
+// option the control renders as `undefined`.
+export const LOCALE_LABELS: Record<Locale, string> = {
+  en: 'English',
+  ja: '日本語',
+};
+
 // Keys read as `<area>.<thing>`, and the area matches the file that renders it.
 // Flat rather than nested: a nested shape needs a path type to stay checkable,
 // and the check is the only reason this is TypeScript.

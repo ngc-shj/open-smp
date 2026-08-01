@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
+import { LOCALE_COOKIE, localeCookie } from '../src/lib/i18n/cookie';
+import { LOCALE_LABELS, LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
 import { DEFAULT_LOCALE, isLocale, missingMarker, translate, translator } from '../src/lib/i18n/translate';
 
 // i18n/C1. The type system already refuses a key present in one dictionary and
@@ -104,5 +105,59 @@ describe('isLocale guards what arrives from a cookie', () => {
 
   it('defaults to a locale that exists', () => {
     expect(isLocale(DEFAULT_LOCALE)).toBe(true);
+  });
+});
+
+describe('i18n/C3: what the switch writes', () => {
+  it.each(LOCALES)('writes a %s the reader will accept', (locale) => {
+    // Writer bound to reader through the reader's OWN guard, not through a
+    // second copy of the parse. The failure this catches is the switch and the
+    // resolver disagreeing about the value's shape — under which the control
+    // appears to do nothing and nothing anywhere errors.
+    const cookie = localeCookie(locale);
+    const [name, ...rest] = cookie.split(';')[0]!.split('=');
+
+    expect(name).toBe(LOCALE_COOKIE);
+    expect(isLocale(rest.join('='))).toBe(true);
+    expect(rest.join('=')).toBe(locale);
+  });
+
+  it('scopes the choice to the whole site', () => {
+    // Without `path=/` the browser scopes the cookie to the directory of
+    // whatever page the switch was used on, so switching on /accounts leaves
+    // /licenses in the old language — which reads as a caching bug rather than
+    // as a missing attribute.
+    expect(localeCookie('ja')).toContain('path=/');
+  });
+
+  it('outlives the browser session', () => {
+    // A session cookie satisfies every other assertion here and loses the
+    // choice the next time the browser opens, which reads as the control not
+    // having worked.
+    const maxAge = /max-age=(\d+)/.exec(localeCookie('ja'))?.[1];
+
+    expect(maxAge, 'no max-age; the choice would not survive the session').toBeDefined();
+    expect(Number(maxAge)).toBeGreaterThan(0);
+  });
+
+  it('writes a different cookie per locale', () => {
+    // Non-vacuity for all three above: a function returning one constant string
+    // satisfies every one of them.
+    expect(new Set(LOCALES.map(localeCookie)).size).toBe(LOCALES.length);
+  });
+});
+
+describe('i18n/C3: what the switch offers', () => {
+  it('names every locale', () => {
+    expect(Object.keys(LOCALE_LABELS).sort()).toEqual([...LOCALES].sort());
+  });
+
+  it('gives each locale a distinct name', () => {
+    // A picker whose options read the same is unusable, and the type only
+    // requires that both keys carry a string. The labels are endonyms rather
+    // than message keys — a language picker names each language in that
+    // language, because the reader who needs it is the one who cannot read the
+    // language currently showing.
+    expect(new Set(Object.values(LOCALE_LABELS)).size).toBe(LOCALES.length);
   });
 });

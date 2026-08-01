@@ -48,6 +48,41 @@ test.describe('i18n', () => {
     }
   });
 
+  test('the control switches the language, and the choice survives navigation', async ({ page, context }) => {
+    // i18n/C3. Everything above sets the cookie from the test. This is the only
+    // place the CONTROL is exercised, and without it the `ja` dictionary is
+    // data no operator can reach.
+    try {
+      await page.goto('/accounts');
+      const language = page.getByTestId('navbar').getByRole('combobox');
+      await expect(language).toHaveValue('en');
+
+      await language.selectOption('ja');
+
+      await expect(page.getByTestId('navbar').getByRole('link', { name: 'アカウント' })).toBeVisible();
+      // The switch is resolved by the root layout, so this is what proves the
+      // refresh reached the layout and not merely the components below it.
+      await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
+
+      // A different page, so the assertion is about the cookie's scope rather
+      // than about this render. Without `path=/` the browser scopes the cookie
+      // to the directory the switch was used in and this reverts to English.
+      await page.goto('/licenses');
+      await expect(page.getByTestId('navbar').getByRole('link', { name: 'ライセンス' })).toBeVisible();
+      await expect(page.getByTestId('navbar').getByRole('combobox')).toHaveValue('ja');
+
+      // Back, through the control. A switch that only moves one way passes
+      // every assertion above.
+      await page.getByTestId('navbar').getByRole('combobox').selectOption('en');
+      await expect(page.getByTestId('navbar').getByRole('link', { name: 'Licences' })).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    } finally {
+      // The storageState is shared by every spec in this suite; a leaked ja
+      // cookie would flip the language under all of them.
+      await context.clearCookies({ name: 'locale' });
+    }
+  });
+
   test('renders no untranslated-key marker anywhere in the chrome', async ({ page, context }) => {
     // The marker is what an unresolvable key renders as. Its presence on a real
     // page is the defect this whole design exists to make visible, so its

@@ -1,11 +1,10 @@
 import { cookies } from 'next/headers';
+import { LOCALE_COOKIE } from './cookie';
 import { DEFAULT_LOCALE, isLocale, translator, type Locale, type MessageKey } from './translate';
 
 // i18n/C1. Locale resolution, isolated because it reaches `next/headers` and
 // nothing that imports it can be unit-tested — the same reason
 // discovery-runs.ts exists apart from the page that renders it.
-
-export const LOCALE_COOKIE = 'locale';
 
 /**
  * The locale for this request.
