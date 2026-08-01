@@ -11,9 +11,24 @@ export function createDb(pool: Pool) {
 }
 
 /**
- * Runs `fn` inside a transaction with the tenant GUC set transaction-locally
- * (`set_config(..., true)`), so pooled-connection leakage across tenants
- * cannot occur. The GUC is always parameterized — never string-concatenated.
+ * Runs `fn` inside a transaction that has claimed one tenant, and cannot claim
+ * another (SCL8, migration 0007).
+ *
+ * The previous form set `app.tenant_id` with `set_config(..., true)`. That
+ * stopped leakage ACROSS pooled requests — the GUC is transaction-local — but
+ * not within one: the application's own role could call `set_config` again and
+ * every RLS predicate followed it, measured as a visible row count going 2 to 0
+ * mid transaction. So the blast radius of any SQL injection was full
+ * tenant-isolation bypass rather than one query's rows.
+ *
+ * The privilege system could not close that. `GRANT SET ON PARAMETER` does not
+ * gate customized options: `REVOKE … FROM PUBLIC` is accepted and enforces
+ * nothing, measured. `set_tenant_context` is a SECURITY DEFINER write into a
+ * table this role holds no privilege on, and it refuses a second call inside
+ * the same transaction — so the claim is write-once and unforgeable from SQL.
+ *
+ * This docstring previously claimed the stronger property the GUC did not have.
+ * It is corrected here, in the change that makes the claim true.
  */
 export async function withTenant<T>(
   pool: Pool,
@@ -23,7 +38,7 @@ export async function withTenant<T>(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('SELECT set_config($1, $2, true)', ['app.tenant_id', tenantId]);
+    await client.query('SELECT set_tenant_context($1)', [tenantId]);
     const result = await fn(client);
     await client.query('COMMIT');
     return result;

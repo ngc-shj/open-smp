@@ -32,7 +32,12 @@ function makeFakePool(options: {
       return { rows: [] };
     }
 
-    if (text.startsWith('SELECT set_config')) {
+    // withTenant's tenant claim. It was `SELECT set_config(...)` until SCL8
+    // moved the identity out of a GUC the application's own role could
+    // re-point (migration 0007); this fake threw on the new statement, which
+    // is the allowlist doing its job — a fake that accepted anything would
+    // have let the change through untested here.
+    if (text.startsWith('SELECT set_tenant_context')) {
       return { rows: [] };
     }
     if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
