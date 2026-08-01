@@ -545,18 +545,17 @@ eight new contract assertions, lint and typecheck clean.
   CSV-only application has no accounts at all, and an overlap with `ghost` that
   double-counted the most ordinary reclaimable seat. Trigger: a connector that
   declares per-application activity, read as a static credential-free descriptor.
-- **SCL8** — **`withTenant` does not pin `app.tenant_id` for the life of the
-  transaction**, so the blast radius of any SQL injection here is full
-  tenant-isolation bypass. Re-measured in cycle 8 and **the recorded fix was
-  wrong**: this entry priced it at "a connection/role change affecting every
-  route", and measuring found table privileges are enforced where parameter
-  privileges are not — `REVOKE SET ON PARAMETER … FROM PUBLIC` is accepted and
-  enforces nothing, but a context table the app role holds no grant on cannot be
-  written, read, or replaced. The fix is a migration, one connection helper and
-  one test file: no route changes, no per-tenant pools. Planned in
-  `docs/archive/review/tenant-context-pinning-plan.md`, revision 1, with the
-  prototype's measurements. **Still open** — the plan is written, nothing is
-  built.
+- ~~**SCL8**~~ — **CLOSED in cycle 8.** `withTenant` no longer sets a GUC the
+  application's own role can re-point; the tenant a transaction claims lives in
+  a table that role holds no privilege on, claimed write-once through a
+  `SECURITY DEFINER` setter (migration 0007). The entry's recorded price — "a
+  connection/role change affecting every route" — was wrong: measuring found
+  table privileges are enforced where parameter privileges are not, and the fix
+  was a migration, one connection helper and one test file. Plan and
+  measurements: `docs/archive/review/tenant-context-pinning-plan.md`, revision
+  2. **What it does not close**: an injection still reads and writes everything
+  the current tenant can. This turned a whole-database bypass into a
+  whole-tenant one.
 - **SCL9** — neither `MEMBER_TABLES` nor `tenantScopedTables` is catalog-derived,
   so the next tenant-scoped table has the same exposure C1 closed by hand.
   Trigger: the next new table; the fix is one query against
