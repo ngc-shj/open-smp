@@ -250,11 +250,13 @@ soft-navigation behaviour is Chrome's and not the RFC's.
 
 ### C3's mutations
 
-Unit tier, via `scripts/mutate.mjs` — five red, two declared survivors:
+Unit tier, via `scripts/mutate.mjs` — seven red, two declared survivors:
 
 | mutation | result |
 |---|---|
 | the cookie is scoped to the current directory instead of the site | reds |
+| the cookie is scoped to a directory rather than deleted | reds — **added after review**, see below |
+| max-age is set to a value that expires immediately | reds — **added after review** |
 | the choice becomes a session cookie | reds |
 | the writer names a cookie the reader does not read | reds |
 | the writer ignores which locale was chosen | reds |
@@ -270,6 +272,29 @@ no unit observer — each mutation pays for a rebuild of the web image:
 | the switch writes the cookie but nothing re-renders | reds |
 | the control always shows English regardless of the locale in effect | reds |
 | the cookie is scoped to the current directory instead of the site | reds — **after** the spec was corrected twice above |
+
+### What review found that the mutation run had not
+
+**A substring cannot tell absence from narrowing.** The `path=/` assertion was
+`expect(localeCookie('ja')).toContain('path=/')`, and `path=/identities`
+satisfies it — the exact value the attribute exists to rule out. The mutation
+run had only *deleted* the attribute, so it redded and the blind spot stayed
+invisible. The assertions now split the assignment into attributes and compare
+values; `max-age` is compared against its constant rather than to `> 0`, which
+`max-age=1` satisfied.
+
+This is the same shape as the two survivals above, one level up: **a mutation
+set that only removes things cannot see a check that is blind to changing
+them.** Both new mutants are in the table.
+
+**CS4-A was overstated, and this cycle is what made it so.** `api-server.ts`
+forwards only the `session` cookie by name and says over-forwarding "would leak
+any future first-party cookie to the API host". `locale` is that first cookie —
+and browser-side `fetch('/api/...')` reaches the API through `next.config.ts`'s
+rewrite, which proxies the whole `Cookie` header, so the narrowing holds for
+server-side calls only. Nothing leaks that matters (`en`/`ja`), and the comment
+now says what the control covers. An overstated control is how a later cycle
+skips the real one.
 
 Suite state after C3: unit 485 green (39 files), integration 227 green, E2E 54
 green against the compose stack, lint and typecheck clean, and the CI-only
