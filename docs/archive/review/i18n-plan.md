@@ -5,6 +5,15 @@ plan does not overrule that — it makes the decision answerable with numbers
 instead of impressions, and states the one condition under which the order
 should change.
 
+Revision 5 — **C2 drained, and C1 given parameters.** The remainder is 0. What
+made that necessary rather than optional is C3: a switch that reaches a
+half-English app turns an invisible debt into a visible defect, in one click.
+
+Revision 4 — **C3 built.** The switch exists, and the `ja` dictionary is
+reachable without hand-editing a cookie. The remainder is unchanged at 128
+across 14 files: the control introduces no copy of its own, which is the ratchet
+reporting rather than a claim.
+
 Revision 3 — **C2's detector built, and the remainder ratcheted.** 128 strings
 across 14 files remain; four components are migrated to prove the ratchet moves.
 C3 is not built.
@@ -93,7 +102,7 @@ place the switch is actually exercised.
   `Record` and a hook; `next-intl` brings routing this plan has just decided
   against.
 
-### C2 — the strings — DETECTOR BUILT, 128 remaining
+### C2 — the strings — BUILT (detector, ratchet, and the drain)
 
 - 92 sites, and the risk is not the count but the **silent partial migration**:
   a page half-extracted looks finished and reads correctly in English.
@@ -105,7 +114,7 @@ place the switch is actually exercised.
   records that currency rendering is locale-dependent and asserted on the
   emitted string; the same rule applies to these.
 
-### C3 — the switch, and the second locale — NOT BUILT
+### C3 — the switch, and the second locale — BUILT
 
 - The cookie, its default, and a control to change it.
 - One E2E spec that switches to `ja` and asserts a translated string. Without
@@ -193,3 +202,209 @@ that extended family (b) by hand (`SC61`).
 
 Suite state: unit 478 green (39 files), integration 227 green, E2E 53 green,
 lint and typecheck clean.
+
+## What execution added to C3
+
+**The cookie name had to leave `server.ts`.** That module reaches
+`next/headers`, so a client component importing the name from it pulls
+`next/headers` into the browser bundle. Writer and reader would otherwise have
+spelled `'locale'` twice, and the day they disagree the switch appears to do
+nothing with no error anywhere. It now lives in `lib/i18n/cookie.ts`, which both
+sides import — and a mutation renaming it there is a **declared survivor**,
+because a rename that reds would mean a second spelling had appeared.
+
+**The write is `document.cookie`, not a server action.** The value is a display
+preference the server does not act on, and the read path already treats it as
+untrusted — `getLocale` falls back on anything unrecognised, which an E2E
+asserts. A server action would have added a POST surface to defend for a string
+nothing decides on, and this repository has no server actions to follow.
+
+**`router.refresh()` updates `<html lang>`.** Asserted rather than assumed: the
+locale is resolved by the root layout, so the open question was whether
+re-fetching the route's server render reaches the `<html>` element or only the
+components below it. It reaches it, and the E2E pins that.
+
+**The option labels are endonyms, not message keys.** A picker names each
+language in that language, because the reader who needs it is the one who cannot
+read the language currently showing — translating them would render 日本語 as
+"Japanese" to exactly that person.
+
+### `path=/` had a failing state, and it took two wrong claims to find it
+
+The mutation dropping `path=/` **survived twice**, and each survival killed a
+claim rather than a test.
+
+| claim | measured |
+|---|---|
+| "switching on `/accounts` leaves `/licenses` in the old language" | false — a one-segment URL's default path is already `/` |
+| "reaching `/identities/<id>` fixes that" | false — a `<Link>` is a pushState, and Chrome derives the default from the URL the document was **loaded** at |
+| a document **load** at `/identities/<id>` | true — cookie path is `/identities`, and `/licenses` comes back `lang="en"` |
+
+Both survivals were the same shape as cycle 8's conclusion: *a mutation with no
+seed case that refutes it is not a passing test, it is a branch nobody is
+looking at.* The correction that mattered was not to the assertion — the unit
+test asserted the attribute directly and redded every time — but to the **E2E
+case**, which had no arrangement under which the attribute could matter. The
+attribute's real user is someone who reloaded or bookmarked an identity page and
+switched language there.
+
+Measured with a throwaway probe spec that printed `context.cookies()`, deleted
+after; the mechanism was not derivable from the RFC text alone, because the
+soft-navigation behaviour is Chrome's and not the RFC's.
+
+### C3's mutations
+
+Unit tier, via `scripts/mutate.mjs` — seven red, two declared survivors:
+
+| mutation | result |
+|---|---|
+| the cookie is scoped to the current directory instead of the site | reds |
+| the cookie is scoped to a directory rather than deleted | reds — **added after review**, see below |
+| max-age is set to a value that expires immediately | reds — **added after review** |
+| the choice becomes a session cookie | reds |
+| the writer names a cookie the reader does not read | reds |
+| the writer ignores which locale was chosen | reds |
+| both options are labelled the same | reds |
+| the cookie is renamed at its single source | SURVIVED (declared — single-source, so a rename is behaviour-preserving) |
+| SameSite is tightened to `strict` | SURVIVED (declared — nothing asserts SameSite; `strict` would drop the cookie on a cross-site entry into the app) |
+
+E2E tier, driven by hand because the harness runs vitest only and the control has
+no unit observer — each mutation pays for a rebuild of the web image:
+
+| mutation | result |
+|---|---|
+| the switch writes the cookie but nothing re-renders | reds |
+| the control always shows English regardless of the locale in effect | reds |
+| the cookie is scoped to the current directory instead of the site | reds — **after** the spec was corrected twice above |
+
+### What review found that the mutation run had not
+
+**A substring cannot tell absence from narrowing.** The `path=/` assertion was
+`expect(localeCookie('ja')).toContain('path=/')`, and `path=/identities`
+satisfies it — the exact value the attribute exists to rule out. The mutation
+run had only *deleted* the attribute, so it redded and the blind spot stayed
+invisible. The assertions now split the assignment into attributes and compare
+values; `max-age` is compared against its constant rather than to `> 0`, which
+`max-age=1` satisfied.
+
+This is the same shape as the two survivals above, one level up: **a mutation
+set that only removes things cannot see a check that is blind to changing
+them.** Both new mutants are in the table.
+
+**CS4-A was overstated, and this cycle is what made it so.** `api-server.ts`
+forwards only the `session` cookie by name and says over-forwarding "would leak
+any future first-party cookie to the API host". `locale` is that first cookie —
+and browser-side `fetch('/api/...')` reaches the API through `next.config.ts`'s
+rewrite, which proxies the whole `Cookie` header, so the narrowing holds for
+server-side calls only. Nothing leaks that matters (`en`/`ja`), and the comment
+now says what the control covers. An overstated control is how a later cycle
+skips the real one.
+
+Suite state after C3: unit 485 green (39 files), integration 227 green, E2E 54
+green against the compose stack, lint and typecheck clean, and the CI-only
+"every assigned test file is inside a typecheck program" gate clean.
+
+## What C2's drain found
+
+The plan sized C2 at "the remaining strings". That was the detector's number,
+and the detector says in its own header what it cannot see. The drain found
+three things the count did not contain.
+
+**Most of what was left was not a literal — it was a sentence with a value in
+it.** `{n} selected`, `Labeled {n} accounts.`, `Row {n}: {message}`, `{imported}
+imported, {skipped} skipped`, every `UPLOAD_ERROR_MESSAGES` entry. C1's lookup
+took no parameters, so the only way to render these with a dictionary was
+`t(a) + n + t(b)` — and **that shape cannot be translated at all**, because the
+number and the noun do not sit where English puts them. `t(key, params)` is
+therefore not a convenience added to C1; it is the difference between C2 being
+finishable and not.
+
+Two guards came with it, and each answers a failure the other cannot see:
+
+- a placeholder nobody supplied is marked **where it stands**, so the rest of
+  the sentence still reads;
+- the locales are asserted to carry the **same placeholder set** per key. A
+  translation that drops `{count}` has nothing to substitute and nothing to
+  mark — the number simply never appears, and only a comparison across locales
+  can see it.
+
+**Pluralisation is one key per form.** `account{n === 1 ? '' : 's'}` is English
+grammar written into code, and Japanese does not pluralise. The count picks the
+message instead. The residue is stated: nothing tests the *selection* at the two
+call sites, because there is no jsdom project here and neither component can be
+rendered in a unit test.
+
+**The label vocabulary lives outside `.tsx`, which is why this reached two pure
+modules and two control tests.** `LABEL_KIND_NAMES` was a `Record` in a plain
+`.ts` module, read by six sites, by `label-filters.ts`, and by
+`audit-transition.ts` — a pure, unit-tested function. The detector sees none of
+it, so the ratchet reaching zero would have left the whole vocabulary English
+with every gate green. That is the ratchet's own residue, and it is the reason
+"BUDGET is empty" must not be read as "the UI is translated".
+
+Three decisions kept the controls at full strength rather than merely passing:
+
+- `LABEL_KIND_NAMES` → `LABEL_KIND_KEYS`, values typed `MessageKey`. The map is
+  the only thing making a fourth kind a compile error, and it still is.
+- `auditTransition` takes the translator as a **parameter**. Resolving a request
+  locale inside it would have made a pure module a server one, with the events
+  page as its only possible caller and a request needed to test it.
+- `label-filters.test.ts` asserts the **pair** — the key in the option and the
+  English it resolves to. Pinning only the key would have stayed green while the
+  bar read "Any label" where it used to read "All", which is exactly what that
+  control exists to catch.
+
+### The drain's mutations
+
+Unit tier — eight red, one declared survivor:
+
+| mutation | result |
+|---|---|
+| interpolation is dropped and the message renders with its braces | reds |
+| a translation drops its placeholder | reds |
+| a missing placeholder takes the whole message down | reds |
+| the plural forms are made identical | reds |
+| two label kinds resolve to the same copy | reds (filters **and** audit) |
+| the filter bar loses the option that clears it | reds |
+| a withheld snapshot renders as a genuine absent label | reds |
+| a translated heading is written back as a literal | reds the ratchet |
+| the Japanese plural forms are made identical | SURVIVED (declared — Japanese does not pluralise, so the two forms are correctly identical there) |
+
+E2E tier — the only place a page BODY can be observed:
+
+| mutation | result |
+|---|---|
+| a page heading falls back to English under `ja` | reds |
+| a column heading is left in English under `ja` | reds |
+
+### Residue, stated rather than discovered later
+
+- **`app/discovery/page.tsx` keeps a budget of 1.** It is not copy: the detector
+  matches `) : app.anonymous ? (`, the middle of a three-way ternary sitting
+  between a `</span>` and a `<span`, with two identifiers long enough to satisfy
+  the word rule. Kept as a budget rather than moved to the allowlist, because
+  the allowlist is keyed by TEXT — exempting that string globally would exempt
+  it everywhere, while the budget still reds on a real literal added to that
+  file (2 > 1).
+- **Number and currency formatting is still pinned to `en-US`.** Both import
+  forms and `formatMoney` render figures locale-independently. `VE3` and
+  `licenses-format.test.ts` pin that decision, and moving it is its own slice.
+  Trigger: the first locale whose grouping differs from `en-US`, or a currency
+  the `ja` UI must render differently.
+- **`IDENTITY_ACCOUNTS_SHOWN = 50` is hand-synced.** The API's `PAGE_SIZE` lives
+  in `apps/api/src/page-size.ts`, which `apps/web` cannot import. Naming the
+  constant is better than the figure being buried in a sentence, and it is still
+  a copy. Trigger: any change to that cap, or the constant moving into
+  `@open-smp/api-types`.
+- **The plural selection is untested** at `BulkLabelBar` and `SaasAppManager`
+  (no jsdom project).
+- **`→` and `—` stay literals** in `auditTransition`, on the same ground the
+  detector's allowlist uses: the same glyph in every locale.
+- **The app name in the delete confirmation lost its bold.** An interpolated
+  value cannot carry markup, and splitting the sentence to keep it is the
+  fragment shape the dictionary exists to avoid. The rendered text is unchanged.
+- **Raw API error strings are still shown untranslated** beneath the friendly
+  copy, deliberately, for support.
+
+Suite state after C2: unit 491 green (39 files), integration 227 green, E2E 56
+green against the compose stack, lint and typecheck clean.

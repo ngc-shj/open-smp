@@ -3,23 +3,33 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { SaasAppListItem } from '@/lib/api-types';
+import { useTranslator } from '@/lib/i18n/locale-context';
+import type { MessageKey } from '@/lib/i18n/messages';
+
+type ManagerError =
+  | 'invalidJson'
+  | 'missingFields'
+  | 'invalidBody'
+  | 'hasAccounts'
+  | 'notFound'
+  | 'network'
+  | 'unknown'
+  | null;
 
 // Same deliberate anti-idiom as SaasAppForm.tsx: caught values are classified
 // and discarded, never read for their text. A replaced service-account key
 // pasted into this form must not reach a React error overlay or a support
 // screenshot via an exception message. Do not "fix" this back to the codebase's
 // narrow-and-read-message convention.
-const ERROR_MESSAGES = {
-  invalidJson: 'That does not look like valid JSON.',
-  missingFields: 'Service account JSON must include client_email and private_key.',
-  invalidBody: 'Please provide a value to update.',
-  hasAccounts: 'Cannot delete — accounts are still attributed to this app.',
-  notFound: 'This app no longer exists — refresh the page.',
-  network: 'Could not reach the server. Please try again.',
-  unknown: 'Something went wrong. Please try again.',
-} as const;
-
-type ManagerError = keyof typeof ERROR_MESSAGES | null;
+const ERROR_KEYS: Record<ManagerError & string, MessageKey> = {
+  invalidJson: 'saasapp.invalidJson',
+  missingFields: 'saasapp.missingFields',
+  invalidBody: 'saasapp.invalidBodyUpdate',
+  hasAccounts: 'saasapp.hasAccounts',
+  notFound: 'saasapp.notFound',
+  network: 'error.network',
+  unknown: 'error.unknown',
+};
 
 function validateServiceAccountJson(raw: string): ManagerError {
   let parsed: unknown;
@@ -39,6 +49,7 @@ function validateServiceAccountJson(raw: string): ManagerError {
 }
 
 export function SaasAppManager({ app }: { app: SaasAppListItem }) {
+  const t = useTranslator();
   const router = useRouter();
   const [mode, setMode] = useState<'idle' | 'rename' | 'credentials' | 'confirmDelete'>('idle');
   const [displayName, setDisplayName] = useState(app.displayName);
@@ -149,7 +160,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
           onClick={() => setMode(mode === 'rename' ? 'idle' : 'rename')}
           className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
         >
-          Rename
+          {t('saasapp.rename')}
         </button>
         <button
           type="button"
@@ -157,7 +168,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
           onClick={() => setMode(mode === 'credentials' ? 'idle' : 'credentials')}
           className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
         >
-          Replace credentials
+          {t('saasapp.replaceCredentials')}
         </button>
         <button
           type="button"
@@ -165,7 +176,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
           onClick={() => setMode(mode === 'confirmDelete' ? 'idle' : 'confirmDelete')}
           className="rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
         >
-          Delete
+          {t('action.delete')}
         </button>
       </div>
 
@@ -175,9 +186,10 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
           single click here was the one destructive path with no confirmation. */}
       {mode === 'confirmDelete' && (
         <div className="flex flex-col gap-1.5 rounded-md border border-red-200 bg-white p-2 text-xs">
-          <p className="text-neutral-700">
-            Delete <span className="font-medium">{app.displayName}</span>? This cannot be undone.
-          </p>
+          {/* The name loses its bold: an interpolated value cannot carry markup,
+              and splitting the sentence to keep it is the fragment-concatenation
+              shape the dictionary exists to avoid. */}
+          <p className="text-neutral-700">{t('saasapp.confirmDelete', { name: app.displayName })}</p>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -185,7 +197,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               onClick={handleDelete}
               className="rounded-md bg-red-700 px-2 py-1 font-medium text-white hover:bg-red-800 disabled:opacity-50"
             >
-              {busy ? 'Deleting…' : 'Delete'}
+              {busy ? t('action.deleting') : t('action.delete')}
             </button>
             <button
               type="button"
@@ -193,7 +205,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               onClick={close}
               className="px-2 py-1 text-neutral-500 hover:text-neutral-800 disabled:opacity-50"
             >
-              Cancel
+              {t('action.cancel')}
             </button>
           </div>
         </div>
@@ -202,7 +214,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
       {mode === 'rename' && (
         <div className="flex flex-col gap-1.5 rounded-md border border-neutral-200 bg-white p-2 text-xs">
           <label htmlFor={`rename-${app.id}`} className="font-medium text-neutral-700">
-            Display name
+            {t('field.displayName')}
           </label>
           <input
             id={`rename-${app.id}`}
@@ -220,7 +232,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               onClick={handleRename}
               className="rounded-md bg-neutral-900 px-2 py-1 font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
             >
-              {busy ? 'Saving…' : 'Save'}
+              {busy ? t('action.saving') : t('action.save')}
             </button>
             <button
               type="button"
@@ -228,7 +240,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               onClick={close}
               className="px-2 py-1 text-neutral-500 hover:text-neutral-800 disabled:opacity-50"
             >
-              Cancel
+              {t('action.cancel')}
             </button>
           </div>
         </div>
@@ -237,7 +249,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
       {mode === 'credentials' && (
         <div className="flex flex-col gap-1.5 rounded-md border border-neutral-200 bg-white p-2 text-xs">
           <label htmlFor={`sa-json-${app.id}`} className="font-medium text-neutral-700">
-            New service account JSON
+            {t('saasapp.newServiceAccountJson')}
           </label>
           <textarea
             id={`sa-json-${app.id}`}
@@ -249,7 +261,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
             className="rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
           />
           <label htmlFor={`sa-admin-${app.id}`} className="font-medium text-neutral-700">
-            Admin email to impersonate
+            {t('field.adminEmail')}
           </label>
           <input
             id={`sa-admin-${app.id}`}
@@ -267,7 +279,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               onClick={handleReplaceCredentials}
               className="rounded-md bg-neutral-900 px-2 py-1 font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
             >
-              {busy ? 'Replacing…' : 'Replace'}
+              {busy ? t('action.replacing') : t('action.replace')}
             </button>
             <button
               type="button"
@@ -275,7 +287,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               onClick={close}
               className="px-2 py-1 text-neutral-500 hover:text-neutral-800 disabled:opacity-50"
             >
-              Cancel
+              {t('action.cancel')}
             </button>
           </div>
         </div>
@@ -284,8 +296,10 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
       {error && (
         <p role="alert" className="text-xs text-red-700">
           {error === 'hasAccounts' && accountCount !== null
-            ? `Cannot delete — ${accountCount} account${accountCount === 1 ? '' : 's'} still attributed to this app.`
-            : ERROR_MESSAGES[error]}
+            ? t(accountCount === 1 ? 'saasapp.hasAccounts.one' : 'saasapp.hasAccounts.other', {
+                count: accountCount,
+              })
+            : t(ERROR_KEYS[error])}
         </p>
       )}
     </div>

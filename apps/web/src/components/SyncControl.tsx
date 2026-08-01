@@ -3,12 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { pollJob, SessionExpiredError } from '@/lib/polling';
+import { useTranslator } from '@/lib/i18n/locale-context';
 
 type Phase = 'idle' | 'syncing' | 'matching' | 'done' | 'error';
 
 // C8 F6: match is enqueued only after the sync job it triggered reports
 // state = completed — never fired concurrently with an in-flight sync.
 export function SyncControl({ appKeys }: { appKeys: string[] }) {
+  const t = useTranslator();
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +50,7 @@ export function SyncControl({ appKeys }: { appKeys: string[] }) {
 
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-4">
-      <h2 className="mb-2 text-sm font-semibold text-neutral-900">Sync</h2>
+      <h2 className="mb-2 text-sm font-semibold text-neutral-900">{t('sync.title')}</h2>
       <div className="flex flex-wrap items-center gap-2">
         {appKeys.map((appKey) => (
           <button
@@ -58,7 +60,7 @@ export function SyncControl({ appKeys }: { appKeys: string[] }) {
             onClick={() => runSyncThenMatch(appKey)}
             className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
           >
-            Sync {appKey}
+            {t('sync.syncApp', { app: appKey })}
           </button>
         ))}
 
@@ -82,14 +84,14 @@ export function SyncControl({ appKeys }: { appKeys: string[] }) {
             disabled={isBusy || !customAppId.trim()}
             className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
           >
-            Sync by ID
+            {t('sync.byId')}
           </button>
         </form>
       </div>
 
-      {phase === 'syncing' && <p className="mt-2 text-sm text-neutral-500">Syncing…</p>}
-      {phase === 'matching' && <p className="mt-2 text-sm text-neutral-500">Matching…</p>}
-      {phase === 'done' && <p className="mt-2 text-sm text-green-700">Sync and match completed.</p>}
+      {phase === 'syncing' && <p className="mt-2 text-sm text-neutral-500">{t('sync.syncing')}</p>}
+      {phase === 'matching' && <p className="mt-2 text-sm text-neutral-500">{t('progress.matching')}</p>}
+      {phase === 'done' && <p className="mt-2 text-sm text-green-700">{t('sync.done')}</p>}
       {phase === 'error' && <p className="mt-2 text-sm text-red-700">{error}</p>}
     </div>
   );

@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useMemo } from 'react';
-import { DEFAULT_LOCALE, translator, type Locale, type MessageKey } from './translate';
+import { DEFAULT_LOCALE, translator, type Locale, type MessageKey, type MessageParams } from './translate';
 
 // i18n/C1. The locale crosses to the client through context rather than being
 // read there.
@@ -21,7 +21,7 @@ export function useLocale(): Locale {
   return useContext(LocaleContext);
 }
 
-export function useTranslator(): (key: MessageKey) => string {
+export function useTranslator(): (key: MessageKey, params?: MessageParams) => string {
   const locale = useLocale();
   return useMemo(() => translator(locale), [locale]);
 }

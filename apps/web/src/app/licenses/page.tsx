@@ -5,6 +5,8 @@ import { NavBar } from '@/components/NavBar';
 import { ContractImportForm } from '@/components/ContractImportForm';
 import { LicensesCsvExportButton } from '@/components/CsvExportButton';
 import { formatMoney, unassignedTone } from '@/lib/licenses-format';
+import { getTranslator } from '@/lib/i18n/server';
+import type { MessageKey } from '@/lib/i18n/messages';
 
 // C4. The consumer C3's shape had none — a response nobody renders is a shape
 // nobody has validated in use.
@@ -22,19 +24,34 @@ async function fetchLicenses(): Promise<LicenseListResponse> {
   return (await res.json()) as LicenseListResponse;
 }
 
-const MATCH_STATE_COPY: Record<LicenseRollupItem['matchState'], string> = {
-  'no-accounts': 'No accounts',
-  'not-matched': 'Not matched',
-  'partially-matched': 'Partly matched',
-  matched: 'Matched',
+const MATCH_STATE_KEYS: Record<LicenseRollupItem['matchState'], MessageKey> = {
+  'no-accounts': 'licenses.matchState.noAccounts',
+  'not-matched': 'licenses.matchState.notMatched',
+  'partially-matched': 'licenses.matchState.partiallyMatched',
+  matched: 'licenses.matchState.matched',
 };
 
-function Unassigned({ value }: { value: number | null }) {
+// Not async, so it cannot resolve the locale itself — the translator arrives
+// from the page that already has one.
+function Unassigned({
+  value,
+  t,
+}: {
+  value: number | null;
+  t: (key: MessageKey, params?: Record<string, string | number>) => string;
+}) {
   switch (unassignedTone(value)) {
     case 'absent':
       return <span className="text-neutral-400">—</span>;
     case 'over-allocated':
-      return <span className="font-medium text-red-700">{value} (over-allocated)</span>;
+      // Stringified here because `unassignedTone` reports the tone rather than
+      // narrowing the value: null cannot reach this branch, but the type still
+      // says it can, and `translate` would stringify it a line later anyway.
+      return (
+        <span className="font-medium text-red-700">
+          {t('licenses.overAllocated', { value: String(value) })}
+        </span>
+      );
     default:
       return <span className="text-neutral-700">{value}</span>;
   }
@@ -42,13 +59,14 @@ function Unassigned({ value }: { value: number | null }) {
 
 export default async function LicensesPage() {
   const { items } = await fetchLicenses();
+  const t = await getTranslator();
 
   return (
     <>
       <NavBar />
       <main className="mx-auto max-w-6xl px-4 py-6">
         <div className="mb-6 flex items-center justify-between gap-4">
-          <h1 className="text-lg font-semibold text-neutral-900">Licences</h1>
+          <h1 className="text-lg font-semibold text-neutral-900">{t('licenses.title')}</h1>
           <LicensesCsvExportButton items={items} />
         </div>
 
@@ -56,16 +74,16 @@ export default async function LicensesPage() {
           <table className="min-w-full divide-y divide-neutral-200 text-sm">
             <thead className="bg-neutral-50">
               <tr>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Application</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Plan</th>
-                <th className="px-3 py-2 text-right font-medium text-neutral-600">Purchased</th>
-                <th className="px-3 py-2 text-right font-medium text-neutral-600">Assigned</th>
-                <th className="px-3 py-2 text-right font-medium text-neutral-600">Unassigned</th>
-                <th className="px-3 py-2 text-right font-medium text-neutral-600">Reclaimable</th>
-                <th className="px-3 py-2 text-right font-medium text-neutral-600">Needs review</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Unit price</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Reclaimable value</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Matching</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.application')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('licenses.plan')}</th>
+                <th className="px-3 py-2 text-right font-medium text-neutral-600">{t('licenses.purchased')}</th>
+                <th className="px-3 py-2 text-right font-medium text-neutral-600">{t('licenses.assigned')}</th>
+                <th className="px-3 py-2 text-right font-medium text-neutral-600">{t('licenses.unassigned')}</th>
+                <th className="px-3 py-2 text-right font-medium text-neutral-600">{t('licenses.reclaimable')}</th>
+                <th className="px-3 py-2 text-right font-medium text-neutral-600">{t('licenses.needsReview')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('licenses.unitPrice')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('licenses.reclaimableValue')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('licenses.matching')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
@@ -87,13 +105,16 @@ export default async function LicensesPage() {
                     {item.assigned}
                   </td>
                   <td data-testid="unassigned" className="px-3 py-2 text-right">
-                    <Unassigned value={item.unassigned} />
+                    <Unassigned value={item.unassigned} t={t} />
                   </td>
                   <td data-testid="reclaimable" className="px-3 py-2 text-right text-neutral-700">
                     {item.reclaimable.total}
                     {item.reclaimable.total > 0 && (
                       <span className="ml-1 text-xs text-neutral-400">
-                        ({item.reclaimable.ghost} left, {item.reclaimable.orphan} unknown)
+                        {t('licenses.reclaimableBreakdown', {
+                          ghost: item.reclaimable.ghost,
+                          unknown: item.reclaimable.orphan,
+                        })}
                       </span>
                     )}
                   </td>
@@ -119,9 +140,9 @@ export default async function LicensesPage() {
                     )}
                   </td>
                   <td data-testid="match-state" className="px-3 py-2 text-neutral-500">
-                    {MATCH_STATE_COPY[item.matchState]}
+                    {t(MATCH_STATE_KEYS[item.matchState])}
                     {!item.hasConnector && (
-                      <span className="ml-1 text-xs text-neutral-400">(no connector)</span>
+                      <span className="ml-1 text-xs text-neutral-400">{t('licenses.noConnector')}</span>
                     )}
                   </td>
                 </tr>
@@ -129,7 +150,7 @@ export default async function LicensesPage() {
               {items.length === 0 && (
                 <tr>
                   <td colSpan={10} className="px-3 py-6 text-center text-neutral-400">
-                    No applications yet.
+                    {t('licenses.empty')}
                   </td>
                 </tr>
               )}

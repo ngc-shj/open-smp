@@ -3,21 +3,23 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AccountLabelKind } from '@/lib/api-types';
-import { LABEL_KIND_NAMES, LABEL_KINDS } from '@/lib/label-kinds';
+import { LABEL_KIND_KEYS, LABEL_KINDS } from '@/lib/label-kinds';
+import { useTranslator } from '@/lib/i18n/locale-context';
+import type { MessageKey } from '@/lib/i18n/messages';
 
 // Mirrors the API cap. Enforced here too so an operator who selects more than
 // the endpoint accepts gets a comprehensible message instead of a raw 400.
 const MAX_SELECTION = 100;
 
-const ERROR_MESSAGES = {
-  tooMany: `Select at most ${MAX_SELECTION} accounts.`,
-  stale: 'Some selected accounts no longer exist — refresh the page.',
-  invalid: 'That label could not be applied. Check the note and try again.',
-  network: 'Could not reach the server. Please try again.',
-  unknown: 'Something went wrong. Please try again.',
-} as const;
+type BulkError = 'tooMany' | 'stale' | 'invalid' | 'network' | 'unknown' | null;
 
-type BulkError = keyof typeof ERROR_MESSAGES | null;
+const ERROR_KEYS: Record<BulkError & string, MessageKey> = {
+  tooMany: 'label.tooMany',
+  stale: 'label.stale',
+  invalid: 'label.invalid',
+  network: 'error.network',
+  unknown: 'error.unknown',
+};
 
 export function BulkLabelBar({
   selectedIds,
@@ -26,6 +28,7 @@ export function BulkLabelBar({
   selectedIds: string[];
   onApplied: () => void;
 }) {
+  const t = useTranslator();
   const router = useRouter();
   const [kind, setKind] = useState<AccountLabelKind>(LABEL_KINDS[0]!);
   const [note, setNote] = useState('');
@@ -90,11 +93,11 @@ export function BulkLabelBar({
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-white p-3 text-xs">
       <span className="font-medium text-neutral-700">
-        {selectedIds.length} selected
+        {t('label.selected', { count: selectedIds.length })}
       </span>
 
       <select
-        aria-label="Bulk label kind"
+        aria-label={t('label.bulkKind')}
         value={kind}
         disabled={disabled}
         onChange={(e) => setKind(e.target.value as AccountLabelKind)}
@@ -102,15 +105,15 @@ export function BulkLabelBar({
       >
         {LABEL_KINDS.map((value) => (
           <option key={value} value={value}>
-            {LABEL_KIND_NAMES[value]}
+            {t(LABEL_KIND_KEYS[value])}
           </option>
         ))}
       </select>
 
       <input
         type="text"
-        aria-label="Bulk label note"
-        placeholder="Note (optional)"
+        aria-label={t('label.bulkNote')}
+        placeholder={t('field.note')}
         maxLength={500}
         value={note}
         disabled={disabled}
@@ -124,17 +127,18 @@ export function BulkLabelBar({
         onClick={handleApply}
         className="rounded-md bg-neutral-900 px-2.5 py-1 font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
       >
-        {busy ? 'Applying…' : 'Apply to selected'}
+        {busy ? t('action.applying') : t('action.apply')}
       </button>
 
       {error && (
         <span role="alert" className="text-red-700">
-          {ERROR_MESSAGES[error]}
+          {t(ERROR_KEYS[error], { max: MAX_SELECTION })}
         </span>
       )}
       {applied !== null && !error && (
         <span role="status" className="text-neutral-600">
-          Labeled {applied} account{applied === 1 ? '' : 's'}.
+          {/* The count selects the message because English pluralises and Japanese does not. */}
+          {t(applied === 1 ? 'label.applied.one' : 'label.applied.other', { count: applied })}
         </span>
       )}
     </div>

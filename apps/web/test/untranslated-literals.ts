@@ -35,6 +35,12 @@ const NOT_COPY = new Set([
   '⟨', // the untranslated-key marker itself
   'open-smp', // a product name
   'CSV', // an initialism that is not translated in either locale
+  // Identifiers an operator TYPES or selects, not copy they read. Translating
+  // either would break the thing it names: `google-workspace` is the value the
+  // registration form posts as `key`, and `saasAppId` is the field name the
+  // sync control's placeholder is telling the operator to supply.
+  'google-workspace',
+  'saasAppId',
 ]);
 
 export type Finding = { file: string; text: string };

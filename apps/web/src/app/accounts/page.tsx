@@ -8,7 +8,8 @@ import { CsvExportButton } from '@/components/CsvExportButton';
 import { SyncControl } from '@/components/SyncControl';
 import { NavBar } from '@/components/NavBar';
 import { LabelControl } from '@/components/LabelControl';
-import { LABEL_KIND_NAMES } from '@/lib/label-kinds';
+import { LABEL_KIND_KEYS } from '@/lib/label-kinds';
+import { getTranslator } from '@/lib/i18n/server';
 import { LabelFilter } from '@/components/LabelFilter';
 import { LABEL_FILTER_VALUES, type LabelFilterValue } from '@/lib/label-filters';
 import { ACCOUNT_TABS } from '@/lib/link-statuses';
@@ -60,6 +61,7 @@ export default async function AccountsPage({
     ? (params.label as LabelFilterValue)
     : null;
   const cursor = params.cursor;
+  const t = await getTranslator();
 
   const { items, nextCursor } = await fetchAccounts(status, label, cursor);
   const appKeys = [...new Set(items.map((item) => item.appKey))];
@@ -70,7 +72,7 @@ export default async function AccountsPage({
       <NavBar />
       <main className="mx-auto max-w-6xl px-4 py-6">
         <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-neutral-900">Accounts</h1>
+          <h1 className="text-lg font-semibold text-neutral-900">{t('accounts.title')}</h1>
           <CsvExportButton items={items} status={status} />
         </div>
 
@@ -106,19 +108,19 @@ export default async function AccountsPage({
               <thead className="bg-neutral-50">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium text-neutral-600">
-                    <span className="sr-only">Select</span>
+                    <span className="sr-only">{t('table.select')}</span>
                   </th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">App</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Email</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Name</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Account status</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Admin</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Last activity</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Link</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Identity</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Confidence</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Evidence</th>
-                  <th className="px-3 py-2 text-left font-medium text-neutral-600">Label</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.app')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.email')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.name')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.accountStatus')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.admin')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.lastActivity')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.link')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.identity')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.confidence')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.evidence')}</th>
+                  <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('table.label')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
@@ -133,7 +135,7 @@ export default async function AccountsPage({
                     <td className="px-3 py-2 text-neutral-700">{item.accountStatus}</td>
                     <td className="px-3 py-2">
                       {item.isAdmin && (
-                        <span className="status-chip bg-neutral-200 text-neutral-700">admin</span>
+                        <span className="status-chip bg-neutral-200 text-neutral-700">{t('value.admin')}</span>
                       )}
                     </td>
                     <td className="px-3 py-2 text-neutral-500">{item.lastActivityAt ?? '—'}</td>
@@ -163,7 +165,7 @@ export default async function AccountsPage({
                     <td className="px-3 py-2">
                       {item.label && (
                         <span className="status-chip bg-neutral-200 text-neutral-700">
-                          {LABEL_KIND_NAMES[item.label.kind]}
+                          {t(LABEL_KIND_KEYS[item.label.kind])}
                         </span>
                       )}
                       <div className="mt-1">
@@ -175,7 +177,7 @@ export default async function AccountsPage({
                 {items.length === 0 && (
                   <tr>
                     <td colSpan={12} className="px-3 py-6 text-center text-neutral-400">
-                      No accounts in this filter.
+                      {t('accounts.empty')}
                     </td>
                   </tr>
                 )}
@@ -185,7 +187,7 @@ export default async function AccountsPage({
         </AccountSelectionProvider>
 
         <div className="mt-4 flex items-center justify-between text-sm text-neutral-500">
-          <span>{freshness ? `Data as of ${freshness}` : 'No sync data yet'}</span>
+          <span>{freshness ? t('accounts.dataAsOf', { at: freshness }) : t('accounts.noSyncData')}</span>
           {nextCursor && (
             <Link
               // The API pages the filtered set, so page 2 must be requested
@@ -197,7 +199,7 @@ export default async function AccountsPage({
               }
               className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Load more
+              {t('action.loadMore')}
             </Link>
           )}
         </div>

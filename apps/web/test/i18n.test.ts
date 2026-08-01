@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
-import { DEFAULT_LOCALE, isLocale, missingMarker, translate, translator } from '../src/lib/i18n/translate';
+import { LOCALE_COOKIE, LOCALE_COOKIE_MAX_AGE, localeCookie } from '../src/lib/i18n/cookie';
+import { LOCALE_LABELS, LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
+import {
+  DEFAULT_LOCALE,
+  isLocale,
+  missingMarker,
+  placeholders,
+  translate,
+  translator,
+} from '../src/lib/i18n/translate';
 
 // i18n/C1. The type system already refuses a key present in one dictionary and
 // absent from the other — `ja` is a Record over `keyof typeof en` — so what is
@@ -88,6 +96,73 @@ describe('translate', () => {
   });
 });
 
+describe('interpolation', () => {
+  it('puts a value where the message says, in each locale', () => {
+    // The whole reason placeholders exist rather than concatenation: the number
+    // and the noun do not sit in the same order in the two locales, so a
+    // caller assembling `t(...) + n` cannot be translated at all.
+    //
+    // The key is written literally rather than cast. An `as MessageKey` here
+    // let this file name a key the dictionary never had, and the miss path did
+    // exactly what it promises — returned the marker — so the failure surfaced
+    // as an assertion about interpolation rather than as the typo it was.
+    expect(translate('en', 'label.selected', { count: 3 })).toContain('3');
+    expect(translate('ja', 'label.selected', { count: 3 })).toContain('3');
+    expect(translate('en', 'label.selected', { count: 3 })).not.toBe(
+      translate('ja', 'label.selected', { count: 3 }),
+    );
+  });
+
+  it('marks a placeholder nobody supplied, and keeps the rest of the sentence', () => {
+    const result = translate('en', 'label.selected', {});
+
+    expect(result).toContain(missingMarker('count'));
+    // The hole is local. Taking the whole message down for one missing value
+    // would lose the part that still reads.
+    expect(result).not.toBe(missingMarker('label.selected'));
+  });
+
+  it('leaves a message with no placeholders alone', () => {
+    expect(translate('en', 'nav.accounts', { count: 3 })).toBe(MESSAGES.en['nav.accounts']);
+  });
+
+  it('distinguishes one from many where English does', () => {
+    // English pluralises the noun and Japanese does not, so the COUNT selects
+    // the message instead of an `s` being glued to the end of one. Two keys
+    // carrying the same English would render "Labeled 1 accounts." with
+    // everything else green.
+    //
+    // What this does NOT cover, stated rather than implied: the selection at
+    // the call sites (BulkLabelBar, SaasAppManager). There is no jsdom project
+    // here, so no unit test can render either one.
+    expect(MESSAGES.en['label.applied.one']).not.toBe(MESSAGES.en['label.applied.other']);
+    expect(translate('en', 'label.applied.one', { count: 1 })).toBe('Labeled 1 account.');
+    expect(translate('en', 'label.applied.other', { count: 3 })).toBe('Labeled 3 accounts.');
+    expect(MESSAGES.en['saasapp.hasAccounts.one']).not.toBe(MESSAGES.en['saasapp.hasAccounts.other']);
+  });
+
+  it('every locale carries the same placeholders for a key', () => {
+    // The failure this catches is a translation that DROPS `{count}`: the type
+    // system sees a string, the key-set test sees a key, and the number simply
+    // never appears on the page. Runtime cannot see it either — a message with
+    // no placeholder has nothing to substitute and nothing to mark.
+    const [first, ...rest] = LOCALES;
+    const mismatched: string[] = [];
+
+    for (const key of Object.keys(MESSAGES[first!]) as MessageKey[]) {
+      const reference = placeholders(MESSAGES[first!][key]).sort();
+      for (const locale of rest) {
+        const other = placeholders(MESSAGES[locale][key]).sort();
+        if (reference.join(',') !== other.join(',')) {
+          mismatched.push(`${key}: ${first}=[${reference}] ${locale}=[${other}]`);
+        }
+      }
+    }
+
+    expect(mismatched, 'placeholders differ between locales').toEqual([]);
+  });
+});
+
 describe('isLocale guards what arrives from a cookie', () => {
   it.each([...LOCALES])('accepts %s', (locale) => {
     expect(isLocale(locale)).toBe(true);
@@ -104,5 +179,74 @@ describe('isLocale guards what arrives from a cookie', () => {
 
   it('defaults to a locale that exists', () => {
     expect(isLocale(DEFAULT_LOCALE)).toBe(true);
+  });
+});
+
+/**
+ * The pairs a browser would take out of the assignment.
+ *
+ * Deliberately a split rather than a `toContain`, because a substring cannot
+ * tell an attribute's ABSENCE from its NARROWING: `toContain('path=/')` is
+ * satisfied by `path=/identities`, which is precisely the value the whole
+ * attribute exists to rule out. Measured — the narrowing mutant was green under
+ * the substring form.
+ */
+function attributes(cookie: string): Map<string, string> {
+  return new Map(
+    cookie.split(';').map((part) => {
+      const [key, ...value] = part.trim().split('=');
+      return [key!.toLowerCase(), value.join('=')];
+    }),
+  );
+}
+
+describe('i18n/C3: what the switch writes', () => {
+  it.each(LOCALES)('writes a %s under the name the reader reads', (locale) => {
+    // The binding is the NAME: `getLocale` looks up LOCALE_COOKIE, and if the
+    // writer spells it differently the control appears to do nothing with
+    // nothing anywhere erroring. The value assertion is the other half.
+    const attributes_ = attributes(localeCookie(locale));
+
+    expect([...attributes_.keys()][0]).toBe(LOCALE_COOKIE);
+    expect(attributes_.get(LOCALE_COOKIE)).toBe(locale);
+  });
+
+  it('scopes the choice to the whole site', () => {
+    // Without `path=/` the cookie takes the DIRECTORY of the document that
+    // wrote it. Every top-level page here is one segment deep, so that default
+    // is already `/` — and so is a nested page reached through a <Link>, which
+    // is a pushState Chrome does not re-derive the default from. Dropping the
+    // attribute survived the E2E under both. The case that reaches it is a
+    // document LOAD at /identities/<id>, which is where the spec now switches.
+    expect(attributes(localeCookie('ja')).get('path')).toBe('/');
+  });
+
+  it('outlives the browser session', () => {
+    // A session cookie satisfies every other assertion here and loses the
+    // choice the next time the browser opens, which reads as the control not
+    // having worked. Compared against the constant rather than to `> 0`, which
+    // a `max-age=1` — expiring before the page finishes loading — satisfies.
+    expect(attributes(localeCookie('ja')).get('max-age')).toBe(String(LOCALE_COOKIE_MAX_AGE));
+  });
+
+  it('writes a different cookie per locale', () => {
+    // Non-vacuity for all three above: a function returning one constant string
+    // satisfies every one of them.
+    expect(new Set(LOCALES.map(localeCookie)).size).toBe(LOCALES.length);
+  });
+});
+
+describe('i18n/C3: what the switch offers', () => {
+  it('names every locale', () => {
+    expect(Object.keys(LOCALE_LABELS).sort()).toEqual([...LOCALES].sort());
+  });
+
+  it('gives each locale a distinct name', () => {
+    // A picker whose options read the same is unusable, and the type only
+    // requires that both keys carry a string. The labels are endonyms rather
+    // than message keys — a language picker names each language in that
+    // language, because the reader who needs it is the one who cannot read the
+    // language currently showing.
+    expect(new Set(Object.values(LOCALE_LABELS)).size).toBe(LOCALES.length);
   });
 });

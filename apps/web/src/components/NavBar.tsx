@@ -2,11 +2,14 @@
 
 import Link from 'next/link';
 import { useTranslator } from '@/lib/i18n/locale-context';
+import { LanguageControl } from './LanguageControl';
 
 // The first surface wired to the dictionary (i18n/C1). One is enough to prove
 // the resolution path end to end, and shipping a dictionary nothing renders is
-// the "shape consumed by no one" SC5 recorded the cost of. The remaining 85
-// strings are C2.
+// the "shape consumed by no one" SC5 recorded the cost of. The rest of the
+// copy is C2's remainder, counted by apps/web/test/untranslated-literals.test.ts
+// rather than by this comment — the figure that used to sit here was stale
+// within a cycle.
 //
 // A client component, because two pages that render it (`/import`, `/login`'s
 // sibling flows) are themselves client components — the locale therefore
@@ -38,6 +41,7 @@ export function NavBar() {
         <Link href="/events" className="text-sm text-neutral-600 hover:text-neutral-900">
           {t('nav.events')}
         </Link>
+        <LanguageControl />
       </div>
     </nav>
   );

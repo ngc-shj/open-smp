@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
+import { useTranslator } from '@/lib/i18n/locale-context';
+import type { MessageKey } from '@/lib/i18n/messages';
 import { HR_IMPORT_MAX_ROWS, MAX_UPLOAD_BYTES, type HrImportResponse } from '@/lib/api-types';
 
 // Checked client-side because an over-limit upload aborted mid-stream by the
@@ -12,17 +14,18 @@ import { HR_IMPORT_MAX_ROWS, MAX_UPLOAD_BYTES, type HrImportResponse } from '@/l
 // imported rather than hand-synced (SC37, closed): the same constant now bounds
 // the multipart plugin, both import routes, and this form.
 
-// Maps known API error strings (hr-import.ts) to friendlier copy; the raw
-// string is always shown alongside in smaller print for support purposes.
-const UPLOAD_ERROR_MESSAGES: Record<string, string> = {
-  'file is required': 'Please choose a CSV file to upload.',
-  'file must be UTF-8 encoded': 'This file is not UTF-8 encoded. Save it as UTF-8 and try again.',
-  'malformed CSV': 'This file could not be parsed as CSV.',
+// Maps known API error strings (hr-import.ts) to the key of friendlier copy;
+// the raw string is always shown alongside in smaller print for support
+// purposes.
+const UPLOAD_ERROR_KEYS: Record<string, MessageKey> = {
+  'file is required': 'upload.fileRequired',
+  'file must be UTF-8 encoded': 'upload.notUtf8',
+  'malformed CSV': 'upload.malformedCsv',
   // Keyed off the constant the route interpolates rather than typed out: a
   // hand-written key stops matching the moment the cap moves, and this map
   // silently falls through to the generic copy.
-  [`too many rows (max ${HR_IMPORT_MAX_ROWS})`]: `This file has too many rows (max ${HR_IMPORT_MAX_ROWS.toLocaleString('en-US')}).`,
-  'file exceeds 10MB limit': 'This file is too large (max 10MB).',
+  [`too many rows (max ${HR_IMPORT_MAX_ROWS})`]: 'upload.tooManyRows',
+  'file exceeds 10MB limit': 'upload.tooLarge',
 };
 
 type State =
@@ -36,6 +39,7 @@ type State =
   | { phase: 'match-timed-out' };
 
 export default function ImportPage() {
+  const t = useTranslator();
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<State>({ phase: 'idle' });
@@ -116,10 +120,10 @@ export default function ImportPage() {
     <>
       <NavBar />
       <main className="mx-auto max-w-3xl px-4 py-6">
-        <h1 className="mb-6 text-lg font-semibold text-neutral-900">Import HR data</h1>
+        <h1 className="mb-6 text-lg font-semibold text-neutral-900">{t('import.title')}</h1>
 
         <form onSubmit={handleUpload} className="rounded-lg border border-neutral-200 bg-white p-4">
-          <h2 className="mb-2 text-sm font-semibold text-neutral-900">Upload CSV</h2>
+          <h2 className="mb-2 text-sm font-semibold text-neutral-900">{t('import.uploadCsv')}</h2>
           <div className="flex flex-wrap items-center gap-2">
             <input
               ref={fileInputRef}
@@ -133,15 +137,23 @@ export default function ImportPage() {
               disabled={isUploading}
               className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
             >
-              Upload
+              {t('action.upload')}
             </button>
           </div>
 
-          {isUploading && <p className="mt-2 text-sm text-neutral-500">Uploading…</p>}
+          {isUploading && <p className="mt-2 text-sm text-neutral-500">{t('action.uploading')}</p>}
 
           {state.phase === 'upload-failed' && (
             <div className="mt-2 text-sm text-red-700">
-              <p>{UPLOAD_ERROR_MESSAGES[state.rawMessage] ?? 'Upload failed. Please try again.'}</p>
+              <p>
+                {(() => {
+                  const key = UPLOAD_ERROR_KEYS[state.rawMessage];
+                  // `en-US` stays pinned so the rendered cap does not depend on where the
+                  // browser runs (VE3). Making it follow the locale is a separate change,
+                  // because formatMoney's tests pin the same decision.
+                  return key ? t(key, { max: HR_IMPORT_MAX_ROWS.toLocaleString('en-US') }) : t('upload.failed');
+                })()}
+              </p>
               <p className="text-xs text-neutral-400">{state.rawMessage}</p>
             </div>
           )}
@@ -149,66 +161,72 @@ export default function ImportPage() {
 
         {state.phase === 'uploaded' && (
           <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <h2 className="mb-2 text-sm font-semibold text-neutral-900">Import result</h2>
+            <h2 className="mb-2 text-sm font-semibold text-neutral-900">{t('import.result')}</h2>
             <p className="text-sm text-neutral-700">
-              {state.result.imported} imported, {state.result.skipped} skipped
+              {t('upload.imported', {
+                imported: state.result.imported,
+                skipped: state.result.skipped,
+              })}
             </p>
 
             {state.result.errors.length > 0 && (
-              <IssueTable title="Errors" issues={state.result.errors} tone="text-red-700" />
+              <IssueTable t={t} title={t('issue.errors')} issues={state.result.errors} tone="text-red-700" />
             )}
             {state.result.warnings.length > 0 && (
-              <IssueTable title="Warnings" issues={state.result.warnings} tone="text-amber-700" />
+              <IssueTable
+                t={t}
+                title={t('issue.warnings')}
+                issues={state.result.warnings}
+                tone="text-amber-700"
+              />
             )}
           </div>
         )}
 
         {canRunMatching && (
           <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <h2 className="mb-2 text-sm font-semibold text-neutral-900">Matching</h2>
+            <h2 className="mb-2 text-sm font-semibold text-neutral-900">{t('import.matching')}</h2>
             <button
               type="button"
               onClick={runMatching}
               className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
             >
-              Run matching
+              {t('import.runMatching')}
             </button>
           </div>
         )}
 
         {isMatching && (
           <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <p className="text-sm text-neutral-500">Matching…</p>
+            <p className="text-sm text-neutral-500">{t('progress.matching')}</p>
           </div>
         )}
 
         {state.phase === 'done' && (
           <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <p className="text-sm text-green-700">Matching completed.</p>
+            <p className="text-sm text-green-700">{t('import.matchingDone')}</p>
             <Link href="/accounts" className="text-sm font-medium text-neutral-900 underline">
-              View accounts
+              {t('import.viewAccounts')}
             </Link>
           </div>
         )}
 
         {state.phase === 'match-timed-out' && (
           <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <p className="text-sm text-red-700">
-              Matching is taking longer than expected — check Events or retry
-            </p>
+            <p className="text-sm text-red-700">{t('import.matchTimedOut')}</p>
             <button
               type="button"
               onClick={runMatching}
               className="mt-2 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
             >
-              Retry
+              {t('action.retry')}
             </button>
           </div>
         )}
 
         {state.phase === 'match-failed' && (
           <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <p className="text-sm text-red-700">Matching failed. Please try again.</p>
+            <p className="text-sm text-red-700">{t('import.matchFailed')}</p>
             <p className="text-xs text-neutral-400">{state.rawMessage}</p>
           </div>
         )}
@@ -218,10 +236,12 @@ export default function ImportPage() {
 }
 
 function IssueTable({
+  t,
   title,
   issues,
   tone,
 }: {
+  t: (key: MessageKey, params?: Record<string, string | number>) => string;
   title: string;
   issues: { row: number; message: string }[];
   tone: string;
@@ -232,8 +252,8 @@ function IssueTable({
       <table className="min-w-full divide-y divide-neutral-200 text-sm">
         <thead className="bg-neutral-50">
           <tr>
-            <th className="px-3 py-1.5 text-left font-medium text-neutral-600">Row</th>
-            <th className="px-3 py-1.5 text-left font-medium text-neutral-600">Message</th>
+            <th className="px-3 py-1.5 text-left font-medium text-neutral-600">{t('issue.row')}</th>
+            <th className="px-3 py-1.5 text-left font-medium text-neutral-600">{t('issue.message')}</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-100">
