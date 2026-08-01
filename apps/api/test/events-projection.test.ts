@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
-import { projectAuditPayload, projectContractPayload } from '../src/routes/events.js';
+import {
+  projectAuditPayload,
+  projectContractPayload,
+  projectTokenAuditPayload,
+} from '../src/routes/events.js';
 import { MAX_SAAS_APPS_PER_TENANT } from '../src/import-limits.js';
 
 // C29: the audit read path must not serve a snapshot whose kind is outside the
@@ -143,5 +147,101 @@ describe('C2 acceptance: the contract-import projection serves what it recorded'
     });
 
     expect(projected).toEqual({ actorUserId: ACTOR });
+  });
+});
+
+// SC3's family. Third branch, same rule as C2's: a stored row under a kind with
+// no branch is served `{}` — present, filterable, and silent about what it
+// recorded.
+describe('SC3 acceptance: the token-audit projection serves what a run observed', () => {
+  const RUN = '55555555-5555-5555-5555-555555555555';
+
+  function app(overrides: Record<string, unknown> = {}) {
+    return {
+      clientId: 'client-1',
+      displayName: 'Analytics',
+      userCount: 3,
+      anonymous: false,
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      ...overrides,
+    };
+  }
+
+  it('preserves the counts and the applications a run recorded', () => {
+    const projected = projectTokenAuditPayload({
+      runId: RUN,
+      scanned: 10,
+      failed: 2,
+      applications: [app()],
+    });
+
+    expect(projected).toEqual({ runId: RUN, scanned: 10, failed: 2, applications: [app()] });
+  });
+
+  it('keeps a partial run distinguishable from a clean one', () => {
+    // `failed` dropped would render "we read every account and found two
+    // applications" over a run that could not read half of them.
+    const projected = projectTokenAuditPayload({ runId: RUN, scanned: 5, failed: 5, applications: [] });
+
+    expect(projected.failed).toBe(5);
+    expect(projected.scanned).toBe(5);
+  });
+
+  it('keeps a zero failure count rather than dropping it as falsy', () => {
+    const projected = projectTokenAuditPayload({ runId: RUN, scanned: 4, failed: 0, applications: [] });
+
+    expect(projected.failed).toBe(0);
+    expect('failed' in projected).toBe(true);
+  });
+
+  it('carries "the provider did not say" across the wire', () => {
+    // The connector refuses to coerce an absent `anonymous` to false; a read
+    // path that coerced it here would undo that at the other end.
+    const projected = projectTokenAuditPayload({
+      runId: RUN,
+      applications: [app({ anonymous: null }), app({ clientId: 'client-2', anonymous: true })],
+    });
+
+    expect(projected.applications?.[0]?.anonymous).toBeNull();
+    expect(projected.applications?.[1]?.anonymous).toBe(true);
+  });
+
+  it.each([
+    ['no clientId', app({ clientId: '' })],
+    ['a non-string clientId', app({ clientId: 7 })],
+    ['a zero user count', app({ userCount: 0 })],
+    ['a fractional user count', app({ userCount: 1.5 })],
+    ['a non-object entry', 'not an application'],
+  ])('drops an entry with %s and keeps the rest', (_label, corrupt) => {
+    const projected = projectTokenAuditPayload({
+      runId: RUN,
+      applications: [corrupt, app({ clientId: 'client-good' })],
+    });
+
+    // Entry-wise, unlike the contract import's all-or-nothing key list: that
+    // one claims "these are the applications created", where a dropped entry
+    // falsifies the claim. This one reports what a run observed and is already
+    // truncated by the writer's cap, so a corrupt entry costs only itself.
+    expect(projected.applications?.map((a) => a.clientId)).toEqual(['client-good']);
+  });
+
+  it('replaces a corrupt scope list with an empty one rather than dropping the application', () => {
+    const projected = projectTokenAuditPayload({
+      runId: RUN,
+      applications: [app({ scopes: ['ok', 42] })],
+    });
+
+    // The application is still the finding; its scope list is the detail. A
+    // half-projected scope list would understate what the grant permits, so it
+    // is emptied rather than filtered.
+    expect(projected.applications?.[0]?.clientId).toBe('client-1');
+    expect(projected.applications?.[0]?.scopes).toEqual([]);
+  });
+
+  it('omits the application list entirely when it is not a list', () => {
+    const projected = projectTokenAuditPayload({ runId: RUN, scanned: 1, applications: 'nope' });
+
+    expect(projected).not.toHaveProperty('applications');
+    expect(projected.scanned).toBe(1);
   });
 });

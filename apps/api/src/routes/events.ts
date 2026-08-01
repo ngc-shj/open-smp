@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { withTenant } from '@open-smp/schema';
 import {
   CONTRACT_AUDIT_KINDS,
+  TOKEN_AUDIT_KINDS,
   isAccountLabelKind,
+  type DiscoveredApplication,
   type DiscoveryEventListItem,
   type DiscoveryEventPayload,
 } from '@open-smp/api-types';
@@ -107,6 +109,10 @@ const AUDIT_KINDS: ReadonlySet<string> = new Set(LABEL_AUDIT_KINDS);
 // and says nothing about what it recorded.
 const CONTRACT_KINDS: ReadonlySet<string> = new Set(CONTRACT_AUDIT_KINDS);
 
+// SC3's family. Third branch, same rule: a stored row under a kind with no
+// branch here is persisted, answers its ?source= filter, and serves `{}`.
+const TOKEN_AUDIT_KIND_SET: ReadonlySet<string> = new Set(TOKEN_AUDIT_KINDS);
+
 function projectSyncPayload(record: Record<string, unknown>): DiscoveryEventPayload {
   const projected: DiscoveryEventPayload = {};
   if (typeof record.counts === 'object' && record.counts !== null) {
@@ -184,6 +190,60 @@ export function projectContractPayload(record: Record<string, unknown>): Discove
   return projected;
 }
 
+function projectApplication(value: unknown): DiscoveredApplication | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  // The aggregation key and the figure FR1 reports. Without either, the entry
+  // says nothing an operator can act on, so it is dropped rather than rendered
+  // half-formed.
+  if (typeof record.clientId !== 'string' || record.clientId === '') {
+    return null;
+  }
+  if (typeof record.userCount !== 'number' || !Number.isInteger(record.userCount) || record.userCount < 1) {
+    return null;
+  }
+  const scopes = Array.isArray(record.scopes) && record.scopes.every((s) => typeof s === 'string')
+    ? (record.scopes as string[])
+    : [];
+  return {
+    clientId: record.clientId,
+    displayName: typeof record.displayName === 'string' ? record.displayName : null,
+    userCount: record.userCount,
+    // Three states preserved across the wire. `Boolean(record.anonymous)` here
+    // would undo at the read path exactly what the connector refused to do at
+    // the write path.
+    anonymous: typeof record.anonymous === 'boolean' ? record.anonymous : null,
+    scopes,
+  };
+}
+
+export function projectTokenAuditPayload(record: Record<string, unknown>): DiscoveryEventPayload {
+  const projected: DiscoveryEventPayload = {};
+  if (typeof record.runId === 'string') {
+    projected.runId = record.runId;
+  }
+  for (const field of ['scanned', 'failed'] as const) {
+    const value = record[field];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+      projected[field] = value;
+    }
+  }
+  const applications = record.applications;
+  if (Array.isArray(applications)) {
+    // Entry-wise here, unlike the contract import's all-or-nothing key list,
+    // and the difference is deliberate: that list claimed "these are the
+    // applications created", where a dropped entry falsifies the claim. This
+    // one is "what the run observed", already truncated by the writer's own
+    // cap, so a corrupt entry is dropped and the rest still informs.
+    projected.applications = applications
+      .map(projectApplication)
+      .filter((app): app is DiscoveredApplication => app !== null);
+  }
+  return projected;
+}
+
 function projectPayload(kind: string, payload: unknown): DiscoveryEventPayload {
   if (typeof payload !== 'object' || payload === null) {
     return {};
@@ -194,6 +254,9 @@ function projectPayload(kind: string, payload: unknown): DiscoveryEventPayload {
   }
   if (CONTRACT_KINDS.has(kind)) {
     return projectContractPayload(record);
+  }
+  if (TOKEN_AUDIT_KIND_SET.has(kind)) {
+    return projectTokenAuditPayload(record);
   }
   return projectSyncPayload(record);
 }

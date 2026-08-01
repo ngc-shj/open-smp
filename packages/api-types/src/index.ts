@@ -120,6 +120,34 @@ export function isContractAuditKind(value: string): value is ContractAuditKind {
   return (CONTRACT_AUDIT_KINDS as readonly string[]).includes(value);
 }
 
+// SC3's family. `token_audit_completed` covers a partial run too: this is the
+// first job that can read 900 of 1000 accounts, and calling that outcome
+// "failed" would discard the 900 while calling it "completed" without counts
+// would hide the 100.
+export const TOKEN_AUDIT_KINDS = Object.freeze([
+  'token_audit_completed',
+  'token_audit_failed',
+] as const);
+
+export type TokenAuditKind = (typeof TOKEN_AUDIT_KINDS)[number];
+
+export function isTokenAuditKind(value: string): value is TokenAuditKind {
+  return (TOKEN_AUDIT_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * One third-party application, as a run observed it. `userCount` is FR1's
+ * figure; `anonymous` is the discovery signal and stays three-state, because
+ * "the provider did not say" is not "Google recognises this app".
+ */
+export type DiscoveredApplication = {
+  clientId: string;
+  displayName: string | null;
+  userCount: number;
+  anonymous: boolean | null;
+  scopes: string[];
+};
+
 // `discovery_events.source` values the PRODUCT writes. Every other source value
 // is a `saas_apps.key`, written by sync — so a tenant that could register an
 // application under one of these keys would emit sync rows indistinguishable
@@ -134,11 +162,13 @@ export function isContractAuditKind(value: string): value is ContractAuditKind {
 export const LABEL_EVENT_SOURCE = 'label';
 export const MATCH_EVENT_SOURCE = 'matcher';
 export const CONTRACT_EVENT_SOURCE = 'contract';
+export const TOKEN_AUDIT_EVENT_SOURCE = 'token-audit';
 
 export const RESERVED_EVENT_SOURCES = Object.freeze([
   LABEL_EVENT_SOURCE,
   MATCH_EVENT_SOURCE,
   CONTRACT_EVENT_SOURCE,
+  TOKEN_AUDIT_EVENT_SOURCE,
 ] as const);
 
 export function isAccountLabelKind(value: unknown): value is AccountLabelKind {
@@ -221,6 +251,12 @@ export type DiscoveryEventPayload = {
   imported?: number;
   skipped?: number;
   createdAppKeys?: string[];
+  // token_audit. `scanned` and `failed` are both carried because a partial run
+  // is the ordinary outcome of a per-account fan-out, and a reader cannot tell
+  // "no applications found" from "we could not read most accounts" without both.
+  scanned?: number;
+  failed?: number;
+  applications?: DiscoveredApplication[];
 };
 
 export type DiscoveryEventListItem = {

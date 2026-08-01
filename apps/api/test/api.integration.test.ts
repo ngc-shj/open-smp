@@ -15,7 +15,14 @@ import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import { decryptCredentials } from '@open-smp/crypto';
-import { SYNC_QUEUE, MATCH_QUEUE, type SyncJobData, type MatchJobData } from '@open-smp/queues';
+import {
+  SYNC_QUEUE,
+  MATCH_QUEUE,
+  TOKEN_AUDIT_QUEUE,
+  type SyncJobData,
+  type MatchJobData,
+  type TokenAuditJobData,
+} from '@open-smp/queues';
 import { buildApp } from '../src/app.js';
 import { ARGON2ID_OPTIONS, UnauthorizedError, type Hasher } from '../src/auth.js';
 import type { AppDeps } from '../src/deps.js';
@@ -114,8 +121,10 @@ beforeEach(async () => {
 
   const syncQueue = new Queue<SyncJobData>(SYNC_QUEUE, { connection: redisConnection });
   const matchQueue = new Queue<MatchJobData>(MATCH_QUEUE, { connection: redisConnection });
+  const tokenAuditQueue = new Queue<TokenAuditJobData>(TOKEN_AUDIT_QUEUE, { connection: redisConnection });
   await syncQueue.obliterate({ force: true }).catch(() => undefined);
   await matchQueue.obliterate({ force: true }).catch(() => undefined);
+  await tokenAuditQueue.obliterate({ force: true }).catch(() => undefined);
 
   deps = {
     pool: appPool,
@@ -124,6 +133,7 @@ beforeEach(async () => {
     hasher,
     syncQueue,
     matchQueue,
+    tokenAuditQueue,
     getJob: async (jobId) => {
       const job = (await syncQueue.getJob(jobId)) ?? (await matchQueue.getJob(jobId));
       if (!job) return null;
@@ -559,6 +569,53 @@ describe('C6 acceptance: hr-import', () => {
     expect(body.imported).toBe(0);
     expect(body.skipped).toBe(1);
     expect(body.errors[0].message).toMatch(/left_at/);
+  });
+});
+
+describe('SC3 acceptance: a token-audit row reaches the reader', () => {
+  // The unit tests call projectTokenAuditPayload DIRECTLY, so they pass whether
+  // or not projectPayload routes the kind to it — and an unrouted kind falls to
+  // the sync branch, which drops every field. That is the exact defect SC5/C2
+  // measured: stored, filterable by ?source=, and served as `{}`. This is the
+  // only assertion that can see the routing.
+  it('serves the run counts and applications rather than an empty payload', async () => {
+    const tenantId = await seedTenant(`tenant-tokens-${randomUUID()}`, 'Token Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
+    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    if (!cookie) throw new Error('login failed');
+
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+         VALUES ($1, 'token-audit', 'token_audit_completed', $2::jsonb)`,
+        [
+          tenantId,
+          JSON.stringify({
+            runId: 'run-tokens',
+            scanned: 9,
+            failed: 1,
+            applications: [
+              { clientId: 'shadow-it', displayName: 'Shadow IT', userCount: 4, anonymous: true, scopes: ['https://mail.google.com/'] },
+            ],
+          }),
+        ],
+      );
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/events?source=token-audit',
+      headers: { cookie },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as { kind: string; payload: Record<string, unknown> }[];
+    expect(items).toHaveLength(1);
+    expect(items[0].payload).toMatchObject({ runId: 'run-tokens', scanned: 9, failed: 1 });
+    expect(items[0].payload.applications).toEqual([
+      { clientId: 'shadow-it', displayName: 'Shadow IT', userCount: 4, anonymous: true, scopes: ['https://mail.google.com/'] },
+    ]);
   });
 });
 
@@ -1630,6 +1687,7 @@ describe('C11 acceptance: account labeling', () => {
         'POST /api/match',
         'POST /api/saas-apps',
         'POST /api/sync/:saasAppId',
+        'POST /api/token-audit/:saasAppId',
         'PUT /api/accounts/:saasAccountId/label',
       ]);
       for (const route of app.apiRoutes) {
