@@ -17,6 +17,9 @@ export function NavBar() {
         <Link href="/apps" className="text-sm text-neutral-600 hover:text-neutral-900">
           Apps
         </Link>
+        <Link href="/discovery" className="text-sm text-neutral-600 hover:text-neutral-900">
+          Discovery
+        </Link>
         <Link href="/events" className="text-sm text-neutral-600 hover:text-neutral-900">
           Events
         </Link>

@@ -2,8 +2,10 @@ import type { PoolClient } from 'pg';
 import {
   CONTRACT_EVENT_SOURCE,
   LABEL_EVENT_SOURCE,
+  TOKEN_AUDIT_EVENT_SOURCE,
   type AccountLabelKind,
   type ContractAuditKind,
+  type TokenAuditKind,
 } from '@open-smp/api-types';
 
 // A label moves an account out of the operator's "needs attention" set, so it
@@ -87,6 +89,25 @@ async function insertAuditRows(
      FROM unnest($4::text[]) AS payload`,
     [tenantId, source, kind, payloads.map((payload) => JSON.stringify(payload))],
   );
+}
+
+/**
+ * Writes a token-audit row from apps/api (SC3/C4).
+ *
+ * apps/worker records its own runs directly — a different program, outside this
+ * file's reach. What comes through here is the SEED, and it comes through here
+ * rather than issuing its own INSERT because `audit-append-only.test.ts` asserts
+ * apps/api holds exactly one `INSERT INTO discovery_events` and that it lives in
+ * this file. Widening that control for demo data would trade a real invariant
+ * for a convenience; routing the seed through it costs one function.
+ */
+export async function recordTokenAudit(
+  tx: PoolClient,
+  tenantId: string,
+  kind: TokenAuditKind,
+  payload: object,
+): Promise<void> {
+  await insertAuditRows(tx, tenantId, TOKEN_AUDIT_EVENT_SOURCE, kind, [payload]);
 }
 
 export type ContractImportAuditPayload = {
