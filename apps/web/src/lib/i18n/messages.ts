@@ -24,6 +24,15 @@ const en = {
   'nav.discovery': 'Discovery',
   'nav.events': 'Events',
   'nav.language': 'Language',
+
+  'filter.label': 'Label:',
+  'filter.source': 'Source:',
+
+  'export.csv': 'Export CSV',
+
+  'evidence.rule': 'rule:',
+  'evidence.candidates': 'candidates:',
+  'evidence.matched': 'matched:',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -40,6 +49,15 @@ const ja: Record<MessageKey, string> = {
   'nav.discovery': 'ディスカバリ',
   'nav.events': 'イベント',
   'nav.language': '言語',
+
+  'filter.label': 'ラベル:',
+  'filter.source': 'ソース:',
+
+  'export.csv': 'CSV エクスポート',
+
+  'evidence.rule': 'ルール:',
+  'evidence.candidates': '候補:',
+  'evidence.matched': '一致:',
 };
 
 export const MESSAGES: Record<Locale, Record<MessageKey, string>> = { en, ja };
