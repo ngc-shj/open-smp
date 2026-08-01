@@ -123,10 +123,12 @@ describe('i18n/C3: what the switch writes', () => {
   });
 
   it('scopes the choice to the whole site', () => {
-    // Without `path=/` the browser scopes the cookie to the directory of
-    // whatever page the switch was used on, so switching on /accounts leaves
-    // /licenses in the old language — which reads as a caching bug rather than
-    // as a missing attribute.
+    // Without `path=/` the browser defaults the cookie to the DIRECTORY of the
+    // document that wrote it. Every top-level page here is one segment deep, so
+    // that default is already `/` and the attribute changes nothing — which is
+    // why dropping it survived the E2E until that spec moved its switch onto
+    // /identities/<id>, where the default becomes /identities and the choice
+    // stops applying anywhere else.
     expect(localeCookie('ja')).toContain('path=/');
   });
 

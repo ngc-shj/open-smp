@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { SEEDED_ACCOUNTS } from '../fixtures/seed-facts.js';
 
 // i18n/C1 against the compose stack. The unit tier proves the dictionary; this
 // proves the RESOLUTION — that a cookie reaches the render and that `lang`
@@ -53,7 +54,16 @@ test.describe('i18n', () => {
     // place the CONTROL is exercised, and without it the `ja` dictionary is
     // data no operator can reach.
     try {
-      await page.goto('/accounts');
+      // The switch is exercised from a NESTED route deliberately. A cookie
+      // written with no `path` defaults to the DIRECTORY of the document that
+      // wrote it, and every top-level page here is one segment deep — so on
+      // /accounts that default is already `/` and the attribute has no failing
+      // state. Measured: dropping `path=/` survived this spec entirely until
+      // the switch moved here, where the default becomes /identities.
+      await page.goto('/accounts?status=matched');
+      await page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.matched.email) }).getByRole('link').click();
+      await expect(page).toHaveURL(/\/identities\/[0-9a-f-]{36}$/);
+
       const language = page.getByTestId('navbar').getByRole('combobox');
       await expect(language).toHaveValue('en');
 
@@ -64,9 +74,8 @@ test.describe('i18n', () => {
       // refresh reached the layout and not merely the components below it.
       await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
 
-      // A different page, so the assertion is about the cookie's scope rather
-      // than about this render. Without `path=/` the browser scopes the cookie
-      // to the directory the switch was used in and this reverts to English.
+      // Out of /identities/, which is the path the cookie would have been
+      // scoped to.
       await page.goto('/licenses');
       await expect(page.getByTestId('navbar').getByRole('link', { name: 'ライセンス' })).toBeVisible();
       await expect(page.getByTestId('navbar').getByRole('combobox')).toHaveValue('ja');
