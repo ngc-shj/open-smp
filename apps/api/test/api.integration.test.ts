@@ -612,8 +612,8 @@ describe('SC3 acceptance: a token-audit row reaches the reader', () => {
     expect(res.statusCode).toBe(200);
     const items = res.json().items as { kind: string; payload: Record<string, unknown> }[];
     expect(items).toHaveLength(1);
-    expect(items[0].payload).toMatchObject({ runId: 'run-tokens', scanned: 9, failed: 1 });
-    expect(items[0].payload.applications).toEqual([
+    expect(items[0]!.payload).toMatchObject({ runId: 'run-tokens', scanned: 9, failed: 1 });
+    expect(items[0]!.payload.applications).toEqual([
       { clientId: 'shadow-it', displayName: 'Shadow IT', userCount: 4, anonymous: true, scopes: ['https://mail.google.com/'] },
     ]);
   });
