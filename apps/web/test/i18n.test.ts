@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LOCALE_COOKIE, localeCookie } from '../src/lib/i18n/cookie';
+import { LOCALE_COOKIE, LOCALE_COOKIE_MAX_AGE, localeCookie } from '../src/lib/i18n/cookie';
 import { LOCALE_LABELS, LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
 import { DEFAULT_LOCALE, isLocale, missingMarker, translate, translator } from '../src/lib/i18n/translate';
 
@@ -108,18 +108,33 @@ describe('isLocale guards what arrives from a cookie', () => {
   });
 });
 
-describe('i18n/C3: what the switch writes', () => {
-  it.each(LOCALES)('writes a %s the reader will accept', (locale) => {
-    // Writer bound to reader through the reader's OWN guard, not through a
-    // second copy of the parse. The failure this catches is the switch and the
-    // resolver disagreeing about the value's shape — under which the control
-    // appears to do nothing and nothing anywhere errors.
-    const cookie = localeCookie(locale);
-    const [name, ...rest] = cookie.split(';')[0]!.split('=');
+/**
+ * The pairs a browser would take out of the assignment.
+ *
+ * Deliberately a split rather than a `toContain`, because a substring cannot
+ * tell an attribute's ABSENCE from its NARROWING: `toContain('path=/')` is
+ * satisfied by `path=/identities`, which is precisely the value the whole
+ * attribute exists to rule out. Measured — the narrowing mutant was green under
+ * the substring form.
+ */
+function attributes(cookie: string): Map<string, string> {
+  return new Map(
+    cookie.split(';').map((part) => {
+      const [key, ...value] = part.trim().split('=');
+      return [key!.toLowerCase(), value.join('=')];
+    }),
+  );
+}
 
-    expect(name).toBe(LOCALE_COOKIE);
-    expect(isLocale(rest.join('='))).toBe(true);
-    expect(rest.join('=')).toBe(locale);
+describe('i18n/C3: what the switch writes', () => {
+  it.each(LOCALES)('writes a %s under the name the reader reads', (locale) => {
+    // The binding is the NAME: `getLocale` looks up LOCALE_COOKIE, and if the
+    // writer spells it differently the control appears to do nothing with
+    // nothing anywhere erroring. The value assertion is the other half.
+    const attributes_ = attributes(localeCookie(locale));
+
+    expect([...attributes_.keys()][0]).toBe(LOCALE_COOKIE);
+    expect(attributes_.get(LOCALE_COOKIE)).toBe(locale);
   });
 
   it('scopes the choice to the whole site', () => {
@@ -129,17 +144,15 @@ describe('i18n/C3: what the switch writes', () => {
     // is a pushState Chrome does not re-derive the default from. Dropping the
     // attribute survived the E2E under both. The case that reaches it is a
     // document LOAD at /identities/<id>, which is where the spec now switches.
-    expect(localeCookie('ja')).toContain('path=/');
+    expect(attributes(localeCookie('ja')).get('path')).toBe('/');
   });
 
   it('outlives the browser session', () => {
     // A session cookie satisfies every other assertion here and loses the
     // choice the next time the browser opens, which reads as the control not
-    // having worked.
-    const maxAge = /max-age=(\d+)/.exec(localeCookie('ja'))?.[1];
-
-    expect(maxAge, 'no max-age; the choice would not survive the session').toBeDefined();
-    expect(Number(maxAge)).toBeGreaterThan(0);
+    // having worked. Compared against the constant rather than to `> 0`, which
+    // a `max-age=1` — expiring before the page finishes loading — satisfies.
+    expect(attributes(localeCookie('ja')).get('max-age')).toBe(String(LOCALE_COOKIE_MAX_AGE));
   });
 
   it('writes a different cookie per locale', () => {
