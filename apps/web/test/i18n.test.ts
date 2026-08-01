@@ -123,12 +123,12 @@ describe('i18n/C3: what the switch writes', () => {
   });
 
   it('scopes the choice to the whole site', () => {
-    // Without `path=/` the browser defaults the cookie to the DIRECTORY of the
-    // document that wrote it. Every top-level page here is one segment deep, so
-    // that default is already `/` and the attribute changes nothing — which is
-    // why dropping it survived the E2E until that spec moved its switch onto
-    // /identities/<id>, where the default becomes /identities and the choice
-    // stops applying anywhere else.
+    // Without `path=/` the cookie takes the DIRECTORY of the document that
+    // wrote it. Every top-level page here is one segment deep, so that default
+    // is already `/` — and so is a nested page reached through a <Link>, which
+    // is a pushState Chrome does not re-derive the default from. Dropping the
+    // attribute survived the E2E under both. The case that reaches it is a
+    // document LOAD at /identities/<id>, which is where the spec now switches.
     expect(localeCookie('ja')).toContain('path=/');
   });
 

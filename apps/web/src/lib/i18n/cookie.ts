@@ -21,15 +21,17 @@ export const LOCALE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
  * The assignment for `document.cookie`.
  *
  * `path=/` is the part that carries the decision, and its failing case is
- * narrower than it first looks. With no `path`, a browser defaults the cookie
- * to the DIRECTORY of the document that wrote it — which for a one-segment page
- * like `/accounts` is already `/`. The attribute only starts mattering on a
- * nested route: a switch used on `/identities/<id>` would be scoped to
- * `/identities`, and every other page would stay in the old language while the
- * control on that one page insisted it had changed.
+ * narrower than it looks. With no `path`, the cookie takes the DIRECTORY of the
+ * document that wrote it — which for a one-segment page like `/accounts` is
+ * already `/`, so the attribute changes nothing there. Nor does reaching
+ * `/identities/<id>` through a `<Link>`: that is a pushState, and Chrome still
+ * derives the default from the URL the document was LOADED at. Both measured,
+ * by dropping the attribute and watching the E2E stay green.
  *
- * Measured, not reasoned: dropping this attribute survived the E2E until the
- * spec moved its switch onto the identity page.
+ * What does reach it is a document LOAD at the nested route — a reloaded or
+ * bookmarked identity page. The cookie is then scoped to `/identities`, and
+ * every other page stays in the old language while the control on that one page
+ * insists it changed. Measured too: `/licenses` came back `lang="en"`.
  *
  * No `Secure`. The value is a display preference and carries nothing to
  * protect, while the attribute would make the control silently stop working on

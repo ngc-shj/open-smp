@@ -54,15 +54,24 @@ test.describe('i18n', () => {
     // place the CONTROL is exercised, and without it the `ja` dictionary is
     // data no operator can reach.
     try {
-      // The switch is exercised from a NESTED route deliberately. A cookie
-      // written with no `path` defaults to the DIRECTORY of the document that
-      // wrote it, and every top-level page here is one segment deep — so on
-      // /accounts that default is already `/` and the attribute has no failing
-      // state. Measured: dropping `path=/` survived this spec entirely until
-      // the switch moved here, where the default becomes /identities.
+      // The switch is exercised from a nested route reached by a HARD load, and
+      // both halves of that were measured rather than assumed.
+      //
+      // A cookie written with no `path` takes the DIRECTORY of the document
+      // that wrote it. Every top-level page here is one segment deep, so on
+      // /accounts the default is already `/` — and a nested page reached
+      // through <Link> is no better: the navigation is a pushState, and Chrome
+      // still derives the default from the URL the document was LOADED at.
+      // Dropping `path=/` survived this spec under both shapes.
+      //
+      // Loading /identities/<id> as a document is what makes the default
+      // /identities, and then /licenses reverts to English. That is the real
+      // user: someone who reloaded or bookmarked an identity page and switched
+      // language there.
       await page.goto('/accounts?status=matched');
       await page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.matched.email) }).getByRole('link').click();
       await expect(page).toHaveURL(/\/identities\/[0-9a-f-]{36}$/);
+      await page.goto(page.url());
 
       const language = page.getByTestId('navbar').getByRole('combobox');
       await expect(language).toHaveValue('en');
