@@ -328,3 +328,44 @@ jobs:
       - name: Tear down the stack
         if: always()
         run: docker compose down -v
+
+  # SC69. Asks GitHub what EXECUTED, rather than reading ci.yml's structure.
+  #
+  # SC68 states the class in closed form: nothing in this repository reads this
+  # file's structure, so any edit that changes what runs is unobserved. Revision
+  # 5 of the parity plan tried to close it with a substring read over the YAML
+  # and that passed on a commented-out step, on `if: false`, and on
+  # `continue-on-error: true` — inference from dialect-bearing text. The jobs API
+  # returns a record produced by GitHub instead.
+  #
+  # `needs:` without `if: always()` is deliberate, twice over. It means this only
+  # asserts on a run whose gates all succeeded — the question worth asking is
+  # "when CI is green, is it green because everything ran?", and on a red run a
+  # failed job's later steps are `skipped`, indistinguishable from `if: false`.
+  # It also means a DELETED or RENAMED gate job stops `needs:` resolving, which
+  # invalidates the whole workflow — louder than anything the script could say.
+  #
+  # `permissions:` is redeclared in full because a job-level block REPLACES the
+  # top-level one; `contents: read` is what checkout needs and `actions: read` is
+  # what the jobs API needs. Nothing here is granted write.
+  #
+  # What it does not catch: its own deletion, this file's deletion, and SC68's
+  # `on:` narrowing. SC56 applies to the observer, and recording that is the
+  # point — an observer claiming to close its own class is the overstatement the
+  # parity plan spends its length on.
+  audit:
+    needs: [checks, integration, compose-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every gate the manifest names actually executed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: bash scripts/assert-ci-executed.sh
