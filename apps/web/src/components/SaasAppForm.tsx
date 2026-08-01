@@ -2,6 +2,17 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslator } from '@/lib/i18n/locale-context';
+import type { MessageKey } from '@/lib/i18n/messages';
+
+type FieldError =
+  | 'invalidJson'
+  | 'missingFields'
+  | 'invalidBody'
+  | 'duplicate'
+  | 'network'
+  | 'unknown'
+  | null;
 
 // SEC-F2/SEC-F7 (plan C13): this file intentionally does NOT follow the
 // codebase's convention of narrowing a caught error and reading its message
@@ -12,16 +23,14 @@ import { useRouter } from 'next/navigation';
 // a pasted service-account private key must never reach a React error
 // overlay, console, or support screenshot. Do not "fix" this back to the
 // codebase idiom.
-const ERROR_MESSAGES = {
-  invalidJson: 'That does not look like valid JSON.',
-  missingFields: 'Service account JSON must include client_email and private_key.',
-  invalidBody: 'Please fill in all required fields.',
-  duplicate: 'This app is already registered for your tenant.',
-  network: 'Could not reach the server. Please try again.',
-  unknown: 'Registration failed. Please try again.',
-} as const;
-
-type FieldError = keyof typeof ERROR_MESSAGES | null;
+const ERROR_KEYS: Record<FieldError & string, MessageKey> = {
+  invalidJson: 'saasapp.invalidJson',
+  missingFields: 'saasapp.missingFields',
+  invalidBody: 'saasapp.invalidBodyRegister',
+  duplicate: 'saasapp.duplicate',
+  network: 'error.network',
+  unknown: 'saasapp.registerFailed',
+};
 
 function validateServiceAccountJson(raw: string): FieldError {
   let parsed: unknown;
@@ -41,6 +50,7 @@ function validateServiceAccountJson(raw: string): FieldError {
 }
 
 export function SaasAppForm() {
+  const t = useTranslator();
   const router = useRouter();
   const [displayName, setDisplayName] = useState('');
   const [serviceAccountJson, setServiceAccountJson] = useState('');
@@ -110,12 +120,12 @@ export function SaasAppForm() {
 
   return (
     <form onSubmit={handleSubmit} className="rounded-lg border border-neutral-200 bg-white p-4">
-      <h2 className="mb-4 text-sm font-semibold text-neutral-900">Register a SaaS app</h2>
+      <h2 className="mb-4 text-sm font-semibold text-neutral-900">{t('saasapp.register')}</h2>
 
       <div className="space-y-4">
         <div>
           <label htmlFor="appKey" className="mb-1 block text-sm font-medium text-neutral-700">
-            Key
+            {t('field.key')}
           </label>
           <select
             id="appKey"
@@ -130,7 +140,7 @@ export function SaasAppForm() {
 
         <div>
           <label htmlFor="displayName" className="mb-1 block text-sm font-medium text-neutral-700">
-            Display name
+            {t('field.displayName')}
           </label>
           <input
             id="displayName"
@@ -145,7 +155,7 @@ export function SaasAppForm() {
 
         <div>
           <label htmlFor="serviceAccountJson" className="mb-1 block text-sm font-medium text-neutral-700">
-            Service account JSON
+            {t('field.serviceAccountJson')}
           </label>
           <textarea
             id="serviceAccountJson"
@@ -160,7 +170,7 @@ export function SaasAppForm() {
 
         <div>
           <label htmlFor="impersonateAdminEmail" className="mb-1 block text-sm font-medium text-neutral-700">
-            Admin email to impersonate
+            {t('field.adminEmail')}
           </label>
           <input
             id="impersonateAdminEmail"
@@ -175,7 +185,7 @@ export function SaasAppForm() {
 
         <div>
           <label htmlFor="customerId" className="mb-1 block text-sm font-medium text-neutral-700">
-            Customer ID (optional)
+            {t('saasapp.customerId')}
           </label>
           <input
             id="customerId"
@@ -189,7 +199,7 @@ export function SaasAppForm() {
 
         {error && (
           <p role="alert" className="text-sm text-red-700">
-            {ERROR_MESSAGES[error]}
+            {t(ERROR_KEYS[error])}
           </p>
         )}
 
@@ -198,7 +208,7 @@ export function SaasAppForm() {
           disabled={submitting}
           className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
         >
-          {submitting ? 'Registering...' : 'Register'}
+          {submitting ? t('action.registering') : t('action.register')}
         </button>
       </div>
     </form>

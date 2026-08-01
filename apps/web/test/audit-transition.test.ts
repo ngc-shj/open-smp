@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { auditTransition, labelSide } from '../src/lib/audit-transition';
 import type { DiscoveryEventPayload } from '../src/lib/api-types';
+import { translator } from '../src/lib/i18n/translate';
+
+// The English translator, so every assertion below still pins the copy an
+// operator reads rather than the key behind it. i18n moved these strings into
+// the dictionary; it did not move the decision this file exists to guard, and a
+// test asserting `labelKind.unavailable` would no longer notice the forgery
+// being rendered as "none".
+const t = translator('en');
 
 // The events page is the only surface an operator reviews the audit trail from,
 // so what it renders IS the trail as far as review is concerned. C29 makes the
@@ -18,30 +26,30 @@ const SET: DiscoveryEventPayload = {
 
 describe('labelSide distinguishes absent from null', () => {
   it('renders a genuine absent label as none', () => {
-    expect(labelSide(null)).toBe('none');
+    expect(labelSide(null, t)).toBe('none');
   });
 
   // The red proof for the round-1 fix: deleting the `undefined` guard makes
   // this return 'none' and the forgery is back, with everything else green.
   it('renders a withheld (corrupt) snapshot as unavailable, not none', () => {
-    expect(labelSide(undefined)).toBe('unavailable');
-    expect(labelSide(undefined)).not.toBe(labelSide(null));
+    expect(labelSide(undefined, t)).toBe('unavailable');
+    expect(labelSide(undefined, t)).not.toBe(labelSide(null, t));
   });
 
   it('renders a label with its note', () => {
-    expect(labelSide({ kind: 'service_account', note: 'ci runner' })).toBe(
+    expect(labelSide({ kind: 'service_account', note: 'ci runner' }, t)).toBe(
       'Service account (ci runner)',
     );
   });
 
   it('renders a label without a note', () => {
-    expect(labelSide({ kind: 'external_collaborator', note: null })).toBe('External collaborator');
+    expect(labelSide({ kind: 'external_collaborator', note: null }, t)).toBe('External collaborator');
   });
 });
 
 describe('auditTransition decides from the event kind, not from field absence', () => {
   it('renders a genuine first-time labelling', () => {
-    expect(auditTransition('label_set', SET)).toBe('none → Known shared');
+    expect(auditTransition('label_set', SET, t)).toBe('none → Known shared');
   });
 
   it('renders a clear', () => {
@@ -50,7 +58,7 @@ describe('auditTransition decides from the event kind, not from field absence', 
         ...SET,
         before: { kind: 'known_shared', note: null },
         after: null,
-      }),
+      }, t),
     ).toBe('Known shared → none');
   });
 
@@ -61,7 +69,7 @@ describe('auditTransition decides from the event kind, not from field absence', 
       after: { kind: 'known_shared', note: null },
     };
 
-    expect(auditTransition('label_set', corrupt)).toBe('unavailable → Known shared');
+    expect(auditTransition('label_set', corrupt, t)).toBe('unavailable → Known shared');
   });
 
   // The round-2 finding. A wholly corrupt audit payload projects to the same
@@ -71,11 +79,11 @@ describe('auditTransition decides from the event kind, not from field absence', 
   it('marks a wholly corrupt audit payload rather than rendering it as a sync event', () => {
     const wholly: DiscoveryEventPayload = { actorUserId: 'u1', saasAccountId: 'a1' };
 
-    expect(auditTransition('label_set', wholly)).toBe('unavailable → unavailable');
+    expect(auditTransition('label_set', wholly, t)).toBe('unavailable → unavailable');
   });
 
   it('renders a sync event as a dash', () => {
-    expect(auditTransition('sync_completed', { counts: { upserted: 3 }, runId: 'r1' })).toBe('—');
-    expect(auditTransition('match_completed', { counts: { links: 2 } })).toBe('—');
+    expect(auditTransition('sync_completed', { counts: { upserted: 3 }, runId: 'r1' }, t)).toBe('—');
+    expect(auditTransition('match_completed', { counts: { links: 2 } }, t)).toBe('—');
   });
 });

@@ -2,7 +2,20 @@
 // that alias, and this module is unit-tested. csv-export.ts — the other
 // unit-tested lib module — uses the same form for the same reason.
 import { isLabelAuditKind, type DiscoveryEventPayload } from './api-types';
-import { LABEL_KIND_NAMES } from './label-kinds';
+import { LABEL_KIND_KEYS } from './label-kinds';
+import type { MessageKey } from './i18n/messages';
+import type { MessageParams } from './i18n/translate';
+
+/**
+ * The lookup, passed in rather than resolved here.
+ *
+ * This module is pure and unit-tested, and reaching for the request's locale
+ * inside it would make it a server module — the events page would be its only
+ * possible caller and its test would need a request. The caller already has a
+ * translator; handing it over costs one parameter and keeps the test able to
+ * pin the English by passing `translator('en')`.
+ */
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /**
  * Renders one side of a label transition.
@@ -15,12 +28,17 @@ import { LABEL_KIND_NAMES } from './label-kinds';
  * the API refused to emit, on the one surface an operator reviews the trail
  * from.
  */
-export function labelSide(snapshot: DiscoveryEventPayload['before'] | undefined): string {
-  if (snapshot === undefined) return 'unavailable';
-  if (!snapshot) return 'none';
-  return snapshot.note
-    ? `${LABEL_KIND_NAMES[snapshot.kind]} (${snapshot.note})`
-    : LABEL_KIND_NAMES[snapshot.kind];
+export function labelSide(
+  snapshot: DiscoveryEventPayload['before'] | undefined,
+  t: Translate,
+): string {
+  if (snapshot === undefined) return t('labelKind.unavailable');
+  if (!snapshot) return t('labelKind.none');
+  const kind = t(LABEL_KIND_KEYS[snapshot.kind]);
+  // The note is operator-written text, so it goes in as a value rather than
+  // being concatenated: the parentheses and their placement belong to the
+  // locale, and the note does not.
+  return snapshot.note ? t('labelKind.withNote', { kind, note: snapshot.note }) : kind;
 }
 
 /**
@@ -39,7 +57,14 @@ export function labelSide(snapshot: DiscoveryEventPayload['before'] | undefined)
  * kind list on this side would silently render '—' for a real audit event until
  * someone remembered to update it.
  */
-export function auditTransition(kind: string, payload: DiscoveryEventPayload): string {
+export function auditTransition(
+  kind: string,
+  payload: DiscoveryEventPayload,
+  t: Translate,
+): string {
   if (!isLabelAuditKind(kind)) return '—';
-  return `${labelSide(payload.before)} → ${labelSide(payload.after)}`;
+  // The arrow and the em dash are the same glyph in every locale — the same
+  // reason the untranslated-literal detector allowlists them rather than
+  // reporting them as copy.
+  return `${labelSide(payload.before, t)} → ${labelSide(payload.after, t)}`;
 }

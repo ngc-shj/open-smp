@@ -101,6 +101,56 @@ test.describe('i18n', () => {
     }
   });
 
+  // Every page carrying copy, and one string from its BODY rather than its
+  // chrome. The nav assertions above pass against an app whose pages are still
+  // entirely English — which is exactly the state C2 left and this is the proof
+  // it is over.
+  const JAPANESE_BODY_COPY = [
+    ['/accounts', 'アカウント状態'],
+    ['/licenses', '回収可能額'],
+    ['/apps', 'SaaS アプリを登録'],
+    ['/discovery', '検出されたアプリケーション'],
+    ['/events', 'ディスカバリイベント'],
+    ['/import', '人事データのインポート'],
+    ['/login', 'open-smp にサインイン'],
+  ] as const;
+
+  test('every page renders its own copy in Japanese, with no key left showing', async ({
+    page,
+    context,
+  }) => {
+    await context.addCookies([{ name: 'locale', value: 'ja', url: 'http://localhost:3000' }]);
+    try {
+      for (const [path, japanese] of JAPANESE_BODY_COPY) {
+        await page.goto(path);
+
+        await expect(page.getByText(japanese).first(), path).toBeVisible();
+        // The marker is what an unresolvable key renders as. Asserting its
+        // absence alone would pass against a blank page, which is why it is
+        // paired with the assertion above rather than standing on its own.
+        await expect(page.locator('body'), path).not.toContainText('⟨');
+      }
+    } finally {
+      await context.clearCookies({ name: 'locale' });
+    }
+  });
+
+  test('the English is replaced rather than joined', async ({ page, context }) => {
+    // A dictionary that fell back per key renders both languages at once and
+    // satisfies every assertion above. These are the two headings the accounts
+    // table would keep if any of its keys missed.
+    await context.addCookies([{ name: 'locale', value: 'ja', url: 'http://localhost:3000' }]);
+    try {
+      await page.goto('/accounts');
+
+      await expect(page.getByRole('columnheader', { name: 'Account status' })).toHaveCount(0);
+      await expect(page.getByRole('columnheader', { name: 'Last activity' })).toHaveCount(0);
+      await expect(page.getByRole('columnheader', { name: 'アカウント状態' })).toBeVisible();
+    } finally {
+      await context.clearCookies({ name: 'locale' });
+    }
+  });
+
   test('renders no untranslated-key marker anywhere in the chrome', async ({ page, context }) => {
     // The marker is what an unresolvable key renders as. Its presence on a real
     // page is the defect this whole design exists to make visible, so its

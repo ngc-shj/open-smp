@@ -2,7 +2,8 @@
 // vitest project resolves no alias. Same reason as label-kinds.ts and
 // csv-export.ts.
 import { ACCOUNT_LABEL_KINDS, type AccountLabelKind } from './api-types';
-import { LABEL_KIND_NAMES } from './label-kinds';
+import { LABEL_KIND_KEYS } from './label-kinds';
+import type { MessageKey } from './i18n/messages';
 
 export type LabelFilterValue = AccountLabelKind | 'none' | 'any';
 
@@ -20,11 +21,14 @@ export type LabelFilterValue = AccountLabelKind | 'none' | 'any';
  * leading "All" do not, because they are not kinds. `null` clears the filter
  * and is the only way back to an unfiltered list.
  */
-export const LABEL_FILTER_OPTIONS: readonly { value: LabelFilterValue | null; label: string }[] = [
-  { value: null, label: 'All' },
-  { value: 'none', label: 'Unlabeled' },
-  { value: 'any', label: 'Any label' },
-  ...ACCOUNT_LABEL_KINDS.map((value) => ({ value, label: LABEL_KIND_NAMES[value] })),
+export const LABEL_FILTER_OPTIONS: readonly {
+  value: LabelFilterValue | null;
+  labelKey: MessageKey;
+}[] = [
+  { value: null, labelKey: 'labelFilter.all' },
+  { value: 'none', labelKey: 'labelFilter.none' },
+  { value: 'any', labelKey: 'labelFilter.any' },
+  ...ACCOUNT_LABEL_KINDS.map((value) => ({ value, labelKey: LABEL_KIND_KEYS[value] })),
 ];
 
 /**

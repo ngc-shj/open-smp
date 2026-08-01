@@ -5,6 +5,7 @@ import type { DiscoveryEventListResponse } from '@/lib/api-types';
 import { NavBar } from '@/components/NavBar';
 import { SourceFilter } from '@/components/SourceFilter';
 import { auditTransition } from '@/lib/audit-transition';
+import { getTranslator } from '@/lib/i18n/server';
 
 async function fetchEvents(
   source: string | undefined,
@@ -56,12 +57,13 @@ export default async function EventsPage({
   // survive validation has no position to resume from, so it goes too.
   const cursor = params.source && !source ? undefined : params.cursor;
   const { items, nextCursor } = await fetchEvents(source, cursor);
+  const t = await getTranslator();
 
   return (
     <>
       <NavBar />
       <main className="mx-auto max-w-6xl px-4 py-6">
-        <h1 className="mb-6 text-lg font-semibold text-neutral-900">Discovery events</h1>
+        <h1 className="mb-6 text-lg font-semibold text-neutral-900">{t('events.title')}</h1>
 
         <SourceFilter active={source} />
 
@@ -69,12 +71,12 @@ export default async function EventsPage({
           <table className="min-w-full divide-y divide-neutral-200 text-sm">
             <thead className="bg-neutral-50">
               <tr>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Source</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Kind</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Counts</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Label change</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Actor</th>
-                <th className="px-3 py-2 text-left font-medium text-neutral-600">Created at</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('events.source')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('events.kind')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('events.counts')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('events.labelChange')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('events.actor')}</th>
+                <th className="px-3 py-2 text-left font-medium text-neutral-600">{t('events.createdAt')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
@@ -86,7 +88,7 @@ export default async function EventsPage({
                     {event.payload.counts ? JSON.stringify(event.payload.counts) : '—'}
                   </td>
                   <td className="px-3 py-2 text-neutral-700">
-                    {auditTransition(event.kind, event.payload)}
+                    {auditTransition(event.kind, event.payload, t)}
                   </td>
                   {/* saasAccountId is rendered as text, not a link: there is no
                       per-account page to navigate to yet (SC25). */}
@@ -97,7 +99,7 @@ export default async function EventsPage({
               {items.length === 0 && (
                 <tr>
                   <td colSpan={6} className="px-3 py-6 text-center text-neutral-400">
-                    No events yet.
+                    {t('events.empty')}
                   </td>
                 </tr>
               )}
@@ -117,7 +119,7 @@ export default async function EventsPage({
               }
               className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Load more
+              {t('action.loadMore')}
             </Link>
           </div>
         )}

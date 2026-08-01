@@ -1,4 +1,5 @@
 import { getTranslator } from '@/lib/i18n/server';
+import type { MessageKey } from '@/lib/i18n/messages';
 import Link from 'next/link';
 
 // The audit family is namespaced by source (every label event carries
@@ -6,11 +7,11 @@ import Link from 'next/link';
 // future audit kind is added. Without a control the filter is reachable only by
 // hand-editing the URL, which makes the audit trail written but not readable —
 // the condition C20 added the filter to prevent.
-const FILTERS: { value: string | null; label: string }[] = [
-  { value: null, label: 'All' },
-  { value: 'label', label: 'Label audit' },
-  { value: 'google-workspace', label: 'Sync' },
-  { value: 'matcher', label: 'Matching' },
+const FILTERS: { value: string | null; labelKey: MessageKey }[] = [
+  { value: null, labelKey: 'sourceFilter.all' },
+  { value: 'label', labelKey: 'sourceFilter.labelAudit' },
+  { value: 'google-workspace', labelKey: 'sourceFilter.sync' },
+  { value: 'matcher', labelKey: 'sourceFilter.matching' },
 ];
 
 /**
@@ -29,7 +30,7 @@ export async function SourceFilter({ active }: { active: string | undefined }) {
         const isActive = filter.value === (active ?? null);
         return (
           <Link
-            key={filter.label}
+            key={filter.labelKey}
             href={filter.value ? `/events?source=${filter.value}` : '/events'}
             className={`rounded-full border px-2.5 py-0.5 font-medium ${
               isActive
@@ -37,7 +38,7 @@ export async function SourceFilter({ active }: { active: string | undefined }) {
                 : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50'
             }`}
           >
-            {filter.label}
+            {t(filter.labelKey)}
           </Link>
         );
       })}

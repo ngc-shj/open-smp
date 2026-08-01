@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { LOCALE_COOKIE, LOCALE_COOKIE_MAX_AGE, localeCookie } from '../src/lib/i18n/cookie';
 import { LOCALE_LABELS, LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
-import { DEFAULT_LOCALE, isLocale, missingMarker, translate, translator } from '../src/lib/i18n/translate';
+import {
+  DEFAULT_LOCALE,
+  isLocale,
+  missingMarker,
+  placeholders,
+  translate,
+  translator,
+} from '../src/lib/i18n/translate';
 
 // i18n/C1. The type system already refuses a key present in one dictionary and
 // absent from the other — `ja` is a Record over `keyof typeof en` — so what is
@@ -86,6 +93,73 @@ describe('translate', () => {
 
   it('curries to a locale', () => {
     expect(translator('ja')('nav.events')).toBe(MESSAGES.ja['nav.events']);
+  });
+});
+
+describe('interpolation', () => {
+  it('puts a value where the message says, in each locale', () => {
+    // The whole reason placeholders exist rather than concatenation: the number
+    // and the noun do not sit in the same order in the two locales, so a
+    // caller assembling `t(...) + n` cannot be translated at all.
+    //
+    // The key is written literally rather than cast. An `as MessageKey` here
+    // let this file name a key the dictionary never had, and the miss path did
+    // exactly what it promises — returned the marker — so the failure surfaced
+    // as an assertion about interpolation rather than as the typo it was.
+    expect(translate('en', 'label.selected', { count: 3 })).toContain('3');
+    expect(translate('ja', 'label.selected', { count: 3 })).toContain('3');
+    expect(translate('en', 'label.selected', { count: 3 })).not.toBe(
+      translate('ja', 'label.selected', { count: 3 }),
+    );
+  });
+
+  it('marks a placeholder nobody supplied, and keeps the rest of the sentence', () => {
+    const result = translate('en', 'label.selected', {});
+
+    expect(result).toContain(missingMarker('count'));
+    // The hole is local. Taking the whole message down for one missing value
+    // would lose the part that still reads.
+    expect(result).not.toBe(missingMarker('label.selected'));
+  });
+
+  it('leaves a message with no placeholders alone', () => {
+    expect(translate('en', 'nav.accounts', { count: 3 })).toBe(MESSAGES.en['nav.accounts']);
+  });
+
+  it('distinguishes one from many where English does', () => {
+    // English pluralises the noun and Japanese does not, so the COUNT selects
+    // the message instead of an `s` being glued to the end of one. Two keys
+    // carrying the same English would render "Labeled 1 accounts." with
+    // everything else green.
+    //
+    // What this does NOT cover, stated rather than implied: the selection at
+    // the call sites (BulkLabelBar, SaasAppManager). There is no jsdom project
+    // here, so no unit test can render either one.
+    expect(MESSAGES.en['label.applied.one']).not.toBe(MESSAGES.en['label.applied.other']);
+    expect(translate('en', 'label.applied.one', { count: 1 })).toBe('Labeled 1 account.');
+    expect(translate('en', 'label.applied.other', { count: 3 })).toBe('Labeled 3 accounts.');
+    expect(MESSAGES.en['saasapp.hasAccounts.one']).not.toBe(MESSAGES.en['saasapp.hasAccounts.other']);
+  });
+
+  it('every locale carries the same placeholders for a key', () => {
+    // The failure this catches is a translation that DROPS `{count}`: the type
+    // system sees a string, the key-set test sees a key, and the number simply
+    // never appears on the page. Runtime cannot see it either — a message with
+    // no placeholder has nothing to substitute and nothing to mark.
+    const [first, ...rest] = LOCALES;
+    const mismatched: string[] = [];
+
+    for (const key of Object.keys(MESSAGES[first!]) as MessageKey[]) {
+      const reference = placeholders(MESSAGES[first!][key]).sort();
+      for (const locale of rest) {
+        const other = placeholders(MESSAGES[locale][key]).sort();
+        if (reference.join(',') !== other.join(',')) {
+          mismatched.push(`${key}: ${first}=[${reference}] ${locale}=[${other}]`);
+        }
+      }
+    }
+
+    expect(mismatched, 'placeholders differ between locales').toEqual([]);
   });
 });
 

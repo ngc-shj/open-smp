@@ -2,13 +2,27 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslator } from '@/lib/i18n/locale-context';
+import type { MessageKey } from '@/lib/i18n/messages';
+
+type LoginError = 'tooManyAttempts' | 'invalidCredentials' | 'failed' | 'network';
+
+const LOGIN_ERROR_KEYS: Record<LoginError, MessageKey> = {
+  tooManyAttempts: 'login.tooManyAttempts',
+  invalidCredentials: 'login.invalidCredentials',
+  failed: 'login.failed',
+  network: 'error.network',
+};
 
 export default function LoginPage() {
+  const t = useTranslator();
   const router = useRouter();
   const [tenantSlug, setTenantSlug] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The failure is held as a key, not as translated text: the locale can change
+  // while the message is still on screen, and stored copy would not follow it.
+  const [error, setError] = useState<LoginError | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -30,14 +44,14 @@ export default function LoginPage() {
       }
 
       if (res.status === 429) {
-        setError('Too many attempts. Please try again later.');
+        setError('tooManyAttempts');
       } else if (res.status === 401 || res.status === 403) {
-        setError('Invalid tenant, email, or password.');
+        setError('invalidCredentials');
       } else {
-        setError('Login failed. Please try again.');
+        setError('failed');
       }
     } catch {
-      setError('Could not reach the server. Please try again.');
+      setError('network');
     } finally {
       setSubmitting(false);
     }
@@ -46,12 +60,12 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-        <h1 className="mb-6 text-xl font-semibold text-neutral-900">Sign in to open-smp</h1>
+        <h1 className="mb-6 text-xl font-semibold text-neutral-900">{t('login.title')}</h1>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="tenantSlug" className="mb-1 block text-sm font-medium text-neutral-700">
-              Tenant
+              {t('login.tenant')}
             </label>
             <input
               id="tenantSlug"
@@ -67,7 +81,7 @@ export default function LoginPage() {
 
           <div>
             <label htmlFor="email" className="mb-1 block text-sm font-medium text-neutral-700">
-              Email
+              {t('table.email')}
             </label>
             <input
               id="email"
@@ -83,7 +97,7 @@ export default function LoginPage() {
 
           <div>
             <label htmlFor="password" className="mb-1 block text-sm font-medium text-neutral-700">
-              Password
+              {t('login.password')}
             </label>
             <input
               id="password"
@@ -99,7 +113,7 @@ export default function LoginPage() {
 
           {error && (
             <p role="alert" className="text-sm text-red-700">
-              {error}
+              {t(LOGIN_ERROR_KEYS[error])}
             </p>
           )}
 
@@ -108,7 +122,7 @@ export default function LoginPage() {
             disabled={submitting}
             className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
           >
-            {submitting ? 'Signing in...' : 'Sign in'}
+            {submitting ? t('action.signingIn') : t('action.signIn')}
           </button>
         </form>
       </div>

@@ -22,22 +22,21 @@ const SRC = path.join(import.meta.dirname, '..', 'src');
  * Measured, not chosen. Every entry is work C2 has not finished; an entry
  * reaching zero should be deleted rather than left at 0, so the map shrinks in
  * both dimensions.
+ *
+ * C2 drained it. The one entry left is NOT untranslated copy — it is the
+ * detector's own residue, kept as a budget rather than silenced in the
+ * allowlist because the allowlist is keyed by TEXT and this text is a fragment
+ * of one file's source. Keeping it here means a real literal added to that file
+ * still reds (2 > 1); moving it to the allowlist would have exempted the string
+ * everywhere.
  */
 const BUDGET: Record<string, number> = {
-  'app/accounts/page.tsx': 16,
-  'app/apps/page.tsx': 5,
-  'app/discovery/page.tsx': 13,
-  'app/events/page.tsx': 9,
-  'app/identities/[identityId]/page.tsx': 15,
-  'app/import/page.tsx': 17,
-  'app/licenses/page.tsx': 13,
-  'app/login/page.tsx': 4,
-  'components/BulkLabelBar.tsx': 3,
-  'components/ContractImportForm.tsx': 6,
-  'components/LabelControl.tsx': 3,
-  'components/SaasAppForm.tsx': 7,
-  'components/SaasAppManager.tsx': 11,
-  'components/SyncControl.tsx': 6,
+  // `) : app.anonymous ? (` — the middle of a three-way ternary, sitting
+  // between a `</span>` and a `<span`, with two identifiers long enough to
+  // satisfy the word rule. The discriminator is deliberately one rule and this
+  // is what that costs (SC60): the alternative is an exclusion list that grows
+  // with every expression shape.
+  'app/discovery/page.tsx': 1,
 };
 
 async function tsxFiles(dir: string): Promise<string[]> {

@@ -23,7 +23,7 @@ export async function LabelFilter({ status, active }: { status: string; active: 
         const isActive = filter.value === active;
         return (
           <Link
-            key={filter.label}
+            key={filter.labelKey}
             href={href}
             className={`rounded-full border px-2.5 py-0.5 font-medium ${
               isActive
@@ -31,7 +31,7 @@ export async function LabelFilter({ status, active }: { status: string; active: 
                 : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50'
             }`}
           >
-            {filter.label}
+            {t(filter.labelKey)}
           </Link>
         );
       })}
