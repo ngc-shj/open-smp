@@ -1479,7 +1479,7 @@ describe('C8: the root scripts CI invokes still mean what their names say', { ti
     // intact while removing the invocation. See SC56 in the plan.
     expect(pkg.scripts).toMatchObject({
       lint: 'eslint .',
-      typecheck: 'pnpm -r --parallel exec tsc --noEmit',
+      typecheck: 'tsc --noEmit -p tsconfig.json && pnpm -r --parallel exec tsc --noEmit',
       'test:unit': 'vitest run --project unit',
       'test:integration': 'vitest run --project integration',
       'test:e2e': 'pnpm -C e2e test',

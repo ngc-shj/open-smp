@@ -1,0 +1,20 @@
+{
+  // SC59. `pnpm typecheck` was `pnpm -r --parallel exec tsc --noEmit`, and
+  // `pnpm -r exec` EXCLUDES the workspace root — measured: 11 member
+  // directories, none of them the root. With no root tsconfig there was no root
+  // program either, so `vitest.config.ts` — which decides what both test tiers
+  // even run — was typechecked by nothing.
+  //
+  // The two reasons this was deferred for a cycle were both refuted. The gate's
+  // live import does not bound it: Vite erases types at transform time, so a
+  // type error there is by construction not a runtime error and the import
+  // cannot observe one. And SC50 does not block it: SC50 forbids changing the
+  // root config's project definitions or the CI job structure, and a root
+  // program plus a script edit is neither.
+  //
+  // `include` is root-level only. Every member has its own tsconfig, and
+  // widening this one to reach them would typecheck each file twice under two
+  // sets of options — the second of which nobody chose.
+  "extends": "./tsconfig.base.json",
+  "include": ["*.ts"]
+}
