@@ -560,15 +560,21 @@ eight new contract assertions, lint and typecheck clean.
   so the next tenant-scoped table has the same exposure C1 closed by hand.
   Trigger: the next new table; the fix is one query against
   `information_schema.columns`.
-- **SCL10** — **four existing single-column FKs carry C1's defect**
-  (`saas_accounts.saas_app_id`, `account_links.saas_account_id`,
-  `account_links.identity_id`, `sessions.user_id`); each accepts a cross-tenant
-  reference, measured. Not fixed here: each needs a `UNIQUE (tenant_id, id)` on
-  its parent and a composite re-declaration, which is a migration touching four
-  tables and every insert path — larger than this subject and unreviewable inside
-  it. `saas_apps` now carries the prerequisite constraint. Trigger: the next cycle
-  touching the schema; derive the member set from `pg_constraint`, not from this
-  list.
+- ~~**SCL10**~~ — **CLOSED in cycle 8** (migration 0008). Every foreign key
+  between two tenant-scoped tables now carries `tenant_id` into the reference,
+  so the RI check — which runs as the referenced table's owner and bypasses RLS
+  — can no longer be satisfied across tenants. **The entry's instruction paid
+  off literally**: it named four FKs and said to derive the member set from
+  `pg_constraint` rather than trust the list, and the catalog returned SIX. The
+  two it omitted are both on `account_labels`, added a cycle after the entry was
+  written.
+
+  `account_labels.created_by` is `ON DELETE SET NULL`, which the composite form
+  nearly broke — nulling the pair would null `tenant_id`, which is NOT NULL, and
+  a user who had labelled anything would have become undeletable. PostgreSQL
+  15's `SET NULL (column)` is what makes it expressible; the assertion that
+  proves it exists only because the mutation removing the column list survived
+  the first run.
 - **SCL11** — the catalog lock serialises the import **against itself**, not
   against `POST /saas-apps`, which sits outside it. The ceiling still holds today
   only because that route can create one key and `UNIQUE (tenant_id, key)` caps
