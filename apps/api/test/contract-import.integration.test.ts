@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Queue } from 'bullmq';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import type { ContractImportResponse, DiscoveryEventListResponse } from '@open-smp/api-types';
-import type { MatchJobData, SyncJobData } from '@open-smp/queues';
+import type { MatchJobData, SyncJobData, TokenAuditJobData } from '@open-smp/queues';
 import { buildApp } from '../src/app.js';
 import { ARGON2ID_OPTIONS, type Hasher } from '../src/auth.js';
 import {
@@ -173,6 +173,7 @@ beforeEach(async () => {
     // than answering plausibly.
     syncQueue: {} as Queue<SyncJobData>,
     matchQueue: {} as Queue<MatchJobData>,
+    tokenAuditQueue: {} as Queue<TokenAuditJobData>,
     getJob: async () => null,
   };
   app = buildApp(deps);

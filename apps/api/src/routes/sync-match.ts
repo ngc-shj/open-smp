@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { syncJobId, matchJobId } from '@open-smp/queues';
+import { syncJobId, matchJobId, tokenAuditJobId } from '@open-smp/queues';
 import type { AppDeps } from '../deps.js';
 import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 
@@ -23,6 +23,26 @@ export function registerSyncMatchRoutes(app: FastifyInstance, deps: AppDeps): vo
 
       const jobId = syncJobId(tenantId, saasAppId);
       await deps.syncQueue.add('sync', { tenantId, saasAppId }, { jobId });
+
+      return reply.code(202).send({ jobId });
+    },
+  );
+
+  app.post(
+    '/token-audit/:saasAppId',
+    { config: { rateLimit: MUTATION_RATE_LIMIT } },
+    async (req, reply) => {
+      const parsedParams = saasAppIdParamsSchema.safeParse(req.params);
+      if (!parsedParams.success) {
+        return reply.code(400).send({ error: 'invalid_params' });
+      }
+      const { saasAppId } = parsedParams.data;
+      // tenantId comes exclusively from SessionContext — never from
+      // req.body/query/headers (S7 enqueue trust boundary forbidden pattern).
+      const { tenantId } = req.sessionContext;
+
+      const jobId = tokenAuditJobId(tenantId, saasAppId);
+      await deps.tokenAuditQueue.add('token-audit', { tenantId, saasAppId }, { jobId });
 
       return reply.code(202).send({ jobId });
     },

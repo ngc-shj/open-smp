@@ -3,7 +3,14 @@ import { Queue, Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { createPool, runMigrations } from '@open-smp/schema';
 import { parseEncryptionKeys } from '@open-smp/crypto';
-import { SYNC_QUEUE, MATCH_QUEUE, type SyncJobData, type MatchJobData } from '@open-smp/queues';
+import {
+  SYNC_QUEUE,
+  MATCH_QUEUE,
+  TOKEN_AUDIT_QUEUE,
+  type SyncJobData,
+  type MatchJobData,
+  type TokenAuditJobData,
+} from '@open-smp/queues';
 import { parseEnv } from './env.js';
 import { buildApp } from './app.js';
 import { ARGON2ID_OPTIONS, type Hasher } from './auth.js';
@@ -25,6 +32,7 @@ async function main(): Promise<void> {
 
   const syncQueue = new Queue<SyncJobData>(SYNC_QUEUE, { connection });
   const matchQueue = new Queue<MatchJobData>(MATCH_QUEUE, { connection });
+  const tokenAuditQueue = new Queue<TokenAuditJobData>(TOKEN_AUDIT_QUEUE, { connection });
 
   const deps: AppDeps = {
     pool,
@@ -33,9 +41,12 @@ async function main(): Promise<void> {
     hasher,
     syncQueue,
     matchQueue,
+    tokenAuditQueue,
     getJob: async (jobId) => {
       const job: Job | undefined =
-        (await syncQueue.getJob(jobId)) ?? (await matchQueue.getJob(jobId));
+        (await syncQueue.getJob(jobId)) ??
+        (await matchQueue.getJob(jobId)) ??
+        (await tokenAuditQueue.getJob(jobId));
       if (!job) {
         return null;
       }
