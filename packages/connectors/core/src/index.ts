@@ -20,10 +20,48 @@ export interface RawAccount {
   raw: unknown; // provider payload, stored in discovery_events only
 }
 
+/**
+ * One third-party OAuth grant, by one user, to one application (SC3/C1).
+ *
+ * No `raw` field, unlike RawAccount. The provider payload adds `kind` and `etag`
+ * and nothing else — every field an audit needs is projected above — so storing
+ * it would be a retention and disclosure surface with no consumer.
+ */
+export interface RawToken {
+  clientId: string; // the OAuth client the grant was issued to; the aggregation key
+  displayName: string | null; // provider's `displayText`, absent for some grants
+  scopes: string[];
+  /** `null` means the provider did not say, which is not the same as `false`. */
+  anonymous: boolean | null;
+  nativeApp: boolean | null;
+  userKey: string; // the account that granted it
+}
+
 export interface SaaSConnector {
   id: string; // e.g. 'google-workspace'
   authKind: 'oauth2' | 'apikey' | 'scim';
   listUsers(ctx: ConnectorContext): AsyncIterable<RawAccount>;
+
+  /**
+   * Third-party OAuth grants held by ONE account (SC3/C1).
+   *
+   * OPTIONAL, and that is the whole of the capability model today: a caller asks
+   * `typeof connector.listTokens === 'function'` and there is nothing else to
+   * ask. Declaring capabilities properly is deliberately deferred to SC2
+   * (`SCT1` in the oauth-token-audit plan) — designing that vocabulary against
+   * one implementation is what `docs/roadmap.md`'s order trigger warns about.
+   *
+   * An array, not an AsyncIterable like `listUsers`, and the difference is
+   * measured rather than stylistic: `admin.directory.tokens.list` returns
+   * `{kind, etag, items}` with **no `nextPageToken`**, and its parameters are
+   * `{userKey}` alone — no `pageToken`, no `maxResults`. A streaming signature
+   * would promise paging the endpoint does not have.
+   *
+   * Per user, for the same reason: the API offers no domain-wide form, so the
+   * fan-out is forced by the provider and belongs to the caller, which is where
+   * its bound can be stated.
+   */
+  listTokens?(ctx: ConnectorContext, userKey: string): Promise<readonly RawToken[]>;
 }
 
 export type ConnectorErrorKind = 'auth' | 'rate_limit' | 'transient' | 'fatal';
@@ -41,3 +79,4 @@ export class ConnectorError extends Error {
 }
 
 export { rawAccountSchema } from './raw-account.schema.js';
+export { rawTokenSchema } from './raw-token.schema.js';

@@ -1,0 +1,35 @@
+{
+  "kind": "admin#directory#tokenList",
+  "etag": "\"fixture-etag\"",
+  "items": [
+    {
+      "kind": "admin#directory#token",
+      "etag": "\"token-1\"",
+      "clientId": "407408718192.apps.googleusercontent.com",
+      "displayText": "Registered Analytics Tool",
+      "anonymous": false,
+      "nativeApp": false,
+      "userKey": "gws-user-001",
+      "scopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/userinfo.email"
+      ]
+    },
+    {
+      "kind": "admin#directory#token",
+      "etag": "\"token-2\"",
+      "clientId": "shadow-it-client.example.com",
+      "displayText": "Nobody Registered This",
+      "anonymous": true,
+      "nativeApp": false,
+      "userKey": "gws-user-001",
+      "scopes": ["https://mail.google.com/"]
+    },
+    {
+      "kind": "admin#directory#token",
+      "etag": "\"token-3\"",
+      "clientId": "no-metadata-client.example.com",
+      "userKey": "gws-user-001"
+    }
+  ]
+}
