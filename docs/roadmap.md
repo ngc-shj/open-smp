@@ -22,10 +22,10 @@ from the README:
 | layer | what exists |
 |---|---|
 | tables | `tenants` `users` `sessions` `identities` `saas_apps` `saas_accounts` `account_links` `account_labels` `discovery_events` `saas_contracts` |
-| connector | Google Workspace only, and within it only `admin.directory.user.readonly` / `users.list` |
+| connector | Google Workspace only — `users.list` under `admin.directory.user.readonly`, and `tokens.list` under `admin.directory.user.security` on its own JWT client |
 | worker | `sync`, `match`, `rotate-credentials` |
-| API | login/logout, accounts, identities, saas-apps, account-labels (+bulk), events (+cursor), hr-import, contract-import, licenses, sync-match |
-| web | login, home, accounts, apps, events, identity detail, import, licenses |
+| API | login/logout, accounts, identities, saas-apps, account-labels (+bulk), events (+cursor), hr-import, contract-import, licenses, sync-match, token-audit |
+| web | login, home, accounts, apps, events, identity detail, import, licenses, discovery |
 
 Derived, not recalled: the tables from `CREATE TABLE` across the migrations, the API
 from the exact-equality route sweep in `api.integration.test.ts` (which is asserted,
@@ -52,7 +52,7 @@ approximated.
 | capability | Admina | Josys | Torii / Zluri | open-smp |
 |---|---|---|---|---|
 | account / identity inventory and matching | yes | yes | yes | **built** |
-| discovery of unmanaged apps (multi-route) | yes — accounting/ERP, extension | yes | yes — Zluri claims 9 routes | none |
+| discovery of unmanaged apps (multi-route) | yes — accounting/ERP, extension | yes | yes — Zluri claims 9 routes | **one route: OAuth grants** |
 | **cost and licence optimisation** | yes | yes — unused/duplicate licences surfaced | yes, and it is the headline | **built, from contracts** — not from usage |
 | **lifecycle automation (grant / revoke on leave)** | yes — offboard in a few clicks | yes, and it is the selling point | yes | **detects, cannot act** |
 | connector breadth | 200+ | many | many | **1** |
@@ -66,14 +66,21 @@ Sources: [Admina](https://admina.moneyforward.com/us),
 The category exists to answer two questions. *What are we paying for that nobody
 uses?* and *did the leaver actually lose access?*
 
-The first now has an answer, with a stated limit. `GET /licenses` reports, per
+Both now have partial answers, and the limits are the interesting part.
+
+The first: `GET /licenses` reports, per
 application, purchased against assigned and the seats that are reclaimable — held by
 someone who left, or held by nobody — priced from the contract. What it does **not**
 report is a seat nobody *uses*, because no per-application activity exists to derive
 it from; SC5 cut that reason rather than approximating it from a Google Workspace
 login timestamp.
 
-The second cannot be answered at all: the product detects and cannot act.
+The second is still unanswerable — the product detects and cannot act — but SC3
+narrowed what "detects" covers. `/discovery` reports the third-party
+applications a domain's own users have granted OAuth access to, which is the
+question *"what exists that nobody registered?"* rather than *"did the leaver
+lose access?"*. It is one discovery route of the several the category uses, and
+it reports what ONE audit run observed rather than a durable inventory (`SCT3`).
 
 ## Order
 
@@ -93,14 +100,30 @@ The second cannot be answered at all: the product detects and cannot act.
    It also held this entry's own promise: **no new external integration, no new OAuth
    scope, no write to any connected system, and no change to the connector
    interface** — so the order-flipping trigger below was never fired.
-2. **SC3 — OAuth token audit.** *Next.* The cheapest route into discovery: `admin.directory
+2. ~~**SC3 — OAuth token audit.**~~ **Done** —
+   `docs/archive/review/oauth-token-audit-plan.md`, revision 4; contracts C1–C4,
+   shipped across #21, #22 and #23.
+
+   It did what this entry said it would: exercised the connector interface on a
+   second *capability* at a fraction of a second connector's cost, and surfaced a
+   defect — **the interface has no capability declaration**, so `listTokens` is
+   an optional method and `typeof connector.listTokens === 'function'` is the
+   whole of the capability model. The order-flipping trigger below was weighed
+   explicitly and not fired: the addition changed nothing existing, and designing
+   the vocabulary against one implementation is what the trigger warns about.
+   SC2 inherits it as `SCT1`.
+
+   It also confirmed the entry's own caution about evidence. No test in this
+   repository can show the Google call works (no real tenant), so the connector
+   is proven by injection and the plan says so rather than implying otherwise. The cheapest route into discovery: `admin.directory
    .tokens.list` on the connector that is already wired, writing into
    `discovery_events`, which is already append-only. Converts "accounts we know
    about" into "applications nobody registered", which is the discovery half of the
    category, without the MV3 build and distribution chain the browser extension
    would add.
-3. **SC2 — a second connector.** The reason it is third rather than first is argued
-   below, because it is the one place this ordering is genuinely contestable.
+3. **SC2 — a second connector.** *Next.* The reason it was third rather than
+   first is argued below, and SC3's completion changed the balance — see the
+   second data point there.
 4. **SC4 — lifecycle automation.** Last because it is the only item that writes to a
    customer's identity provider. It needs write scopes, a confirmation and audit
    path, and a failure model for partial revocation — and it is worth far more once
@@ -115,11 +138,25 @@ every feature added on top of it raises the cost of correcting it later. That is
 thing the chosen order does not satisfy: it spends SC5 and SC3 on an interface whose
 shape is still an assumption.
 
-**One data point since, and it cuts weakly in favour of the order.** SC5 shipped
-without touching `packages/connectors` at all — its NF1 forbade it and the constraint
-never bound, because contract data enters by CSV. So SC5 added no cost to a later
-interface correction. That is *not* evidence the interface is sound: SC5 never
-exercised it. SC3 is the item that will, which is the argument for it being next.
+**Two data points since, and they point in opposite directions.**
+
+SC5 shipped without touching `packages/connectors` at all — its NF1 forbade it and
+the constraint never bound, because contract data enters by CSV. So SC5 added no
+cost to a later interface correction, and that is *not* evidence the interface is
+sound: SC5 never exercised it.
+
+SC3 did exercise it, and **found the defect this argument predicted**. The
+interface has no capability declaration, so a second capability could only be
+added as an optional method — `typeof connector.listTokens === 'function'` is the
+entire model. That is the shape of "an abstraction validated by a single
+implementation": it had no vocabulary for the first question a second capability
+asks. SC3 declined to invent one, because inventing it against one implementation
+is the same error one layer up.
+
+So the ordering's bet paid off in the direction it claimed — the defect surfaced
+at a capability's cost rather than a connector's — and the debt it named is now
+concrete and waiting for SC2 as `SCT1`. What remains true is that the interface is
+still unvalidated: it now has one implementation and one *recorded* gap.
 
 It is third anyway because SC3 exercises that interface on a second *capability*
 (tokens rather than users) inside the connector that exists, which surfaces
