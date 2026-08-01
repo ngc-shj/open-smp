@@ -678,6 +678,39 @@ describe('SCL10 acceptance: no foreign key accepts a cross-tenant parent', () =>
     await expect(adminPool.query(text, values)).rejects.toMatchObject({ code: '23503' });
   });
 
+  it('deleting a user nulls the label it authored and keeps the label', async () => {
+    // The delete action, which the composite form nearly broke. A plain
+    // `ON DELETE SET NULL` on (tenant_id, created_by) nulls BOTH columns, and
+    // tenant_id is NOT NULL — so a user who had ever labelled an account would
+    // become undeletable, with a 23502 no route expects.
+    //
+    // Added because the mutation that removes the column list SURVIVED: the
+    // migration applies fine either way, and nothing here had ever deleted a
+    // user. PostgreSQL 15's `SET NULL (column)` is what makes the composite
+    // form expressible at all.
+    const b = await freshParents(tenantB);
+    const labelId = randomUUID();
+    await adminPool.query(
+      `INSERT INTO account_labels (id, tenant_id, saas_account_id, kind, created_by)
+       VALUES ($1, $2, $3, 'external_collaborator', $4)`,
+      [labelId, tenantB, b.saasAccountId, b.userId],
+    );
+
+    await expect(adminPool.query('DELETE FROM users WHERE id = $1', [b.userId])).resolves.toMatchObject({
+      rowCount: 1,
+    });
+
+    const { rows } = await adminPool.query<{ created_by: string | null; tenant_id: string }>(
+      'SELECT created_by, tenant_id FROM account_labels WHERE id = $1',
+      [labelId],
+    );
+    // The label survives its author, which is why the column is nullable — the
+    // audit trail outlives the user row (C28).
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.created_by).toBeNull();
+    expect(rows[0]!.tenant_id).toBe(tenantB);
+  });
+
   it('still accepts a parent in the SAME tenant', async () => {
     // The paired allow case. A migration that made every one of these fail —
     // by referencing a column that is never populated, say — would satisfy
