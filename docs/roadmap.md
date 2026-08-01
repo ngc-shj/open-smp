@@ -21,7 +21,7 @@ from the README:
 
 | layer | what exists |
 |---|---|
-| tables | `tenants` `users` `sessions` `identities` `saas_apps` `saas_accounts` `account_links` `account_labels` `discovery_events` `saas_contracts` |
+| tables | `tenants` `users` `sessions` `identities` `saas_apps` `saas_accounts` `account_links` `account_labels` `discovery_events` `saas_contracts` `tenant_context` |
 | connector | Google Workspace only — `users.list` under `admin.directory.user.readonly`, and `tokens.list` under `admin.directory.user.security` on its own JWT client |
 | worker | `sync`, `match`, `rotate-credentials` |
 | API | login/logout, accounts, identities, saas-apps, account-labels (+bulk), events (+cursor), hr-import, contract-import, licenses, sync-match, token-audit |
@@ -30,6 +30,11 @@ from the README:
 Derived, not recalled: the tables from `CREATE TABLE` across the migrations, the API
 from the exact-equality route sweep in `api.integration.test.ts` (which is asserted,
 so it cannot drift from the app), the pages from `apps/web/src/app/**/page.tsx`.
+
+`tenant_context` is not a domain table — it is `SCL8`'s write-once record of the
+tenant a transaction claimed, which exists so a later `set_config` cannot re-point
+one. It is listed because this row is derived from the migrations and omitting it
+would make the derivation a summary.
 
 `saas_accounts` carries `account_status`, `is_admin` and `last_activity_at`.
 `saas_contracts` carries `plan_name`, `seats`, `unit_price numeric(14,2)`,
@@ -116,9 +121,37 @@ it reports what ONE audit run observed rather than a durable inventory (`SCT3`).
    It also confirmed the entry's own caution about evidence. No test in this
    repository can show the Google call works (no real tenant), so the connector
    is proven by injection and the plan says so rather than implying otherwise.
-3. **SC2 — a second connector.** *Next.* The reason it was third rather than
-   first is argued below, and SC3's completion changed the balance — see the
-   second data point there.
+3. **SC2 — a second connector.** *Next, and blocked on one input this repository
+   cannot supply: which provider.* The reason it was third rather than first is
+   argued below, and SC3's completion changed the balance — see the second data
+   point there.
+
+   **What the choice decides is not effort but what `SCT1` can learn.** A
+   capability vocabulary designed against implementations that all *have* every
+   capability is a rename of "optional method": the only thing that makes it
+   non-vacuous is a connector that legitimately **lacks** one. So a second
+   directory provider — one with both `listUsers` and a grants endpoint — would
+   validate the interface least, while a provider with accounts and no
+   third-party-grant concept is the one that forces the vocabulary to say
+   something. `authKind` is the same shape: `'apikey'` and `'scim'` are declared
+   and neither has ever been implemented.
+
+   Two things are true whatever is chosen. No test here can show a provider call
+   works — there is no real tenant, so connectors are proven by injection, and
+   the plan must say so rather than implying otherwise. And the second
+   account-bearing application reds `apps.spec.ts`'s account count and
+   `accounts.spec.ts`'s tenant-scoped orphan count (`SCL16`), which the plan has
+   to decide rather than discover.
+
+   **Chosen: Slack**, on the argument above rather than on market share —
+   Microsoft 365 is the higher-value integration and the one that would teach
+   `SCT1` nothing, because it has both capabilities and maps onto `RawAccount`
+   without friction. Slack has accounts and no third-party-grant concept, which
+   is the negative case a capability vocabulary needs to be more than a rename;
+   it is the first `authKind: 'apikey'` implementation; and it is not an identity
+   provider, so whether `RawAccount`'s `accountStatus` / `isAdmin` survive the
+   mapping is itself the measurement. If they do not, that is the interface
+   defect this ordering has been waiting to surface.
 4. **SC4 — lifecycle automation.** Last because it is the only item that writes to a
    customer's identity provider. It needs write scopes, a confirmation and audit
    path, and a failure model for partial revocation — and it is worth far more once
@@ -167,18 +200,19 @@ that is the evidence the interface is being designed against one example.
 - **Browser extension (SC1)** — one discovery route among several, and the most
   expensive: a separate MV3 build, a separate distribution channel, and a separate
   security review. SC3 buys discovery first at a fraction of the cost.
-- **i18n** — *planned, still not started*:
-  `docs/archive/review/i18n-plan.md`, revision 1. UI strings are English literals
-  in JSX; measured this cycle at **92 across 17 files**, up two pages since SC5
-  and SC3, and rising with every screen shipped.
+- ~~**i18n**~~ — **Done**, `docs/archive/review/i18n-plan.md`, revision 5;
+  contracts C1–C3 shipped across #35, #36 and #37. The UI has a dictionary, two
+  locales, a switch, and a ratcheted count of what is left — which is zero, with
+  one entry retained that is the detector's own residue rather than copy.
 
-  The plan does **not** claim i18n has earned its way past SC2 and SC4 — it
-  answers neither category question. What it records is the one condition that
-  would change the order: **SC2 is blocked on a product decision nothing in this
-  repository can make** (which second connector), and i18n is blocked on nothing.
-  If SC2 is waiting for that choice, i18n is the work that can proceed meanwhile.
-  That decision belongs to the operator; this file only makes it answerable with
-  numbers.
+  **It never claimed to earn its way past SC2, and it did not.** It ran because
+  SC2 was blocked on a product decision nothing in this repository can make
+  (*which* second connector) and i18n was blocked on nothing. That was a
+  contingency, and **the contingency is now spent**: there is no second
+  unblocked item of comparable size behind it. If the provider choice is still
+  open, the next cycle has no equivalent thing to do instead, and the honest
+  options are to make the choice, or to pick from the peripheral list below
+  knowing that is what is being done.
 - **Hierarchical tenants (SC6)**, **OIDC/Keycloak SSO for the app itself (SC7)**,
   **connection pooler support (SC9)**, **`discovery_events` retention (SC10)** — all
   still deferred on their original terms.
