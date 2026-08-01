@@ -5,6 +5,10 @@ plan does not overrule that — it makes the decision answerable with numbers
 instead of impressions, and states the one condition under which the order
 should change.
 
+Revision 5 — **C2 drained, and C1 given parameters.** The remainder is 0. What
+made that necessary rather than optional is C3: a switch that reaches a
+half-English app turns an invisible debt into a visible defect, in one click.
+
 Revision 4 — **C3 built.** The switch exists, and the `ja` dictionary is
 reachable without hand-editing a cookie. The remainder is unchanged at 128
 across 14 files: the control introduces no copy of its own, which is the ratchet
@@ -98,7 +102,7 @@ place the switch is actually exercised.
   `Record` and a hook; `next-intl` brings routing this plan has just decided
   against.
 
-### C2 — the strings — DETECTOR BUILT, 128 remaining
+### C2 — the strings — BUILT (detector, ratchet, and the drain)
 
 - 92 sites, and the risk is not the count but the **silent partial migration**:
   a page half-extracted looks finished and reads correctly in English.
@@ -300,11 +304,107 @@ Suite state after C3: unit 485 green (39 files), integration 227 green, E2E 54
 green against the compose stack, lint and typecheck clean, and the CI-only
 "every assigned test file is inside a typecheck program" gate clean.
 
-## What is left
+## What C2's drain found
 
-C2's remainder — 128 strings across 14 files. The switch now makes that number
-visible to an operator rather than only to a test: choosing 日本語 translates the
-chrome and leaves every page body in English. The ratchet is what shrinks it, and
-the plan's rule stands — **a migration slice completes a file**, because a
-half-extracted page reads correctly in English and says nothing about being
-unfinished.
+The plan sized C2 at "the remaining strings". That was the detector's number,
+and the detector says in its own header what it cannot see. The drain found
+three things the count did not contain.
+
+**Most of what was left was not a literal — it was a sentence with a value in
+it.** `{n} selected`, `Labeled {n} accounts.`, `Row {n}: {message}`, `{imported}
+imported, {skipped} skipped`, every `UPLOAD_ERROR_MESSAGES` entry. C1's lookup
+took no parameters, so the only way to render these with a dictionary was
+`t(a) + n + t(b)` — and **that shape cannot be translated at all**, because the
+number and the noun do not sit where English puts them. `t(key, params)` is
+therefore not a convenience added to C1; it is the difference between C2 being
+finishable and not.
+
+Two guards came with it, and each answers a failure the other cannot see:
+
+- a placeholder nobody supplied is marked **where it stands**, so the rest of
+  the sentence still reads;
+- the locales are asserted to carry the **same placeholder set** per key. A
+  translation that drops `{count}` has nothing to substitute and nothing to
+  mark — the number simply never appears, and only a comparison across locales
+  can see it.
+
+**Pluralisation is one key per form.** `account{n === 1 ? '' : 's'}` is English
+grammar written into code, and Japanese does not pluralise. The count picks the
+message instead. The residue is stated: nothing tests the *selection* at the two
+call sites, because there is no jsdom project here and neither component can be
+rendered in a unit test.
+
+**The label vocabulary lives outside `.tsx`, which is why this reached two pure
+modules and two control tests.** `LABEL_KIND_NAMES` was a `Record` in a plain
+`.ts` module, read by six sites, by `label-filters.ts`, and by
+`audit-transition.ts` — a pure, unit-tested function. The detector sees none of
+it, so the ratchet reaching zero would have left the whole vocabulary English
+with every gate green. That is the ratchet's own residue, and it is the reason
+"BUDGET is empty" must not be read as "the UI is translated".
+
+Three decisions kept the controls at full strength rather than merely passing:
+
+- `LABEL_KIND_NAMES` → `LABEL_KIND_KEYS`, values typed `MessageKey`. The map is
+  the only thing making a fourth kind a compile error, and it still is.
+- `auditTransition` takes the translator as a **parameter**. Resolving a request
+  locale inside it would have made a pure module a server one, with the events
+  page as its only possible caller and a request needed to test it.
+- `label-filters.test.ts` asserts the **pair** — the key in the option and the
+  English it resolves to. Pinning only the key would have stayed green while the
+  bar read "Any label" where it used to read "All", which is exactly what that
+  control exists to catch.
+
+### The drain's mutations
+
+Unit tier — eight red, one declared survivor:
+
+| mutation | result |
+|---|---|
+| interpolation is dropped and the message renders with its braces | reds |
+| a translation drops its placeholder | reds |
+| a missing placeholder takes the whole message down | reds |
+| the plural forms are made identical | reds |
+| two label kinds resolve to the same copy | reds (filters **and** audit) |
+| the filter bar loses the option that clears it | reds |
+| a withheld snapshot renders as a genuine absent label | reds |
+| a translated heading is written back as a literal | reds the ratchet |
+| the Japanese plural forms are made identical | SURVIVED (declared — Japanese does not pluralise, so the two forms are correctly identical there) |
+
+E2E tier — the only place a page BODY can be observed:
+
+| mutation | result |
+|---|---|
+| a page heading falls back to English under `ja` | reds |
+| a column heading is left in English under `ja` | reds |
+
+### Residue, stated rather than discovered later
+
+- **`app/discovery/page.tsx` keeps a budget of 1.** It is not copy: the detector
+  matches `) : app.anonymous ? (`, the middle of a three-way ternary sitting
+  between a `</span>` and a `<span`, with two identifiers long enough to satisfy
+  the word rule. Kept as a budget rather than moved to the allowlist, because
+  the allowlist is keyed by TEXT — exempting that string globally would exempt
+  it everywhere, while the budget still reds on a real literal added to that
+  file (2 > 1).
+- **Number and currency formatting is still pinned to `en-US`.** Both import
+  forms and `formatMoney` render figures locale-independently. `VE3` and
+  `licenses-format.test.ts` pin that decision, and moving it is its own slice.
+  Trigger: the first locale whose grouping differs from `en-US`, or a currency
+  the `ja` UI must render differently.
+- **`IDENTITY_ACCOUNTS_SHOWN = 50` is hand-synced.** The API's `PAGE_SIZE` lives
+  in `apps/api/src/page-size.ts`, which `apps/web` cannot import. Naming the
+  constant is better than the figure being buried in a sentence, and it is still
+  a copy. Trigger: any change to that cap, or the constant moving into
+  `@open-smp/api-types`.
+- **The plural selection is untested** at `BulkLabelBar` and `SaasAppManager`
+  (no jsdom project).
+- **`→` and `—` stay literals** in `auditTransition`, on the same ground the
+  detector's allowlist uses: the same glyph in every locale.
+- **The app name in the delete confirmation lost its bold.** An interpolated
+  value cannot carry markup, and splitting the sentence to keep it is the
+  fragment shape the dictionary exists to avoid. The rendered text is unchanged.
+- **Raw API error strings are still shown untranslated** beneath the friendly
+  copy, deliberately, for support.
+
+Suite state after C2: unit 491 green (39 files), integration 227 green, E2E 56
+green against the compose stack, lint and typecheck clean.
