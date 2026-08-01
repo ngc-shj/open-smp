@@ -29,8 +29,7 @@
       "kind": "admin#directory#token",
       "etag": "\"token-3\"",
       "clientId": "no-metadata-client.example.com",
-      "userKey": "gws-user-001",
-      "scopes": []
+      "userKey": "gws-user-001"
     }
   ]
 }

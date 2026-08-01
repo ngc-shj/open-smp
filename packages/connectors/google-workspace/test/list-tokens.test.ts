@@ -69,12 +69,19 @@ describe('GoogleWorkspaceConnector.listTokens', () => {
     expect(result[1]).toMatchObject({ anonymous: true, displayName: 'Nobody Registered This' });
   });
 
-  it('defaults a missing scope list to empty rather than to undefined', async () => {
+  it('defaults an ABSENT scope list to empty rather than to undefined', async () => {
+    // The third fixture grant carries no `scopes` KEY. An earlier draft gave it
+    // `"scopes": []`, and the mutation that drops the `?? []` survived — the
+    // fixture did not contain the case the test named, so the assertion held
+    // either way. Absent and empty are the same result and different inputs.
     const tokensList = vi.fn(async () => ({ data: tokens as TokensListResponseData }));
 
     const result = await connectorWith(tokensList).listTokens(makeContext(), USER);
 
     expect(result[2]!.scopes).toEqual([]);
+    // Not merely equal to [] — an `undefined` reaching the worker's zod parse
+    // would be rejected there, but only after it had already crossed.
+    expect(Array.isArray(result[2]!.scopes)).toBe(true);
   });
 
   it('asks for one user and nothing else', async () => {
