@@ -2,7 +2,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as apiTypes from '@open-smp/api-types';
-import { CONNECTOR_APP_KEYS, RESERVED_EVENT_SOURCES } from '@open-smp/api-types';
+import {
+  isConnectorKeySetUnreserved,
+  CONNECTOR_APP_KEYS,
+  RESERVED_EVENT_SOURCES,
+} from '@open-smp/api-types';
 import { saasAppBodySchema } from '../src/routes/saas-apps.js';
 import { RESERVED_APP_KEYS, normalizeAppKey } from '../src/app-key.js';
 
@@ -173,6 +177,23 @@ describe('C29/I29.5 control 3: no write path registers a product-owned event sou
 
       expect(parsed.success).toBe(accepted);
     });
+  });
+
+  // The runtime half of the same property. The cells above prove the ROUTE
+  // refuses a reserved key; this proves the guard that stops a colliding set
+  // from loading at all — and it is here because the guard could not otherwise
+  // be shown able to fire: with the shipped keys clean, deleting it changes
+  // nothing observable. Measured, as a survived mutation.
+  it.each([...RESERVED_EVENT_SOURCES])('rejects a connector key set containing %s', (source) => {
+    expect(isConnectorKeySetUnreserved([SEEDED_KEY, source])).toBe(false);
+  });
+
+  it('admits the set actually shipped, and an ordinary key', () => {
+    // RT10's allow side, adjacent to the boundary. A predicate that rejected
+    // everything satisfies every assertion above and refuses to load the
+    // process.
+    expect(isConnectorKeySetUnreserved(CONNECTOR_APP_KEYS)).toBe(true);
+    expect(isConnectorKeySetUnreserved(['some-future-connector'])).toBe(true);
   });
 
   it('refuses every reserved source, in every spelling a CSV cell can carry', () => {
