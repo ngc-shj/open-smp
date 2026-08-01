@@ -172,12 +172,18 @@ that is the evidence the interface is being designed against one example.
 - **Browser extension (SC1)** — one discovery route among several, and the most
   expensive: a separate MV3 build, a separate distribution channel, and a separate
   security review. SC3 buys discovery first at a fraction of the cost.
-- **i18n** — recorded nowhere in the repository until this file and not deferred by
-  any scope contract; UI strings are English literals in JSX. Cheapest while the UI is
-  small, which is an argument for doing it early and not an argument for doing it
-  before the product answers its category's questions. It got one page, one upload
-  form and one export more expensive with SC5, and half of that argument has now been
-  answered — worth re-reading, not yet worth acting on.
+- **i18n** — *planned, still not started*:
+  `docs/archive/review/i18n-plan.md`, revision 1. UI strings are English literals
+  in JSX; measured this cycle at **92 across 17 files**, up two pages since SC5
+  and SC3, and rising with every screen shipped.
+
+  The plan does **not** claim i18n has earned its way past SC2 and SC4 — it
+  answers neither category question. What it records is the one condition that
+  would change the order: **SC2 is blocked on a product decision nothing in this
+  repository can make** (which second connector), and i18n is blocked on nothing.
+  If SC2 is waiting for that choice, i18n is the work that can proceed meanwhile.
+  That decision belongs to the operator; this file only makes it answerable with
+  numbers.
 - **Hierarchical tenants (SC6)**, **OIDC/Keycloak SSO for the app itself (SC7)**,
   **connection pooler support (SC9)**, **`discovery_events` retention (SC10)** — all
   still deferred on their original terms.
