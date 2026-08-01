@@ -5,6 +5,10 @@ plan does not overrule that — it makes the decision answerable with numbers
 instead of impressions, and states the one condition under which the order
 should change.
 
+Revision 2 — **C1 built and executed**, with `NavBar` as its first consumer so
+the dictionary is not a shape nobody renders. C2 (the remaining 85 strings) and
+C3 (the switch control) are not built.
+
 Revision 1 — written from measurement. Nothing is built.
 
 ## The ordering question, stated honestly
@@ -72,7 +76,7 @@ place the switch is actually exercised.
 
 ## Contracts
 
-### C1 — the dictionary and its lookup — NOT BUILT
+### C1 — the dictionary and its lookup — BUILT (`apps/web/src/lib/i18n/`)
 
 - **One key space, and a missing key must be loud.** A lookup returning the key
   itself on a miss is the common design and it ships English keys into a
@@ -114,3 +118,39 @@ place the switch is actually exercised.
 - **`SCL15` becomes relevant**: those maps are keyed off constants the routes
   interpolate, and a translated map has to keep that keying or the friendly copy
   silently falls back — in the one place that exists to explain a refusal.
+
+## What execution added to C1
+
+**The locale could not be resolved per component.** `/import` and `/login` are
+client pages, and a client component cannot render an async server one — which
+is what a `next/headers` lookup inside `NavBar` would have made it. Measured
+when `NavBar` was first written as an async server component and `/import`
+stopped compiling. The root layout is the only server-side wrapper around
+everything, so it resolves once and hands the locale down through context.
+
+**`<html lang>` was hardcoded to `en`.** It now follows the locale. That
+attribute is a claim a screen reader acts on, so under `ja` it was going to be a
+lie the moment the second dictionary landed.
+
+**`NavBar` carries a `data-testid`.** `/accounts` has a second `<nav>` for its
+status tabs, so `getByRole('navigation')` is ambiguous there — found by the E2E
+failing in strict mode, and only on the assertion that scopes to the whole nav
+rather than to one link inside it.
+
+### C1's mutations
+
+Four run, four red.
+
+| mutation | result |
+|---|---|
+| a miss renders the key instead of a marker | reds |
+| an empty message is rendered as empty | reds |
+| `isLocale` accepts anything string-shaped | reds |
+| the `ja` dictionary carries the English through | reds |
+
+The last is the non-vacuity guard for every other assertion in the file: two
+dictionaries with identical values satisfy the key-set and non-empty checks
+while translating nothing.
+
+Suite state after C1: unit 468 green (38 files), integration 227 green, E2E 53
+green against the compose stack, lint and typecheck clean.
