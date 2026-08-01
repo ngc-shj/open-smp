@@ -4,6 +4,10 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "test": "pnpm -w exec vitest run --project unit packages/queues/"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
   }
 }
