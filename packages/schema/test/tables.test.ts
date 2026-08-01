@@ -7,6 +7,7 @@ import {
   linkStatusEnum,
   tenantScopedTables,
 } from '../src/tables.js';
+import * as schema from '../src/tables.js';
 
 
 describe('enum value sets', () => {
@@ -44,19 +45,27 @@ describe('enum value sets', () => {
 });
 
 describe('tenant-scoped table member set', () => {
-  it('contains exactly the 9 tables from the C1/C10 member-set derivation (tenants excluded)', () => {
-    expect(Object.keys(tenantScopedTables).sort()).toEqual(
-      [
-        'identities',
-        'saasApps',
-        'saasAccounts',
-        'accountLinks',
-        'discoveryEvents',
-        'users',
-        'sessions',
-        'accountLabels',
-        'saasContracts',
-      ].sort(),
-    );
+  it('contains exactly the tables that carry a tenant_id, derived rather than listed', () => {
+    // SCL9. This assertion compared one hand-written list against another, so a
+    // tenant-scoped table added without touching either passed both — which is
+    // the exposure C1 closed for saas_contracts BY HAND, and would have had to
+    // close again for the next one.
+    //
+    // Derived from the schema module: every exported Drizzle table carrying a
+    // `tenantId` column. `tenants` itself is excluded because it IS the tenant —
+    // its `id` is what the others point at.
+    const carriesTenantId = Object.entries(schema)
+      .filter(([name, value]) => {
+        if (name === 'tenants') return false;
+        if (typeof value !== 'object' || value === null) return false;
+        return 'tenantId' in value;
+      })
+      .map(([name]) => name)
+      .sort();
+
+    // Non-empty, or the comparison is between two empty sets — and a filter
+    // that stopped matching anything would satisfy it silently.
+    expect(carriesTenantId.length).toBeGreaterThan(0);
+    expect(Object.keys(tenantScopedTables).sort()).toEqual(carriesTenantId);
   });
 });
