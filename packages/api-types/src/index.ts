@@ -171,6 +171,60 @@ export const RESERVED_EVENT_SOURCES = Object.freeze([
   TOKEN_AUDIT_EVENT_SOURCE,
 ] as const);
 
+// SC2/C2. The `saas_apps.key` values a connector exists for, and the domain
+// `POST /saas-apps` accepts.
+//
+// It lives HERE and not in the worker's connector registry, though the registry
+// is what actually resolves a key to an implementation. Two reasons, and both
+// are properties of this repository rather than preferences:
+//
+//   1. `apps/api` depends on no connector package. Deriving the route's domain
+//      from the registry needs a dependency edge that does not exist, and
+//      creating it would pull every provider SDK into the API process to read a
+//      list of strings.
+//   2. The registry is INJECTABLE, so tests can register a fake. A route whose
+//      accepted domain derives from an injectable map has a runtime-mutable
+//      domain, and `SaaSConnector.id` is an unconstrained `string` authored
+//      inside a connector package.
+//
+// So the arrow points from here TO the registry, and the registry is asserted
+// to hold exactly these keys — not the other way round.
+export const CONNECTOR_APP_KEYS = Object.freeze(['google-workspace'] as const);
+
+export type ConnectorAppKey = (typeof CONNECTOR_APP_KEYS)[number];
+
+/**
+ * True when no connector key collides with a product-owned event source.
+ *
+ * The property — no application registerable under a key that answers a
+ * product audit family under `?source=` — held until C2 because the route
+ * pinned one literal. It now holds because two sets are disjoint, and they have
+ * different owners: a connector author picks the left, an audit family picks
+ * the right.
+ *
+ * Two things shaped this into a PREDICATE over a supplied set rather than a
+ * bare check over the constant below, and both were measured:
+ *
+ *   - written inline, it had no failing state. With the shipped keys clean,
+ *     deleting the check changed nothing observable and the mutation survived.
+ *     A guard whose only subject is data that already satisfies it cannot be
+ *     shown able to fire (RT7), so it takes the set as an argument and a test
+ *     hands it a colliding one.
+ *   - `api-types-boundary.test.ts` (C39) constrains this package's runtime
+ *     exports to frozen primitive data and one-argument guards named `is*`.
+ *     An `assert`-shaped export reds it. Fitting the contract is cheaper and
+ *     safer than widening a control to admit new code.
+ */
+export function isConnectorKeySetUnreserved(keys: readonly string[]): boolean {
+  return !keys.some((key) => (RESERVED_EVENT_SOURCES as readonly string[]).includes(key));
+}
+
+// At module init, so a collision refuses to LOAD rather than waiting for a test
+// run that a deployment does not perform.
+if (!isConnectorKeySetUnreserved(CONNECTOR_APP_KEYS)) {
+  throw new Error('connector app keys collide with reserved event sources');
+}
+
 export function isAccountLabelKind(value: unknown): value is AccountLabelKind {
   return (
     typeof value === 'string' && (ACCOUNT_LABEL_KINDS as readonly string[]).includes(value)

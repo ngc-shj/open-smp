@@ -4,6 +4,11 @@ Cycle 9. `docs/roadmap.md` puts SC2 next and records that it was blocked on one
 input this repository cannot supply — *which* provider. That input is now given:
 **Slack**, chosen on what it teaches rather than on market share.
 
+Revision 3 — **C2 built.** `CONNECTOR_APP_KEYS` has one member; Slack joins it
+with the connector, because a key an operator can register and no job can sync
+is worse than one they cannot register. Two of C2's own instructions were wrong
+and are corrected below (⚠10, ⚠11).
+
 Revision 2 — **plan review applied.** Nothing is built. Revision 1's structure
 survived; six of its claims did not, and the corrections are marked ⚠ where a
 later reader would otherwise inherit the wrong belief.
@@ -262,8 +267,48 @@ state that makes the other two mean anything. Note also that the existing
 `z.enum(['google-workspace', 'slack'])` would truncate — another reason the
 proof leaves source-scanning.
 
-**Claim 3 moves too** (⚠3): from *"seed writes the pinned literal"* to *"the set
-of keys seed writes is a subset of `CONNECTOR_APP_KEYS`"*.
+**Claim 3 moves too** (⚠3) — but ⚠10: **not to the subset form this plan
+specified.** *"The set of keys seed writes is a subset of
+`CONNECTOR_APP_KEYS`"* is **false by design**: `ensureContractOnlyApp` seeds
+`'notion'` precisely because `SCL16` needs an application with a contract and no
+connector visible in the demo. The claim that holds for every seeded key is the
+reserved-set refusal, which claim 4 already makes. Claim 3 becomes the narrower
+true statement: the seeded connector key is one the route would also accept.
+
+⚠11 — **the module-init guard had no failing state, and a second control chose
+its shape.** Written as a bare block over the constant, a mutation deleting it
+survived: with the shipped keys clean, removing the check changes nothing
+observable, and a guard whose only subject is data that already satisfies it
+cannot be shown able to fire (RT7). It takes the set as an argument now, and a
+test hands it a colliding one.
+
+The first repair exported an `assert`-shaped function, and
+`api-types-boundary.test.ts` (C39) redded — that control constrains this
+package's runtime exports to frozen primitive data and one-argument guards named
+`is*`, because what crosses into the browser bundle is its subject. The guard is
+a **predicate** as a result. Fitting an existing control's contract is cheaper
+and safer than widening the control to admit new code, and this is the second
+time this cycle that a control shaped a design rather than merely checking it.
+
+### What C2 built, and what it deliberately did not
+
+`CONNECTOR_APP_KEYS` ships with **one member**. Slack joins it in C1, with the
+connector — a key an operator can register and no sync job can resolve is worse
+than one they cannot register, and `runSync` would surface it as
+`No connector registered for saas_apps.key` in a worker log.
+
+So nothing user-visible changed, which is the point: what landed is the
+structure the rest of SC2 reads, plus ⚠1 — a missing ceiling that was never
+about Slack.
+
+| mutation | result |
+|---|---|
+| the route accepts any string | reds — **the cell the old text-scanning control could not have** |
+| the key set gains a reserved source | reds |
+| the collision predicate stops detecting a collision | reds |
+| the registry loses the key the route accepts | reds |
+| the registry gains a key the route refuses | reds |
+| the ceiling is read outside the lock | SURVIVED (declared — no unit-tier assertion can observe a lock ordering; the contract import's acceptance test is the only thing driving two real transactions through these primitives, and it is scoped to that route) |
 
 ### C3 — credentials become per-connector
 

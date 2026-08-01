@@ -2,7 +2,12 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as apiTypes from '@open-smp/api-types';
-import { RESERVED_EVENT_SOURCES } from '@open-smp/api-types';
+import {
+  isConnectorKeySetUnreserved,
+  CONNECTOR_APP_KEYS,
+  RESERVED_EVENT_SOURCES,
+} from '@open-smp/api-types';
+import { saasAppBodySchema } from '../src/routes/saas-apps.js';
 import { RESERVED_APP_KEYS, normalizeAppKey } from '../src/app-key.js';
 
 // C29/I29.5 control 3, restated for C2.
@@ -31,7 +36,11 @@ import { RESERVED_APP_KEYS, normalizeAppKey } from '../src/app-key.js';
 // SC30's exit condition and SC38's deferral both rest on this file, so it stays
 // a CONTROL_FILES member.
 
-const PINNED_KEY = "key: z.literal('google-workspace')";
+// SC2/C2. `z.enum` over the named constant, not the old one-literal form.
+// A NAMED constant matters to this detector specifically: KEY_DECLARATION stops
+// at the first comma, so an inline `z.enum(['a', 'b'])` would truncate and the
+// comparison below would pin a fragment.
+const PINNED_KEY = 'key: z.enum(CONNECTOR_APP_KEYS)';
 const SEEDED_KEY = 'google-workspace';
 
 // Anchored on the left. The previous form was `['"]?key['"]?…` with nothing
@@ -70,7 +79,7 @@ const API_SRC = path.join(import.meta.dirname, '..', 'src');
 const WORKER_SRC = path.join(import.meta.dirname, '..', '..', 'worker', 'src');
 
 describe('C29/I29.5 control 3: no write path registers a product-owned event source', () => {
-  it('declares a zod `key` field exactly once, and it is the google-workspace literal', async () => {
+  it('declares a zod `key` field exactly once, and it reads the connector key set', async () => {
     const files = await collectSourceFiles(API_SRC);
     expect(files.length).toBeGreaterThan(0);
 
@@ -113,13 +122,19 @@ describe('C29/I29.5 control 3: no write path registers a product-owned event sou
     expect([...normalizeSource(snippet).matchAll(KEY_DECLARATION)].length > 0).toBe(expected);
   });
 
-  it('seeds the same key value the schema pins', async () => {
+  it('seeds a key the route would also accept', async () => {
     // seed.ts writes saas_apps.key directly, with no schema in the path — so
     // the column has two authors and the control is about the column, not the
     // route.
+    //
+    // NOT "every key seed writes is a connector key", which is false by design:
+    // `ensureContractOnlyApp` seeds 'notion' precisely because SCL16 needs an
+    // application with a contract and no connector visible in the demo. The
+    // claim that holds for every seeded key is the reserved-set refusal below.
     const seed = await readFile(path.join(API_SRC, 'seed.ts'), 'utf8');
 
     expect(seed).toContain(`'${SEEDED_KEY}'`);
+    expect(CONNECTOR_APP_KEYS as readonly string[]).toContain(SEEDED_KEY);
   });
 
   it('seeds no reserved key at all', async () => {
@@ -138,6 +153,47 @@ describe('C29/I29.5 control 3: no write path registers a product-owned event sou
       (source) => seed.includes(`'${source}'`) || seed.includes(`"${source}"`),
     );
     expect(found, `seed.ts spells a reserved event source: ${found.join(', ')}`).toEqual([]);
+  });
+
+  // The claim above is about how the field is SPELLED. These are about what it
+  // ACCEPTS, and the difference is the whole reason claim 1 stopped being a
+  // text comparison: a source scan cannot tell `z.enum(CONNECTOR_APP_KEYS)`
+  // from a field widened to `z.string()`, and neither can an assertion that the
+  // two SETS are disjoint — that stays true however the schema degrades.
+  describe.each([
+    ...RESERVED_EVENT_SOURCES.map((source) => [`the reserved source ${source}`, source, false] as const),
+    ...CONNECTOR_APP_KEYS.map((key) => [`the connector key ${key}`, key, true] as const),
+    // The cell with a failing state under `z.string()`, and the only one here
+    // that has one. Without it every assertion in this block survives the
+    // mutation that makes the route accept anything.
+    ['a key that is neither', 'not-a-connector', false] as const,
+  ])('POST /saas-apps and %s', (_label, key, accepted) => {
+    it(`${accepted ? 'accepts' : 'refuses'} it`, () => {
+      const parsed = saasAppBodySchema.safeParse({
+        key,
+        displayName: 'Anything',
+        credentials: {},
+      });
+
+      expect(parsed.success).toBe(accepted);
+    });
+  });
+
+  // The runtime half of the same property. The cells above prove the ROUTE
+  // refuses a reserved key; this proves the guard that stops a colliding set
+  // from loading at all — and it is here because the guard could not otherwise
+  // be shown able to fire: with the shipped keys clean, deleting it changes
+  // nothing observable. Measured, as a survived mutation.
+  it.each([...RESERVED_EVENT_SOURCES])('rejects a connector key set containing %s', (source) => {
+    expect(isConnectorKeySetUnreserved([SEEDED_KEY, source])).toBe(false);
+  });
+
+  it('admits the set actually shipped, and an ordinary key', () => {
+    // RT10's allow side, adjacent to the boundary. A predicate that rejected
+    // everything satisfies every assertion above and refuses to load the
+    // process.
+    expect(isConnectorKeySetUnreserved(CONNECTOR_APP_KEYS)).toBe(true);
+    expect(isConnectorKeySetUnreserved(['some-future-connector'])).toBe(true);
   });
 
   it('refuses every reserved source, in every spelling a CSV cell can carry', () => {

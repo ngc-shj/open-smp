@@ -628,6 +628,10 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       'packages/schema/test/tables.test.ts', // SCL9 — the tenant-scoped member set derives from the schema module
       'packages/queues/test/job-ids.test.ts', // SC47 — job ids are dedupe keys; a tenant collision merges two tenants' work
       'apps/api/test/mutate-anchor.test.ts', // the mutation harness's own failing state; without it every mutation reads as red
+      // SC2/C2 family (b): derives the connector key domain and compares it
+      // against the worker's registry. Nothing in the type system connects the
+      // two, and both drift directions are silent.
+      'apps/worker/test/connector-registry.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);
