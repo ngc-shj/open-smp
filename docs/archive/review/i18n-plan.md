@@ -5,6 +5,11 @@ plan does not overrule that — it makes the decision answerable with numbers
 instead of impressions, and states the one condition under which the order
 should change.
 
+Revision 4 — **C3 built.** The switch exists, and the `ja` dictionary is
+reachable without hand-editing a cookie. The remainder is unchanged at 128
+across 14 files: the control introduces no copy of its own, which is the ratchet
+reporting rather than a claim.
+
 Revision 3 — **C2's detector built, and the remainder ratcheted.** 128 strings
 across 14 files remain; four components are migrated to prove the ratchet moves.
 C3 is not built.
@@ -105,7 +110,7 @@ place the switch is actually exercised.
   records that currency rendering is locale-dependent and asserted on the
   emitted string; the same rule applies to these.
 
-### C3 — the switch, and the second locale — NOT BUILT
+### C3 — the switch, and the second locale — BUILT
 
 - The cookie, its default, and a control to change it.
 - One E2E spec that switches to `ja` and asserts a translated string. Without
@@ -193,3 +198,88 @@ that extended family (b) by hand (`SC61`).
 
 Suite state: unit 478 green (39 files), integration 227 green, E2E 53 green,
 lint and typecheck clean.
+
+## What execution added to C3
+
+**The cookie name had to leave `server.ts`.** That module reaches
+`next/headers`, so a client component importing the name from it pulls
+`next/headers` into the browser bundle. Writer and reader would otherwise have
+spelled `'locale'` twice, and the day they disagree the switch appears to do
+nothing with no error anywhere. It now lives in `lib/i18n/cookie.ts`, which both
+sides import — and a mutation renaming it there is a **declared survivor**,
+because a rename that reds would mean a second spelling had appeared.
+
+**The write is `document.cookie`, not a server action.** The value is a display
+preference the server does not act on, and the read path already treats it as
+untrusted — `getLocale` falls back on anything unrecognised, which an E2E
+asserts. A server action would have added a POST surface to defend for a string
+nothing decides on, and this repository has no server actions to follow.
+
+**`router.refresh()` updates `<html lang>`.** Asserted rather than assumed: the
+locale is resolved by the root layout, so the open question was whether
+re-fetching the route's server render reaches the `<html>` element or only the
+components below it. It reaches it, and the E2E pins that.
+
+**The option labels are endonyms, not message keys.** A picker names each
+language in that language, because the reader who needs it is the one who cannot
+read the language currently showing — translating them would render 日本語 as
+"Japanese" to exactly that person.
+
+### `path=/` had a failing state, and it took two wrong claims to find it
+
+The mutation dropping `path=/` **survived twice**, and each survival killed a
+claim rather than a test.
+
+| claim | measured |
+|---|---|
+| "switching on `/accounts` leaves `/licenses` in the old language" | false — a one-segment URL's default path is already `/` |
+| "reaching `/identities/<id>` fixes that" | false — a `<Link>` is a pushState, and Chrome derives the default from the URL the document was **loaded** at |
+| a document **load** at `/identities/<id>` | true — cookie path is `/identities`, and `/licenses` comes back `lang="en"` |
+
+Both survivals were the same shape as cycle 8's conclusion: *a mutation with no
+seed case that refutes it is not a passing test, it is a branch nobody is
+looking at.* The correction that mattered was not to the assertion — the unit
+test asserted the attribute directly and redded every time — but to the **E2E
+case**, which had no arrangement under which the attribute could matter. The
+attribute's real user is someone who reloaded or bookmarked an identity page and
+switched language there.
+
+Measured with a throwaway probe spec that printed `context.cookies()`, deleted
+after; the mechanism was not derivable from the RFC text alone, because the
+soft-navigation behaviour is Chrome's and not the RFC's.
+
+### C3's mutations
+
+Unit tier, via `scripts/mutate.mjs` — five red, two declared survivors:
+
+| mutation | result |
+|---|---|
+| the cookie is scoped to the current directory instead of the site | reds |
+| the choice becomes a session cookie | reds |
+| the writer names a cookie the reader does not read | reds |
+| the writer ignores which locale was chosen | reds |
+| both options are labelled the same | reds |
+| the cookie is renamed at its single source | SURVIVED (declared — single-source, so a rename is behaviour-preserving) |
+| SameSite is tightened to `strict` | SURVIVED (declared — nothing asserts SameSite; `strict` would drop the cookie on a cross-site entry into the app) |
+
+E2E tier, driven by hand because the harness runs vitest only and the control has
+no unit observer — each mutation pays for a rebuild of the web image:
+
+| mutation | result |
+|---|---|
+| the switch writes the cookie but nothing re-renders | reds |
+| the control always shows English regardless of the locale in effect | reds |
+| the cookie is scoped to the current directory instead of the site | reds — **after** the spec was corrected twice above |
+
+Suite state after C3: unit 485 green (39 files), integration 227 green, E2E 54
+green against the compose stack, lint and typecheck clean, and the CI-only
+"every assigned test file is inside a typecheck program" gate clean.
+
+## What is left
+
+C2's remainder — 128 strings across 14 files. The switch now makes that number
+visible to an operator rather than only to a test: choosing 日本語 translates the
+chrome and leaves every page body in English. The ratchet is what shrinks it, and
+the plan's rule stands — **a migration slice completes a file**, because a
+half-extracted page reads correctly in English and says nothing about being
+unfinished.
