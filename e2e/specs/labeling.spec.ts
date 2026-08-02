@@ -105,14 +105,29 @@ test.describe('labeling', () => {
     await noteInput.fill('updated note');
     await row.getByRole('button', { name: 'Save' }).click();
 
-    await expect(row.getByText('Known shared', { exact: true }).first()).toBeVisible();
+    // NOT `expect('Known shared').toBeVisible()` here, which is what this line
+    // used to be: the kind did not change, so that chip was already on screen
+    // and the assertion passed without waiting for anything. The save fires a
+    // PUT and a router.refresh(), and reopening the editor seeds its state from
+    // whatever prop is rendered AT CLICK TIME — so the next step read the note
+    // from before the refresh landed, and no amount of retrying the value
+    // assertion helps, because the editor does not re-seed once open.
+    //
+    // Measured: this raced once in a full-suite run and passed alone. SC2/C5
+    // did not create it — a second orphan row made the refresh slower and the
+    // window wider, which is the thing that turns a latent race into a flake
+    // CI's single retry would then hide.
+    //
+    // A fresh navigation is what makes the read deterministic: the row comes
+    // from the server, not from a component that has already decided.
+    const reloaded = await orphanRow(page);
+    const reloadedButton = labelButton(reloaded);
+    await expect(reloadedButton).toHaveText('Known shared');
 
-    // Reopen once more to confirm the note field shows the new text and the
-    // kind is unchanged.
-    await button.click();
-    await expect(row.getByRole('combobox')).toHaveValue('known_shared');
-    await expect(row.getByPlaceholder('Note (optional)')).toHaveValue('updated note');
-    await row.getByRole('button', { name: 'Cancel' }).click();
+    await reloadedButton.click();
+    await expect(reloaded.getByRole('combobox')).toHaveValue('known_shared');
+    await expect(reloaded.getByPlaceholder('Note (optional)')).toHaveValue('updated note');
+    await reloaded.getByRole('button', { name: 'Cancel' }).click();
   });
 
   test('CSV-injection note is neutralized with a leading quote in the export', async ({ page }) => {
