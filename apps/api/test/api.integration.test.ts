@@ -13,6 +13,7 @@ type SweepMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
+import { readJob } from '../src/jobs.js';
 import { MAX_SAAS_APPS_PER_TENANT } from '../src/import-limits.js';
 import { MAX_CREDENTIAL_FIELDS, MAX_CREDENTIAL_VALUE_LENGTH } from '../src/routes/saas-apps.js';
 import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
@@ -138,18 +139,11 @@ beforeEach(async () => {
     syncQueue,
     matchQueue,
     tokenAuditQueue,
-    // A TWIN of the production reader in apps/api/src/main.ts, and it drifts
-    // silently (RT9) — it omitted `tenantId` until the route gained an ownership
-    // check and the compiler caught it. What it must keep mirroring is the
-    // FIELD SET; the queue list differs deliberately (the token-audit queue is
-    // exercised by its own suite).
-    getJob: async (jobId) => {
-      const job = (await syncQueue.getJob(jobId)) ?? (await matchQueue.getJob(jobId));
-      if (!job) return null;
-      const state = await job.getState();
-      const data = job.data as { tenantId?: unknown } | undefined;
-      return { state, result: job.returnvalue ?? null, tenantId: data?.tenantId };
-    },
+    // THE PRODUCTION READER, not a copy of it. This was a reimplementation, and
+    // mutation measured what that cost: breaking `main.ts`'s reader left this
+    // suite green because the suite was exercising the twin (RT9). The queue
+    // list is the only thing this fixture chooses.
+    getJob: (jobId) => readJob([syncQueue, matchQueue, tokenAuditQueue], jobId),
   };
 
   app = buildApp(deps);
