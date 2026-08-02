@@ -2,6 +2,7 @@ import { WebClient } from '@slack/web-api';
 import type { UsersListResponse } from '@slack/web-api';
 import {
   ConnectorError,
+  REQUEST_TIMEOUT_MS,
   diagnose,
   waitUnlessAborted,
   type ConnectorContext,
@@ -37,7 +38,6 @@ const MAX_ATTEMPTS = 5;
  * transaction, so a hung request holds a pooled Postgres connection and an
  * idle-in-transaction session for as long as it hangs.
  */
-const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * The longest a provider-mandated wait may hold this run.

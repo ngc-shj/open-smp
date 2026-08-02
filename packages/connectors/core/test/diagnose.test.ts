@@ -52,6 +52,41 @@ describe('diagnose', () => {
     expect(out.platformError).toBe('ratelimited');
   });
 
+  it.each([
+    // What googleapis ACTUALLY throws. The `error` member is an object, not a
+    // string, so the fixtures above — a Slack body under a Google envelope —
+    // could not tell the widened function from the unwidened one. Both live
+    // spellings are named: `status` is AIP-193, `errors[0].reason` is the
+    // classic Admin SDK body that directory_v1 still returns.
+    [
+      'the AIP-193 body',
+      { code: 429, response: { status: 429, data: { error: { code: 429, message: 'Rate limit', status: 'RESOURCE_EXHAUSTED' } } } },
+      'RESOURCE_EXHAUSTED',
+    ],
+    [
+      'the classic Admin SDK body',
+      {
+        code: 429,
+        response: {
+          status: 429,
+          data: {
+            error: {
+              code: 429,
+              message: 'Rate limit',
+              errors: [{ domain: 'usageLimits', reason: 'rateLimitExceeded', message: 'Rate limit' }],
+            },
+          },
+        },
+      },
+      'rateLimitExceeded',
+    ],
+  ])('reads the platform error out of %s', (_label, shape, expected) => {
+    const out = diagnose(Object.assign(new Error('nope'), shape), TOKEN);
+
+    expect(out.statusCode).toBe(429);
+    expect(out.platformError).toBe(expected);
+  });
+
   it('copies no field that could carry the request', () => {
     // The projection is the control; the scrub is defence in depth. A whitelist
     // rather than a filter, so a shape nobody anticipated cannot smuggle a
@@ -114,10 +149,11 @@ describe('waitUnlessAborted', () => {
     expect(sleep).toHaveBeenCalledWith(1);
   });
 
-  it('removes its listener when the wait completes normally', async () => {
+  it('removes the listener it added when the wait completes normally', async () => {
     // Without this the listener and its closure stay on a signal that lives for
     // the whole run — up to 1000 accounts x 4 retries on one audit signal.
     const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, 'addEventListener');
     const remove = vi.spyOn(controller.signal, 'removeEventListener');
     const sleep = vi.fn(async () => {});
 
@@ -125,10 +161,42 @@ describe('waitUnlessAborted', () => {
       await waitUnlessAborted(1, controller.signal, sleep, stop);
     }
 
-    // Spied, because every assertion the first version made was true by
-    // construction — nothing aborted the controller, so it observed nothing.
+    // THE IDENTITY, not the count. Spying the call count alone was still blind
+    // to the only property that makes the removal effective: removing some other
+    // function leaves the leak fully in place and keeps the count at 5.
     expect(remove, 'the listener is not removed when a wait completes').toHaveBeenCalledTimes(5);
+    expect(add).toHaveBeenCalledTimes(5);
+    for (let i = 0; i < 5; i += 1) {
+      expect(remove.mock.calls[i]?.[1], `wait ${i} removed a different listener`).toBe(
+        add.mock.calls[i]?.[1],
+      );
+    }
     expect(sleep).toHaveBeenCalledTimes(5);
+  });
+
+  it('removes the listener it added when the sleep rejects', async () => {
+    // The second removal site, which had no case at all: the rejection arm is
+    // the one an injected or failing timer takes, and a leak there accumulates
+    // on exactly the signal that lives longest.
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, 'addEventListener');
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
+    const sleep = vi.fn(async () => {
+      throw new Error('timer broke');
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(waitUnlessAborted(1, controller.signal, sleep, stop)).rejects.toThrow(
+        'timer broke',
+      );
+    }
+
+    expect(remove, 'the listener is not removed when the sleep rejects').toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 3; i += 1) {
+      expect(remove.mock.calls[i]?.[1], `wait ${i} removed a different listener`).toBe(
+        add.mock.calls[i]?.[1],
+      );
+    }
   });
 
   it('propagates a failing sleep rather than reporting a completed wait', async () => {

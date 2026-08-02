@@ -3,6 +3,7 @@ import { ConnectorError, type ConnectorContext } from '@open-smp/connectors-core
 import {
   GoogleWorkspaceConnector,
   type GoogleWorkspaceConnectorDeps,
+  type TokensListParams,
   type TokensListResponseData,
 } from '../src/index.js';
 import tokens from '../fixtures/tokens-mixed.json' with { type: 'json' };
@@ -88,12 +89,16 @@ describe('GoogleWorkspaceConnector.listTokens', () => {
     // Measured from the installed types: Params$Resource$Tokens$List accepts
     // `userKey` alone — no pageToken, no maxResults, no customer. A request
     // carrying more would be sending parameters the endpoint does not define.
-    const tokensList = vi.fn(async () => ({ data: tokens as TokensListResponseData }));
+    const tokensList = vi.fn(async (_params: TokensListParams) => ({
+      data: tokens as TokensListResponseData,
+    }));
 
     await connectorWith(tokensList).listTokens(makeContext(), USER);
 
     expect(tokensList).toHaveBeenCalledTimes(1);
-    expect(tokensList).toHaveBeenCalledWith({ userKey: USER });
+    // The params, asserted exactly; the second argument is the per-request
+    // transport options (abort signal), which are not endpoint parameters.
+    expect(tokensList.mock.calls[0]?.[0]).toEqual({ userKey: USER });
   });
 
   it('issues no request at all for an already-aborted run', async () => {

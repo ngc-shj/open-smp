@@ -1,14 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { encryptCredentials } from '@open-smp/crypto';
-import { ConnectorError, type RawToken, type SaaSConnector ,
+import {
+  ConnectorError,
+  type RawToken,
+  type SaaSConnector,
   type ConnectorContext,
 } from '@open-smp/connectors-core';
 import { TOKEN_AUDIT_EVENT_SOURCE } from '@open-smp/api-types';
-import { runTokenAudit, TOKEN_AUDIT_MAX_ACCOUNTS } from '../src/token-audit.js';
+import {
+  runTokenAudit,
+  TOKEN_AUDIT_DEADLINE_MS,
+  TOKEN_AUDIT_MAX_ACCOUNTS,
+} from '../src/token-audit.js';
 import type { ConnectorRegistry } from '../src/connectors.js';
 
 // SC3/C2 acceptance, against real Postgres 16.
@@ -81,7 +97,9 @@ async function seedApp(tenantId: string, accountCount: number): Promise<string> 
   return withTenant(pool, tenantId, async (tx) => {
     const saasAppId = randomUUID();
     const { blob, keyVersion } = encryptCredentials(
-      new TextEncoder().encode(JSON.stringify({ serviceAccountJson: '{}', impersonateAdminEmail: 'a@b.c' })),
+      new TextEncoder().encode(
+        JSON.stringify({ serviceAccountJson: '{}', impersonateAdminEmail: 'a@b.c' }),
+      ),
       { tenantId, saasAppId },
       encryptionKeys,
     );
@@ -104,7 +122,11 @@ async function seedApp(tenantId: string, accountCount: number): Promise<string> 
 
 async function eventsFor(tenantId: string) {
   return withTenant(pool, tenantId, async (tx) => {
-    const { rows } = await tx.query<{ kind: string; payload: Record<string, unknown>; source: string }>(
+    const { rows } = await tx.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+      source: string;
+    }>(
       'SELECT source, kind, payload FROM discovery_events WHERE tenant_id = $1 ORDER BY created_at',
       [tenantId],
     );
@@ -140,7 +162,9 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
   it('asks the connector once per account and aggregates grants into applications', async () => {
     const saasAppId = await seedApp(tenantId, 3);
     const listTokens = vi.fn(async (_ctx: unknown, userKey: string) =>
-      userKey === 'user-000003' ? [grant('shared-app', userKey)] : [grant('shared-app', userKey), grant('solo-app', userKey)],
+      userKey === 'user-000003'
+        ? [grant('shared-app', userKey)]
+        : [grant('shared-app', userKey), grant('solo-app', userKey)],
     );
 
     const result = await runTokenAudit(
@@ -153,8 +177,14 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
 
     const events = await eventsFor(tenantId);
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ source: TOKEN_AUDIT_EVENT_SOURCE, kind: 'token_audit_completed' });
-    const applications = events[0]!.payload.applications as { clientId: string; userCount: number }[];
+    expect(events[0]).toMatchObject({
+      source: TOKEN_AUDIT_EVENT_SOURCE,
+      kind: 'token_audit_completed',
+    });
+    const applications = events[0]!.payload.applications as {
+      clientId: string;
+      userCount: number;
+    }[];
     // FR1's figure, and most-granted first so a truncated list keeps the row an
     // operator most needs to see.
     expect(applications.map((a) => [a.clientId, a.userCount])).toEqual([
@@ -263,7 +293,9 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     expect(result).toMatchObject({ scanned: 1, failed: 1 });
     // The healthy account's grants still landed — a malformed neighbour must
     // not take them with it.
-    const applications = (await eventsFor(tenantId))[0]!.payload.applications as { clientId: string }[];
+    const applications = (await eventsFor(tenantId))[0]!.payload.applications as {
+      clientId: string;
+    }[];
     expect(applications.map((a) => a.clientId)).toEqual(['good-app']);
   });
 
@@ -284,16 +316,8 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
   });
 
   it.each([
-    [
-      'declares per-user-grants and has no listTokens',
-      undefined,
-      'per-user-grants' as const,
-    ],
-    [
-      'declares none while carrying listTokens',
-      vi.fn(async () => []),
-      'none' as const,
-    ],
+    ['declares per-user-grants and has no listTokens', undefined, 'per-user-grants' as const],
+    ['declares none while carrying listTokens', vi.fn(async () => []), 'none' as const],
   ])('records unsupported when a connector %s', async (_label, listTokens, capability) => {
     // Neither state can arise from a real connector — connector-registry
     // asserts that — which is exactly why only a fake can reach these arms.
@@ -322,6 +346,51 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     expect(events[0]!.payload.capability).toBe(capability);
   });
 
+  it('keeps its own deadline when a caller supplies a signal', async () => {
+    // The sync sibling gained this cell in review round 5 and this path had no
+    // counterpart at all, so collapsing `AbortSignal.any([deps.signal,
+    // deadline])` back to the `??` form — which lets a caller remove the
+    // deadline entirely (R43) — stayed green here. This is the longer-running of
+    // the two jobs (20 minutes against 10) and it holds the same open
+    // transaction.
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeoutSpy: MockInstance<(milliseconds: number) => AbortSignal> = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((ms) => realTimeout(ms));
+
+    try {
+      const saasAppId = await seedApp(tenantId, 1);
+      const never = new AbortController().signal;
+      let seen: AbortSignal | undefined;
+      const listTokens = vi.fn(async (ctx: unknown) => {
+        seen = (ctx as ConnectorContext).signal;
+        return [] as RawToken[];
+      });
+
+      await runTokenAudit(
+        {
+          pool,
+          connectorRegistry: registryFor(fakeConnector(listTokens)),
+          encryptionKeys,
+          logger,
+          signal: never,
+        },
+        { tenantId, saasAppId },
+      );
+
+      expect(listTokens).toHaveBeenCalled();
+      expect(never.aborted).toBe(false);
+      // Not the caller's signal, and the deadline really was composed in — the
+      // second assertion is what `AbortSignal.any([deps.signal])` fails.
+      expect(seen, 'the connector ran under the caller-supplied signal alone').not.toBe(never);
+      expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
+        TOKEN_AUDIT_DEADLINE_MS,
+      );
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it('stops when the run deadline has passed', async () => {
     // The sibling got this one round earlier; this path did not, so reverting
     // its signal to a never-aborting controller stayed green — the exact
@@ -342,6 +411,9 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
       ),
     ).rejects.toThrow(/aborted/);
 
-    expect(listTokens, 'the audit asked the provider after the run was over').not.toHaveBeenCalled();
+    expect(
+      listTokens,
+      'the audit asked the provider after the run was over',
+    ).not.toHaveBeenCalled();
   });
 });

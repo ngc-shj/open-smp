@@ -1,6 +1,7 @@
 import { google, admin_directory_v1 } from 'googleapis';
 import {
   ConnectorError,
+  REQUEST_TIMEOUT_MS,
   diagnose,
   waitUnlessAborted,
   type ConnectorContext,
@@ -37,9 +38,27 @@ export type UsersListResponseData = admin_directory_v1.Schema$Users;
 export type TokensListParams = admin_directory_v1.Params$Resource$Tokens$List;
 export type TokensListResponseData = admin_directory_v1.Schema$Tokens;
 
+/**
+ * What the connector forwards to the SDK per request.
+ *
+ * `signal` is threaded rather than left to the run-level deadline: without it
+ * `AbortSignal.timeout(SYNC_DEADLINE_MS)` only takes effect BETWEEN pages and
+ * between retries, so an in-flight `users.list` that never answers holds the
+ * open `withTenant` transaction regardless.
+ */
+export interface GoogleRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface GoogleWorkspaceConnectorDeps {
-  usersList?: (params: UsersListParams) => Promise<{ data: UsersListResponseData }>;
-  tokensList?: (params: TokensListParams) => Promise<{ data: TokensListResponseData }>;
+  usersList?: (
+    params: UsersListParams,
+    options?: GoogleRequestOptions,
+  ) => Promise<{ data: UsersListResponseData }>;
+  tokensList?: (
+    params: TokensListParams,
+    options?: GoogleRequestOptions,
+  ) => Promise<{ data: TokensListResponseData }>;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -51,6 +70,35 @@ export interface GoogleWorkspaceConnectorConfig {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Options, not defaults — the same three findings the Slack client carries,
+ * which were fixed there in review round 1 and never propagated here.
+ *
+ *   retry: false — googleapis-common defaults `options.retry` to `true`, which
+ *                  arms gaxios' retry interceptor: 3 retries on GET for
+ *                  408/429/5xx plus 2 network retries. That loop sits UNDER
+ *                  `withRetry`, so MAX_ATTEMPTS of 5 was really up to ~20 HTTP
+ *                  requests against a rate-limited API with two backoff
+ *                  schedules stacked, while the log line reported attempt 1..5.
+ *                  The stated bound was not the real bound — verbatim the
+ *                  finding the Slack client's `retries: 0` answers.
+ *   timeout      — gaxios applies one only when asked (`if (opts.timeout)`),
+ *                  so there was none. See REQUEST_TIMEOUT_MS.
+ *   signal       — so an abort cuts an IN-FLIGHT request, not only the gap
+ *                  between pages.
+ */
+function requestOptions(options?: GoogleRequestOptions): {
+  retry: boolean;
+  timeout: number;
+  signal?: AbortSignal;
+} {
+  return {
+    retry: false,
+    timeout: REQUEST_TIMEOUT_MS,
+    ...(options?.signal ? { signal: options.signal } : {}),
+  };
 }
 
 function isHttpStatusError(error: unknown): error is { code?: number; response?: { status?: number } } {
@@ -178,6 +226,7 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
   private readonly deps: GoogleWorkspaceConnectorDeps;
   private cachedUsersList: GoogleWorkspaceConnectorDeps['usersList'];
   private cachedTokensList: GoogleWorkspaceConnectorDeps['tokensList'];
+  private cachedPrivateKey: string | undefined;
 
   constructor(cfg: GoogleWorkspaceConnectorConfig, deps?: GoogleWorkspaceConnectorDeps) {
     this.cfg = cfg;
@@ -200,15 +249,26 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
    * or `message`.
    */
   private privateKey(): string {
+    // MEMOIZED, because a JS string cannot be zeroized at any level. This was
+    // called once per `withRetry` — once per page of `users.list`, and once per
+    // account of `tokens.list`, bounded only by TOKEN_AUDIT_MAX_ACCOUNTS — and
+    // each call minted a fresh permanently-unclearable copy of the PEM in the
+    // worker heap. Five rounds of narrowing the credential-buffer class would
+    // have been undone by one audit run of a 1000-seat tenant.
+    if (this.cachedPrivateKey !== undefined) {
+      return this.cachedPrivateKey;
+    }
     try {
       const parsed = JSON.parse(this.cfg.serviceAccountJson) as { private_key?: unknown };
-      return typeof parsed.private_key === 'string' ? parsed.private_key : '';
+      this.cachedPrivateKey = typeof parsed.private_key === 'string' ? parsed.private_key : '';
     } catch {
       // An unparseable document has no key to leak, and `diagnose` treats an
       // empty secret as "nothing to scrub" rather than splitting on every
-      // character.
-      return '';
+      // character. Reached in production before either client is built, because
+      // `withRetry` evaluates this at the call.
+      this.cachedPrivateKey = '';
     }
+    return this.cachedPrivateKey;
   }
 
   private async getUsersList(): Promise<NonNullable<GoogleWorkspaceConnectorDeps['usersList']>> {
@@ -233,8 +293,8 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
 
     const directory = google.admin({ version: 'directory_v1', auth: authClient });
 
-    this.cachedUsersList = async (params: UsersListParams) => {
-      const response = await directory.users.list(params);
+    this.cachedUsersList = async (params: UsersListParams, options?: GoogleRequestOptions) => {
+      const response = await directory.users.list(params, requestOptions(options));
       return { data: response.data };
     };
 
@@ -272,8 +332,8 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
 
     const directory = google.admin({ version: 'directory_v1', auth: authClient });
 
-    this.cachedTokensList = async (params: TokensListParams) => {
-      const response = await directory.tokens.list(params);
+    this.cachedTokensList = async (params: TokensListParams, options?: GoogleRequestOptions) => {
+      const response = await directory.tokens.list(params, requestOptions(options));
       return { data: response.data };
     };
 
@@ -291,7 +351,13 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
     // One request, no loop: `Schema$Tokens` carries `{kind, etag, items}` and no
     // `nextPageToken`, and `Params$Resource$Tokens$List` accepts `userKey`
     // alone. Measured from the installed googleapis types, not assumed.
-    const response = await withRetry(() => tokensList({ userKey }), ctx, sleep, 'tokens.list', this.privateKey());
+    const response = await withRetry(
+      () => tokensList({ userKey }, { signal: ctx.signal }),
+      ctx,
+      sleep,
+      'tokens.list',
+      this.privateKey(),
+    );
 
     return (response.data.items ?? []).map((token) => toRawToken(token, userKey));
   }
@@ -312,7 +378,13 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
         ...(pageToken ? { pageToken } : {}),
       };
 
-      const response = await withRetry(() => usersList(params), ctx, sleep, 'users.list', this.privateKey());
+      const response = await withRetry(
+        () => usersList(params, { signal: ctx.signal }),
+        ctx,
+        sleep,
+        'users.list',
+        this.privateKey(),
+      );
       const users = response.data.users ?? [];
 
       for (const user of users) {

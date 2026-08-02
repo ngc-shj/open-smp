@@ -90,7 +90,18 @@ function CredentialInput({
       ) : (
         <input
           {...common}
-          type={field.kind === 'email' ? 'email' : field.kind === 'secret' ? 'password' : 'text'}
+          // ONE ADJUDICATOR, and it is `rejectAdminEmail`. `type="email"` inside
+          // this real `<form>` ran the browser's stricter WHATWG check FIRST and
+          // blocked submit before `handleSubmit`, so the regex never saw the
+          // value here — while the manager's inputs sit outside any form and
+          // only the regex applies there. Same field, same product, two verdicts
+          // decided by which panel the operator opened: `admin@corp_internal`
+          // was accepted when replacing credentials and rejected when
+          // registering. The regex is deliberately the looser of the two (see
+          // its own header: a rejected VALID address is the worse direction), so
+          // it is the one kept.
+          type={field.kind === 'secret' ? 'password' : 'text'}
+          inputMode={field.kind === 'email' ? 'email' : undefined}
           className={FIELD_CLASS}
         />
       )}
@@ -166,7 +177,9 @@ export function SaasAppForm() {
         // is full (SC2/C2). Read the discriminant rather than reporting the
         // first as the second — "already registered" against a full catalog
         // sends the operator to delete an app they do not have.
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         setError(body?.error === 'catalog_full' ? 'catalogFull' : 'duplicate');
         return;
       }

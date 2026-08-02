@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // SC2, review round 2. The mutation this file refutes was DECLARED a survivor:
 // "removing `retryConfig: { retries: 0 }` is unobservable, because injection
@@ -24,10 +24,15 @@ vi.mock('@slack/web-api', () => ({
 
 const { SlackConnector } = await import('../src/index.js');
 
+// In a hook, not in the body: a second cell added to this file would otherwise
+// inherit the first's calls and `toHaveBeenCalledTimes(1)` would red for a
+// reason that names nothing.
+beforeEach(() => {
+  construct.mockClear();
+});
+
 describe('the Slack client this connector builds', () => {
   it('overrides every default that would defeat its own retry contract', () => {
-    construct.mockClear();
-
     new SlackConnector({ botToken: 'xoxb-not-real' }).resolveUsersList();
 
     expect(construct).toHaveBeenCalledTimes(1);

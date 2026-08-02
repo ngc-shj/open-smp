@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { rawAccountSchema, type ConnectorContext, type Logger } from '@open-smp/connectors-core';
-import { decryptCredentials } from '@open-smp/crypto';
+import { withDecryptedCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import type { SyncJobData, SyncJobResult } from '@open-smp/queues';
 import type { ConnectorRegistry } from './connectors.js';
@@ -15,7 +15,7 @@ import type { ConnectorRegistry } from './connectors.js';
  * idle-in-transaction Postgres session for as long as it takes, and the sync
  * worker's concurrency of 1 means that stalls every other tenant.
  */
-const SYNC_DEADLINE_MS = 10 * 60 * 1000;
+export const SYNC_DEADLINE_MS = 10 * 60 * 1000;
 
 export interface SyncDeps {
   pool: Pool;
@@ -103,7 +103,6 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
   const runId = randomUUID();
   const runStartedAt = new Date();
 
-  let decrypted: Uint8Array | null = null;
   // Resolved once the app row is loaded, so the failure-path audit event
   // (CF2) can record which source failed even when the main transaction
   // rolls back.
@@ -117,86 +116,91 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
         throw new Error(`saas_apps row ${job.saasAppId} has no stored credentials`);
       }
 
-      // The RETURNED buffer, not a copy of it. `Buffer.from(...)` allocated a
-      // second buffer and the `finally` below zeroed only that one, leaving the
-      // plaintext service-account document that `decryptCredentials` produced
-      // untouched — for the life of the process. Review found it by following
-      // this function's own claim to be the correct sibling of a fix made
-      // elsewhere.
-      decrypted = decryptCredentials(
+      // S11 zeroization is `withDecryptedCredentials`', not this function's.
+      // This site held the plaintext in an outer `let` with a `finally` at the
+      // end of runSync — one of three call sites each taught the same lesson in
+      // a separate review round, which is the accretion R42 clause ①b names.
+      // The parsed JS strings derived from the plaintext (e.g. the PEM key) are
+      // still not zeroable at the JS level and remain GC-dependent — accepted
+      // for MVP, see C9's in-memory lifecycle note.
+      return await withDecryptedCredentials(
         app.credentials_enc,
         app.credentials_key_version,
         { tenantId: job.tenantId, saasAppId: job.saasAppId },
         deps.encryptionKeys,
+        async (decrypted) => {
+          const credentials = JSON.parse(new TextDecoder().decode(decrypted)) as Record<
+            string,
+            string
+          >;
+
+          const buildConnector = deps.connectorRegistry.get(app.key);
+          if (!buildConnector) {
+            throw new Error(`No connector registered for saas_apps.key = ${app.key}`);
+          }
+          const connector = buildConnector(credentials);
+
+          // A signal that can actually fire. It used to be
+          // `new AbortController().signal` — never aborted by anything — which
+          // made every connector's own `ctx.signal.aborted` check inert, and the
+          // whole provider interaction runs inside this open transaction. Found
+          // in review, alongside the Slack client's `timeout: 0` default.
+          const ctx: ConnectorContext = {
+            credentials,
+            logger: deps.logger,
+            // `any`, not `??`. Injectable so a test can observe it, and the
+            // deadline still cannot be removed by a caller — review flagged the
+            // `??` form as answering a coverage finding by widening the boundary
+            // (R43).
+            signal: deps.signal
+              ? AbortSignal.any([deps.signal, AbortSignal.timeout(SYNC_DEADLINE_MS)])
+              : AbortSignal.timeout(SYNC_DEADLINE_MS),
+          };
+
+          let count = 0;
+          const rawPayloads: unknown[] = [];
+
+          for await (const candidate of connector.listUsers(ctx)) {
+            const account = rawAccountSchema.parse(candidate);
+
+            await upsertAccount(
+              tx,
+              job.tenantId,
+              job.saasAppId,
+              {
+                externalId: account.externalId,
+                email: account.email,
+                displayName: account.displayName,
+                accountStatus: account.accountStatus,
+                isAdmin: account.isAdmin,
+                lastActivityAt: account.lastActivityAt,
+              },
+              runStartedAt,
+            );
+            count += 1;
+
+            if (deps.discoveryStoreRaw && rawPayloads.length < MAX_RAW_PAYLOADS_STORED) {
+              rawPayloads.push(account.raw);
+            }
+          }
+
+          await tx.query(
+            `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+             VALUES ($1, $2, 'sync_completed', $3::jsonb)`,
+            [job.tenantId, app.key, JSON.stringify({ counts: { upserted: count }, runId })],
+          );
+
+          if (deps.discoveryStoreRaw) {
+            await tx.query(
+              `INSERT INTO discovery_events (tenant_id, source, kind, payload)
+               VALUES ($1, $2, 'sync_raw', $3::jsonb)`,
+              [job.tenantId, app.key, JSON.stringify({ runId, accounts: rawPayloads })],
+            );
+          }
+
+          return count;
+        },
       );
-
-      const credentials = JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, string>;
-
-      const buildConnector = deps.connectorRegistry.get(app.key);
-      if (!buildConnector) {
-        throw new Error(`No connector registered for saas_apps.key = ${app.key}`);
-      }
-      const connector = buildConnector(credentials);
-
-      // A signal that can actually fire. It used to be
-      // `new AbortController().signal` — never aborted by anything — which made
-      // every connector's own `ctx.signal.aborted` check inert, and the whole
-      // provider interaction runs inside this open transaction. Found in
-      // review, alongside the Slack client's `timeout: 0` default.
-      const ctx: ConnectorContext = {
-        credentials,
-        logger: deps.logger,
-        // `any`, not `??`. Injectable so a test can observe it, and the
-        // deadline still cannot be removed by a caller — review flagged the
-        // `??` form as answering a coverage finding by widening the boundary
-        // (R43).
-        signal: deps.signal
-          ? AbortSignal.any([deps.signal, AbortSignal.timeout(SYNC_DEADLINE_MS)])
-          : AbortSignal.timeout(SYNC_DEADLINE_MS),
-      };
-
-      let count = 0;
-      const rawPayloads: unknown[] = [];
-
-      for await (const candidate of connector.listUsers(ctx)) {
-        const account = rawAccountSchema.parse(candidate);
-
-        await upsertAccount(
-          tx,
-          job.tenantId,
-          job.saasAppId,
-          {
-            externalId: account.externalId,
-            email: account.email,
-            displayName: account.displayName,
-            accountStatus: account.accountStatus,
-            isAdmin: account.isAdmin,
-            lastActivityAt: account.lastActivityAt,
-          },
-          runStartedAt,
-        );
-        count += 1;
-
-        if (deps.discoveryStoreRaw && rawPayloads.length < MAX_RAW_PAYLOADS_STORED) {
-          rawPayloads.push(account.raw);
-        }
-      }
-
-      await tx.query(
-        `INSERT INTO discovery_events (tenant_id, source, kind, payload)
-         VALUES ($1, $2, 'sync_completed', $3::jsonb)`,
-        [job.tenantId, app.key, JSON.stringify({ counts: { upserted: count }, runId })],
-      );
-
-      if (deps.discoveryStoreRaw) {
-        await tx.query(
-          `INSERT INTO discovery_events (tenant_id, source, kind, payload)
-           VALUES ($1, $2, 'sync_raw', $3::jsonb)`,
-          [job.tenantId, app.key, JSON.stringify({ runId, accounts: rawPayloads })],
-        );
-      }
-
-      return count;
     });
 
     return { upserted, runId };
@@ -225,11 +229,5 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
       }
     }
     throw error;
-  } finally {
-    // S11: zero the decrypted credential buffer once the run completes or
-    // fails. The parsed JS strings derived from it (e.g. the PEM key) are
-    // not zeroable at the JS level and remain GC-dependent — accepted for
-    // MVP, see C9's in-memory lifecycle note.
-    (decrypted as Buffer | null)?.fill(0);
   }
 }

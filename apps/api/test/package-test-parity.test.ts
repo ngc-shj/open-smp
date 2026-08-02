@@ -642,6 +642,14 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // behaviour of one module. The addition-guard below caught it — family
       // (a) working, on a file that had been an ordinary unit test.
       'apps/web/test/i18n.test.ts',
+      // Review round 6. The only assertion that a decrypted credential is ever
+      // cleared, and — since it gained the class enumeration — the only thing
+      // stopping a fourth call site from owning the zeroization again, which is
+      // what three consecutive rounds each got wrong. Family (a) since round 6,
+      // so the addition-guard below would have caught it; listed anyway, because
+      // the guard cannot see a DELETION and this file's deletion removes the
+      // control that took five rounds to find.
+      'packages/crypto/test/zeroization.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

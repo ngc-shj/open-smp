@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import { withTenant } from '@open-smp/schema';
-import { decryptCredentials, encryptCredentials } from '@open-smp/crypto';
+import { encryptCredentials, withDecryptedCredentials } from '@open-smp/crypto';
 
 export interface RotationDeps {
   pool: Pool;
@@ -58,31 +58,29 @@ async function reencryptRow(
   keys: Map<number, Buffer>,
 ): Promise<void> {
   const oldCtx = { tenantId, saasAppId: row.id };
-  const plaintext = decryptCredentials(
+
+  // The zeroization lives in `withDecryptedCredentials`, not here. This site was
+  // the third one taught to zero the returned buffer, one per review round, and
+  // each round declared the class enumerated. It is the worst of the three:
+  // rotation never stringifies the credential, so the plaintext buffer is the
+  // ONLY holder on this path, and `rotateTenant` below catches per row and keeps
+  // sweeping every tenant's every stale credential in one process.
+  await withDecryptedCredentials(
     row.credentials_enc,
     row.credentials_key_version,
     oldCtx,
     keys,
+    async (plaintext) => {
+      // keyVersion is part of the AAD (C9/S1), so re-encryption must build the
+      // AAD under the NEW version, not reuse the old row's AAD bytes.
+      const { blob, keyVersion } = encryptCredentials(plaintext, oldCtx, keys);
+
+      await tx.query(
+        'UPDATE saas_apps SET credentials_enc = $1, credentials_key_version = $2 WHERE id = $3',
+        [Buffer.from(blob), keyVersion, row.id],
+      );
+    },
   );
-
-  try {
-    // keyVersion is part of the AAD (C9/S1), so re-encryption must build the
-    // AAD under the NEW version, not reuse the old row's AAD bytes.
-    const { blob, keyVersion } = encryptCredentials(plaintext, oldCtx, keys);
-
-    await tx.query(
-      'UPDATE saas_apps SET credentials_enc = $1, credentials_key_version = $2 WHERE id = $3',
-      [Buffer.from(blob), keyVersion, row.id],
-    );
-  } finally {
-    // The RETURNED buffer, not a copy of it. `Buffer.from(plaintext)` allocates
-    // a second buffer and zeroes only that — the third member of this class
-    // review found, after sync.ts and token-audit.ts, and the worst of the
-    // three: rotation never stringifies the credential, so this buffer is the
-    // ONLY plaintext holder on the path, and the sweep decrypts every tenant's
-    // every stale credential in one process.
-    plaintext.fill(0);
-  }
 }
 
 async function rotateTenant(

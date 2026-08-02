@@ -25,6 +25,16 @@ import {
 // package-test-parity.test.ts is mechanical for family (a) only, so this file
 // is listed there by hand.
 
+const API_SAAS_APPS = path.join(
+  import.meta.dirname,
+  '..',
+  '..',
+  'api',
+  'src',
+  'routes',
+  'saas-apps.ts',
+);
+
 const WORKER_CONNECTORS = path.join(
   import.meta.dirname,
   '..',
@@ -47,7 +57,32 @@ async function factoryBody(key: string): Promise<string> {
   expect(start, `no body for ${builder}`).toBeGreaterThan(-1);
   const end = source.indexOf('\n}', start);
   expect(end, `no closing brace for ${builder}`).toBeGreaterThan(start);
-  return source.slice(start, end);
+  const body = source.slice(start, end);
+  // The guards above make a MISSING body loud; a TRUNCATED one was silent. If
+  // the locator stops early the extracted text simply shrinks, the read set
+  // narrows, and the anti-vacuity floor below is still satisfied by the first
+  // line — so a credential read after the truncation point (Google's optional
+  // `customerId` is one) drops out of the derivation with no assertion
+  // changing. The factory's return is the last statement in every one of them.
+  expect(body, `body for ${builder} is truncated`).toMatch(/return new \w+Connector/);
+  return body;
+}
+
+/** The credential names the API refuses to accept blank, read from its own declaration. */
+async function apiRequiredCredentials(): Promise<Map<string, readonly string[]>> {
+  const source = await readFile(API_SAAS_APPS, 'utf8');
+  const start = source.indexOf('const REQUIRED_CREDENTIAL_FIELDS');
+  expect(start, 'no REQUIRED_CREDENTIAL_FIELDS declaration in the API route').toBeGreaterThan(-1);
+  const end = source.indexOf('\n};', start);
+  expect(end, 'REQUIRED_CREDENTIAL_FIELDS is not closed').toBeGreaterThan(start);
+  const body = source.slice(start, end);
+
+  return new Map(
+    [...body.matchAll(/'?([\w-]+)'?\s*:\s*\[([^\]]*)\]/g)].map(
+      (m) =>
+        [m[1]!, [...m[2]!.matchAll(/'([^']+)'/g)].map((n) => n[1]!)] as [string, readonly string[]],
+    ),
+  );
 }
 
 describe('every connector declares the credentials its factory reads', () => {
@@ -58,7 +93,7 @@ describe('every connector declares the credentials its factory reads', () => {
     expect(Object.keys(CREDENTIAL_FIELDS).sort()).toEqual([...CONNECTOR_APP_KEYS].sort());
   });
 
-  it.each([...CONNECTOR_APP_KEYS])('declares every credential %s\'s factory reads', async (key) => {
+  it.each([...CONNECTOR_APP_KEYS])("declares every credential %s's factory reads", async (key) => {
     // Both directions are now per connector and share one locator. The previous
     // form flattened the declared names across connectors and applied a single
     // global anti-vacuity floor, so moving `botToken` into the Google array —
@@ -74,6 +109,32 @@ describe('every connector declares the credentials its factory reads', () => {
       [...new Set(read)].filter((name) => !declared.has(name)),
       `read by ${key}'s factory, offered by no field of ${key}`,
     ).toEqual([]);
+  });
+
+  it('agrees with the API about which credentials cannot be blank', async () => {
+    // The THIRD end of this contract, added in review round 6. `credentials` was
+    // a bare string record on the API, so `PATCH {"credentials":{}}` encrypted an
+    // empty object over a working credential and returned 200 — the browser's
+    // `required` flags were the only enforcement anywhere. The API now has its
+    // own declaration, and `@open-smp/api-types` may not host a shared one (C39
+    // permits only frozen string arrays and `is*` guards), so the two are pinned
+    // to each other here rather than derived from one another.
+    const api = await apiRequiredCredentials();
+
+    expect([...api.keys()].sort(), 'the API declares a different key set').toEqual(
+      [...CONNECTOR_APP_KEYS].sort(),
+    );
+
+    for (const key of CONNECTOR_APP_KEYS) {
+      const declared = CREDENTIAL_FIELDS[key]
+        .filter((f) => f.required)
+        .map((f) => f.name)
+        .sort();
+      // Non-vacuity: every connector has at least one credential it cannot work
+      // without, so an empty side here is a parse failure rather than a fact.
+      expect(declared.length, `${key} declares no required field`).toBeGreaterThan(0);
+      expect([...(api.get(key) ?? [])].sort(), `${key}: form and API disagree`).toEqual(declared);
+    }
   });
 
   it('resolves every label through a message the dictionary carries', () => {
@@ -118,9 +179,12 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     // their `type="email"` never triggers constraint validation — the register
     // form's browser-side check had no counterpart there and a malformed
     // address reached storage, failing as an audit row.
-    expect(rejectCredentials('google-workspace', { serviceAccountJson: VALID_SA, impersonateAdminEmail })).toBe(
-      'invalidEmail',
-    );
+    expect(
+      rejectCredentials('google-workspace', {
+        serviceAccountJson: VALID_SA,
+        impersonateAdminEmail,
+      }),
+    ).toBe('invalidEmail');
   });
 
   it('accepts a well-formed service account', () => {
@@ -153,41 +217,49 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     expect(rejectCredentials('slack', { botToken: 'xoxp-123-abc' })).toBeNull();
   });
 
-  it.each([...CONNECTOR_APP_KEYS])('%s refuses every one of its required fields when blank', (key) => {
-    // The invariant that lets SaasAppManager carry no separate required-blank
-    // guard: the classifier already answers every blank required field. A new
-    // connector whose rejector skipped one would store an unusable credential
-    // whose failure reaches the operator as an audit row — so the property is
-    // asserted here rather than duplicated as a UI check that never fires.
-    // Every non-target field carries a value ITS OWN rejector accepts. Filling
-    // them all with `'placeholder'` made this pass for the wrong reason:
-    // `'placeholder'` is unparseable JSON, so the service-account arm
-    // short-circuited and the email arm was never reached — measured, a
-    // rejector that stopped refusing a blank email left this green.
-    const ACCEPTABLE: Record<string, string> = {
-      serviceAccountJson: VALID_SA,
-      impersonateAdminEmail: 'admin@corp.example',
-      customerId: 'C0123',
-      botToken: 'xoxb-123-abc',
-    };
+  it.each([...CONNECTOR_APP_KEYS])(
+    '%s refuses every one of its required fields when blank',
+    (key) => {
+      // The invariant that lets SaasAppManager carry no separate required-blank
+      // guard: the classifier already answers every blank required field. A new
+      // connector whose rejector skipped one would store an unusable credential
+      // whose failure reaches the operator as an audit row — so the property is
+      // asserted here rather than duplicated as a UI check that never fires.
+      // Every non-target field carries a value ITS OWN rejector accepts. Filling
+      // them all with `'placeholder'` made this pass for the wrong reason:
+      // `'placeholder'` is unparseable JSON, so the service-account arm
+      // short-circuited and the email arm was never reached — measured, a
+      // rejector that stopped refusing a blank email left this green.
+      const ACCEPTABLE: Record<string, string> = {
+        serviceAccountJson: VALID_SA,
+        impersonateAdminEmail: 'admin@corp.example',
+        customerId: 'C0123',
+        botToken: 'xoxb-123-abc',
+      };
 
-    for (const field of CREDENTIAL_FIELDS[key].filter((f) => f.required)) {
-      const values = Object.fromEntries(
-        CREDENTIAL_FIELDS[key].map((f) => [
-          f.name,
-          f.name === field.name ? '' : (ACCEPTABLE[f.name] ?? ''),
-        ]),
-      );
+      for (const field of CREDENTIAL_FIELDS[key].filter((f) => f.required)) {
+        const values = Object.fromEntries(
+          CREDENTIAL_FIELDS[key].map((f) => [
+            f.name,
+            f.name === field.name ? '' : (ACCEPTABLE[f.name] ?? ''),
+          ]),
+        );
 
-      // Non-vacuity: with NOTHING blank the same values must be accepted, or
-      // the rejection below could be coming from any of them.
-      expect(
-        rejectCredentials(key, Object.fromEntries(CREDENTIAL_FIELDS[key].map((f) => [f.name, ACCEPTABLE[f.name] ?? '']))),
-        `${key}: the acceptable filler is not actually accepted`,
-      ).toBeNull();
-      expect(rejectCredentials(key, values), `${key}.${field.name} blank`).not.toBeNull();
-    }
-  });
+        // Non-vacuity: with NOTHING blank the same values must be accepted, or
+        // the rejection below could be coming from any of them.
+        expect(
+          rejectCredentials(
+            key,
+            Object.fromEntries(
+              CREDENTIAL_FIELDS[key].map((f) => [f.name, ACCEPTABLE[f.name] ?? '']),
+            ),
+          ),
+          `${key}: the acceptable filler is not actually accepted`,
+        ).toBeNull();
+        expect(rejectCredentials(key, values), `${key}.${field.name} blank`).not.toBeNull();
+      }
+    },
+  );
 
   it('returns null for an application no connector handles', () => {
     // `saas_apps.key` is free text — POST /contract-import writes it from a CSV
@@ -214,7 +286,7 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     ).toEqual([]);
   });
 
-  it('does not accept one connector by supplying the other one\'s field', () => {
+  it("does not accept one connector by supplying the other one's field", () => {
     // The dispatch is on the KEY, not on which values happen to be present. A
     // classifier that looked at the values would pass a Slack registration
     // carrying a service account and post it as `credentials.serviceAccountJson`

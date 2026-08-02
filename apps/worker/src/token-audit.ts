@@ -7,7 +7,7 @@ import {
   type Logger,
   type RawToken,
 } from '@open-smp/connectors-core';
-import { decryptCredentials } from '@open-smp/crypto';
+import { withDecryptedCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import {
   TOKEN_AUDIT_EVENT_SOURCE,
@@ -41,7 +41,7 @@ export interface TokenAuditDeps {
  * provider (`tokens.list` takes a userKey and nothing else) — but bounded,
  * where it used to be unbounded in wall clock.
  */
-const TOKEN_AUDIT_DEADLINE_MS = 20 * 60 * 1000;
+export const TOKEN_AUDIT_DEADLINE_MS = 20 * 60 * 1000;
 
 export const TOKEN_AUDIT_MAX_ACCOUNTS = 1_000;
 
@@ -165,43 +165,37 @@ export async function runTokenAudit(
         throw new Error(`saas_apps row ${job.saasAppId} has no stored credentials`);
       }
 
-      const decrypted = decryptCredentials(
+      // The plaintext window opens HERE, immediately after the decrypt, and the
+      // zeroization is the helper's. It used to open after the query below, so a
+      // statement timeout or an RLS denial in between propagated with the
+      // plaintext key never zeroed — the exact path the fix claimed to close.
+      return await withDecryptedCredentials(
         app.credentials_enc,
         app.credentials_key_version,
         { tenantId: job.tenantId, saasAppId: job.saasAppId },
         deps.encryptionKeys,
+        async (decrypted) => {
+          // Ordered and bounded in SQL, so the cap selects a deterministic subset
+          // rather than whatever the planner happened to return first.
+          const { rows } = await tx.query<AccountRow>(
+            `SELECT external_id FROM saas_accounts
+             WHERE tenant_id = $1 AND saas_app_id = $2
+             ORDER BY external_id
+             LIMIT $3`,
+            [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
+          );
+
+          return {
+            // `TextDecoder`, not `Buffer.from(...)`: the latter allocated an
+            // unzeroed copy at the same moment the helper's `finally` cleared the
+            // original. sync.ts was changed in one round and this sibling in the
+            // next; both go through one member now.
+            credentials: JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, string>,
+            appKey: app.key,
+            externalIds: rows.map((row) => row.external_id),
+          };
+        },
       );
-
-      // The try opens HERE, immediately after the decrypt. It used to open
-      // after the query below, so a statement timeout or an RLS denial in
-      // between propagated with the plaintext key never zeroed — the exact path
-      // the fix claimed to close.
-      try {
-        // Ordered and bounded in SQL, so the cap selects a deterministic subset
-        // rather than whatever the planner happened to return first.
-        const { rows } = await tx.query<AccountRow>(
-          `SELECT external_id FROM saas_accounts
-           WHERE tenant_id = $1 AND saas_app_id = $2
-           ORDER BY external_id
-           LIMIT $3`,
-          [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
-        );
-
-        return {
-          // `TextDecoder`, not `Buffer.from(...)`: the latter allocated an unzeroed
-          // copy at the same moment the `finally` below cleared the original.
-          // sync.ts was changed in one round and this sibling in the next.
-          credentials: JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, string>,
-          appKey: app.key,
-          externalIds: rows.map((row) => row.external_id),
-        };
-      } finally {
-        // The sibling in sync.ts has had this since S11; this path held the
-        // Google service-account private key for the life of the job with no
-        // zeroization at all. Review found it as the remaining member of the
-        // credential-buffer class.
-        decrypted.fill(0);
-      }
     },
   );
 

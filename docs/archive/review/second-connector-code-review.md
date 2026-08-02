@@ -1,7 +1,12 @@
 # Code Review: second-connector (SC2 / C1, C2, C3)
 
+> Rounds 1-5 below were recorded across six commits; rounds 2-5 had been left in
+> commit bodies only and are restored here in round 6, which is itself a finding
+> about this loop's own record-keeping (step 3-4 requires each round's findings
+> and resolutions in this file).
+
 Date: 2026-08-02
-Review round: 1
+Review rounds: 6 (of a 10-round limit)
 Range reviewed: `02a6106..2ffa769` — PRs #39, #40, #41
 
 ## Changes from Previous Round
@@ -252,3 +257,371 @@ except the one declared survivor above. Suite state: unit 562 (42 files),
 integration 232, E2E 60, lint / typecheck / build clean, CI-only
 typecheck-program gate clean, `assert-seed-preserved.sh` green against the live
 stack.
+
+---
+
+# Round 2 — Major 12 / Minor 10
+
+Recorded from commit `bea0c54`, which was this round's only record until round 6.
+
+Three findings were caused by Round 1's own fixes, which is why the round existed.
+
+**Regressions from Round 1.** Setting `retries: 0` on the Slack client moved a
+whole error class to a classifier that did not recognise it: `WebAPIRequestError`
+— every socket failure, and every one of the 30-second timeouts the same fix
+added — carries no `statusCode`, no `data.error` and no `retryAfter`, so it was
+retried by NOTHING. Not the SDK, not `withRetry`, not BullMQ, whose sync job runs
+`attempts: 1`. One slow response became a terminal sync failure. Honouring
+`Retry-After` made an unbounded provider-supplied number authoritative INSIDE the
+open sync transaction: `retry-after: 2000000` would have held a pooled
+connection, an idle-in-transaction session and a live credential buffer for
+weeks — the blast radius Round 1 closed, re-opened through an input Round 1 made
+authoritative.
+
+**R3 twice.** `token-audit.ts` still had the never-firing `AbortController`
+signal that `sync.ts` was fixed for, and it never zeroized its decrypted
+credentials. The google-workspace connector still put the raw provider error in
+`cause`, and the Slack fix had DELETED the comment recording that gap.
+
+**Eight more mutation-proved tests that could not fail**, including the mutation
+this repository had DECLARED a survivor — refutable in fifteen lines.
+
+## Resolution
+Transport error class added with a red-proving test; `Retry-After` clamped and
+made abort-aware; `diagnose` hoisted into `connectors-core`; the orphan-message-key
+class detected rather than fixed by hand.
+
+---
+
+# Round 3 — ~10 findings
+
+Recorded from commit `fe32732`.
+
+**The orphan-key detector written in Round 2 was a tautology.** It scanned
+`apps/web/src`, which CONTAINS the dictionary, so `code.includes("'key'")` was
+true by construction and `orphans` was always empty. It was written to close the
+class it then failed to detect, and had been registered in `CONTROL_FILES` on
+that premise.
+
+**`sync.ts` zeroed a copy.** `Buffer.from(decryptCredentials(...))` allocated a
+second buffer, so the `finally` cleared only that one and the plaintext
+service-account document lived for the life of the process. Round 2 had cited
+this function as the correct sibling while closing the credential-buffer class.
+
+**`diagnose` was hoisted without being widened.** It read `statusCode` and
+`data.error` — Slack's spellings — so every Google diagnosis came out
+`{statusCode: undefined, platformError: undefined}`. The secret passed was the
+whole service-account JSON, a needle no error message contains, making the scrub
+a guaranteed no-op on that path.
+
+**`waitUnlessAborted` did not bound the wait.** Checking the signal either side
+of a bare `setTimeout` ends the run one full wait later; it does not shorten it.
+It is a `Promise.race` now, in `connectors-core`.
+
+---
+
+# Round 4 — ~10 findings
+
+Recorded from commit `9a53d84`. The round's character changed: mostly "the fix
+has no observer" rather than "the fix is wrong".
+
+**The third member of a class declared closed twice.** `rotate-credentials.ts`
+did `Buffer.from(plaintext).fill(0)` — the exact construct removed from
+`sync.ts` one round earlier, in the same app, against the same helper. It is the
+worst of the three: rotation never stringifies the credential, so that buffer is
+the ONLY plaintext holder on the path, and the sweep decrypts every tenant's
+every stale credential in one process.
+
+`diagnose` still dropped googleapis' canonical shape: a NUMERIC `code`. The
+`privateKey()` correction overstated too — the PEM is not what a googleapis error
+carries. Dead code was presented as guards: the required-blank guard in
+`SaasAppManager` was unreachable for every connector, as was the post-sleep abort
+re-check in `waitUnlessAborted`.
+
+---
+
+# Round 5 — ~7 findings
+
+Recorded from commit `0af8d4e`.
+
+**The three call-site fixes were all defeated in one place.** `decryptCredentials`
+ended with `Buffer.concat([decipher.update(x), decipher.final()])`. For
+AES-256-GCM `update` returns the entire plaintext and `final` returns nothing, so
+the concat allocated a third buffer and left the first holding a complete copy.
+Zeroing the returned buffer — which `sync.ts`, `token-audit.ts` and
+`rotate-credentials.ts` were each taught to do across three consecutive rounds —
+cleared the copy and not the original.
+
+**And it had no control at all.** Nothing anywhere asserted zeroization: all
+three `.fill(0)` lines could be deleted with every suite green.
+`packages/crypto/test/zeroization.test.ts` was added, red-proven.
+
+Two more controls that could not fail were repaired: the invariant licensing the
+deleted required-blank guard filled every non-target field with `'placeholder'`
+(unparseable JSON), so the service-account arm short-circuited and the email arm
+was never reached; and the `AbortSignal.any` test asserted only facts that were
+also true under the `??` form it was written to reject.
+
+---
+
+# Round 6 — Critical 2 / Major 11 / Minor 9
+
+Date: 2026-08-02. Reviewed: `git show 0af8d4e` as the primary diff and
+`git diff main...HEAD` (28 files) as the secondary.
+
+## Changes from Previous Round
+
+Round 5 fixed the credential-zeroing primitive and added the class's first
+control. Round 6 found that fix open on its error path, and the control's own
+subject one level narrower than its caption. It also found that three patterns
+fixed on the Slack side in rounds 1-2 were never propagated to the Google
+connector, and that the API had no server-side credential validation at all.
+
+## Convergence
+
+| Issue | Experts | Floor |
+|---|---|---|
+| `decryptCredentials` retains the full plaintext when `final()` throws | Functionality F1, Security SEC-R6-1 | **Critical** (Security escalated: `escalate: true`) |
+| `zeroization.test.ts` unregistered in `CONTROL_FILES` | Security SEC-R6-3 (Major), Testing T13 (Minor) | **Major** |
+| The credential record is unbounded and the "the API validates" claim is false | Functionality F4 (Major), Security SEC-R6-7 (Minor) | **Major** |
+
+## Functionality Findings
+
+- **F1 [Critical]** `packages/crypto/src/index.ts:136-141` — no `try`/`finally`
+  around `update`/`final`. GCM authenticates in `final()`, which throws, and by
+  then `update()` has returned the GENUINE plaintext — CTR-mode decryption
+  happens before authentication. `rotate-credentials.ts:100-107` catches per row
+  and continues the sweep, so a version-skewed rollout leaves one uncleared
+  credential per failed row resident for the process's life. Neither case in the
+  new `zeroization.test.ts` exercises a throw.
+- **F2 [Major]** `packages/connectors/core/src/index.ts:125-131` — both
+  `platformError` arms require `typeof … === 'string'`. A googleapis failure
+  carries an OBJECT; gaxios' own extractor takes the same two branches
+  (`gaxios@7.3.0/build/esm/src/common.js:151,158`). Every real Google diagnosis
+  was `platformError: undefined`. It survived three rounds because
+  `diagnose.test.ts:44` fixtured a Slack-shaped body under a Google envelope —
+  a payload googleapis cannot produce.
+- **F3 [Major]** `packages/connectors/google-workspace/src/index.ts` — the
+  connector was still on the SDK defaults. `googleapis-common` sets
+  `options.retry = true` unless asked (`apirequest.js:260`), arming gaxios' own
+  3-retry interceptor UNDER `withRetry`, so `MAX_ATTEMPTS = 5` was really ~20
+  requests with two backoff schedules stacked; gaxios applies a timeout only when
+  supplied, so there was none; and `ctx.signal` never reached the SDK, so the
+  run deadline only fired between pages. All three are verbatim the findings the
+  Slack client was fixed for in rounds 1-2 and documented in a 20-line comment.
+- **F4 [Major]** `apps/api/src/routes/saas-apps.ts` — `credentials` was
+  `z.record(z.string(), z.string())` with no field check, so
+  `PATCH {"credentials":{}}` encrypted an empty object over the working
+  credential and returned 200, with no prior copy. `POST` had the mirror shape.
+  Two integration fixtures were themselves registering google-workspace apps
+  with no `impersonateAdminEmail` — the exact "registers fine, cannot sync"
+  state, which the worker factory rejects.
+- **F5 [Minor]** — the admin email was decided by two adjudicators: the browser's
+  WHATWG check on the register form (inside a real `<form>`) and
+  `rejectAdminEmail` on the manager (outside one). `admin@corp_internal` was
+  accepted on one surface and rejected on the other (R48, strict direction).
+
+## Security Findings
+
+- **SEC-R6-1 [Critical, escalate: true]** — same as F1, read for blast radius.
+  Measured on Node v26.5.0: both a tampered tag and a wrong AAD leave the real
+  plaintext in `head`. Attacker-reachable variant: anyone able to write
+  `saas_apps.credentials_enc` can force `final()` to throw on demand and grow the
+  count of resident plaintexts ahead of a memory dump.
+- **SEC-R6-2 [Major]** `packages/crypto/src/index.ts:27,34` —
+  `parseEncryptionKeys` interpolated the raw entry into its error. The two
+  likeliest operator mistakes both make the offending text the KEY ITSELF
+  (omitting the `1:` prefix; transposing to `<key>:1`, which base64 cannot
+  truncate). Every caller runs it unguarded at boot, and stderr ships to the log
+  aggregator. The repository's own test exercises the leaking branch.
+- **SEC-R6-3 [Major]** — `packages/crypto/test/zeroization.test.ts` was the only
+  assertion of the zeroization invariant and was not in `CONTROL_FILES`; it reads
+  no repository files, so the family-(a) addition-guard is structurally blind to
+  it. Deleting it leaves every gate green.
+- **SEC-R6-4 [Major]** `packages/connectors/google-workspace/src/index.ts:202` —
+  `privateKey()` ran per `withRetry` invocation, each time `JSON.parse`-ing the
+  document and minting a fresh JS string holding the PEM. Strings cannot be
+  zeroized at any level. One audit run of a 1 000-seat tenant leaves up to 1 000
+  permanently-unclearable copies of the highest-value secret in the system,
+  undoing five rounds of buffer narrowing.
+- **SEC-R6-5 [Major, R49]** — "this is the whole class" derived membership from
+  the `createDecipheriv` CALL rather than from the DEFECT. Re-derived, the class
+  also holds the encrypt-side input buffers at `saas-apps.ts:57,209` and
+  `seed.ts:318`. Major and not Critical precisely because the surrounding strings
+  are unzeroizable anyway — which is why the overstatement, not the code, is the
+  finding.
+- **SEC-R6-6 [Minor]** `apps/web/src/lib/connector-credentials.ts:119` —
+  `rejectCredentials(key: string)` indexed an object literal, so `constructor`,
+  `toString` and `valueOf` resolved through `Object.prototype` and were called.
+  `app.key` is tenant-supplied DB text (`POST /contract-import` writes it from a
+  CSV cell).
+- **SEC-R6-7 [Minor, RS3]** — no size or cardinality bound on the credential
+  record.
+
+## Testing Findings
+
+- **T1 [Critical]** — the three call-site `.fill(0)` lines named by Round 5's own
+  commit message STILL had no observer. `zeroization.test.ts` watched the
+  cipher's intermediates, not the buffer `decryptCredentials` returns.
+  `grep -rn "fill(0)\|zeroiz" apps/worker/test apps/api/test` returned nothing.
+  Deleting `rotate-credentials.ts:84` left every suite green.
+- **T2 [Major]** `sync.integration.test.ts:262` — the deadline cell repaired in
+  Round 5 distinguished only "the connector did not receive the caller's signal".
+  `AbortSignal.any([deps.signal])` — the deadline removed — kept it green.
+- **T3 [Major]** — `runTokenAudit` had no counterpart cell at all, on the
+  longer-running of the two jobs.
+- **T4 [Major]** `google-workspace/src/index.ts:148` — the retries-exhausted
+  `cause: diagnose(...)` site had no observer; every Google cell asserting on
+  `cause` reached the auth site instead. Round 2 recorded this defect verbatim
+  and closed it on the Slack side only.
+- **T5 [Major]** — Google's sleep mocks were declared `vi.fn(async () => {})`,
+  structurally incapable of observing the backoff. `sleep(0)` — a hot loop of
+  five immediate requests inside the open transaction — was green.
+- **T6 [Major]** `diagnose.test.ts:117` — the listener-removal cell pinned the
+  call count but not the listener identity, and the rejection-path removal had no
+  case at all.
+- **T7-T12 [Minor]** — `zeroization.test.ts`'s second cell had no failing state;
+  two module-level fixtures reset inside test bodies rather than hooks;
+  `FakeConnector.lastSignal` never reset; `privateKey()`'s catch arm unobserved;
+  `factoryBody`'s end-of-body locator with no non-vacuity check; `mockClear()` in
+  a test body.
+- **T13 [Minor]** — see SEC-R6-3.
+- **T14 [Minor, adjacent]** — `required={field.required}` added to manager inputs
+  the same diff documents as inert (no `<form>`, `type="button"`): a guard with
+  no failing state.
+
+## Seed Finding Disposition
+
+Ollama returned `No findings` for functionality and security — treated with
+higher scrutiny per the seed trust advisory, since the diff changes a
+cryptographic primitive; both experts recorded independent checks. For testing,
+three seeds: one adopted downgraded (T9 — the static reproduces, the flakiness
+claim does not: vitest runs cells in a file sequentially and no `it.concurrent`
+exists anywhere), two rejected with an adjacent real finding adopted in place of
+one (T11). The third seed's direction was inverted relative to the actual
+Round 3/4 defect; measured against all 187 `en` keys, the current detector has
+0 comment-only credits and 0 orphans.
+
+## Recurring Issue Check
+
+The dominant patterns are **R3** (three separate Slack-side fixes never
+propagated to Google — T3, T4, T5, F3) and **R42 ①b applied to the wrong
+primitive**: Round 5 correctly re-derived the class from `createDecipheriv`, but
+the defect's primitive is "an exit that leaves plaintext", and that function has
+two exits. **R49** fired three times (F1's closure claim, F2's "BOTH SHAPES",
+F4's "the API validates").
+
+## Resolution Status — Round 6
+
+### F1 / SEC-R6-1 [Critical, 2-way convergence, escalated] — the throw path kept the plaintext
+- Action: `try { head = update(...); tail = final(); return concat } finally { head?.fill(0); tail?.fill(0) }`.
+  A red-proven case tampers the auth tag, asserts the rejection, and asserts every
+  captured intermediate is zero — with its own non-vacuity check that a buffer at
+  least as long as the secret was produced before the rejection, so a cleared
+  secret is not confused with an empty one.
+- Modified: `packages/crypto/src/index.ts:136`, `packages/crypto/test/zeroization.test.ts`
+
+### T1 [Critical] — the three call-site zeroization lines still had no observer
+- Action: the class is closed by CONSTRUCTION rather than by a fourth assertion.
+  `withDecryptedCredentials(blob, version, ctx, keys, use)` decrypts, lends the
+  plaintext, and zeroes it in a `finally` however `use` ends; `sync.ts`,
+  `token-audit.ts` and `rotate-credentials.ts` all go through it and none of them
+  owns a `.fill(0)` any more.
+- **The convergence artifact required by step 3-8 for a class that expanded ≥2×**:
+  `zeroization.test.ts` now enumerates the class mechanically — it scans
+  `apps/{api,web,worker}/src` and reds if any production module calls
+  `decryptCredentials` directly. Reading repository files makes the file family (a),
+  so `package-test-parity.test.ts`'s addition-guard sees it; it is ALSO listed by
+  hand, because that guard cannot see a deletion.
+- Modified: `packages/crypto/src/index.ts`, `apps/worker/src/{sync,token-audit,rotate-credentials}.ts`,
+  `packages/crypto/test/zeroization.test.ts`, `apps/api/test/package-test-parity.test.ts`
+
+### SEC-R6-3 / T13 [Major] — the only zeroization control was unregistered
+- Action: listed in `CONTROL_FILES`; and, per the above, it is now family (a) so
+  the mechanical addition-guard covers the same shape in future.
+
+### F2 [Major] — `platformError` was unreachable for every real googleapis error
+- Action: an object arm reading `.status` (AIP-193) then `errors[0].reason` (the
+  classic Admin SDK body directory_v1 returns), scrubbed like the rest. The
+  fixture that hid it is replaced by two cells carrying shapes googleapis
+  actually produces.
+- Modified: `packages/connectors/core/src/index.ts:122`, `packages/connectors/core/test/diagnose.test.ts`
+
+### F3 [Major] — the Google connector was still on the SDK defaults
+- Action: `retry: false`, `timeout: REQUEST_TIMEOUT_MS`, and `signal` forwarded
+  per request; `REQUEST_TIMEOUT_MS` hoisted to `connectors-core` beside
+  `diagnose`/`waitUnlessAborted` rather than declared twice (R1/R2). The seam now
+  takes a second `GoogleRequestOptions` argument so `ctx.signal` reaches gaxios.
+  `packages/connectors/google-workspace/test/client-options.test.ts` is the
+  sibling of the Slack file written in round 2, and it drives BOTH clients —
+  they are built separately, so an option applied to one is not applied to the
+  other.
+- Modified: `packages/connectors/{core,slack,google-workspace}/src/index.ts`, new `google-workspace/test/client-options.test.ts`
+
+### F4 / SEC-R6-7 [Major] — the API accepted `credentials: {}` and overwrote a working credential
+- Action: `REQUIRED_CREDENTIAL_FIELDS` in the route, a `Record<ConnectorAppKey, …>`
+  so a new connector without an entry is a compile error; `POST` and `PATCH` both
+  refuse a blank required field with 400 `invalid_credentials`, the PATCH check
+  throwing inside the transaction so a rename in the same body rolls back with it.
+  `credentials` is bounded: key ≤ 64 chars, value ≤ 16 KiB, ≤ 16 fields.
+  `@open-smp/api-types` cannot host the shared declaration — C39 permits only
+  frozen string arrays and `is*` guards — so the agreement between the API and
+  the form is pinned in `apps/web/test/connector-credentials.test.ts`, which was
+  already the family-(b) control for this contract's other two ends.
+- Deny AND allow sides asserted (RT8/RT10): three refusal cells assert the 400
+  **and that the stored blob is byte-identical**, plus the partial-write cell.
+- Two integration fixtures were themselves registering google-workspace apps with
+  no `impersonateAdminEmail` — completed rather than exempted, because the worker
+  factory rejects that pair.
+- Modified: `apps/api/src/routes/saas-apps.ts`, `apps/api/test/api.integration.test.ts`, `apps/web/test/connector-credentials.test.ts`
+
+### SEC-R6-2 [Major] — the master key could reach boot logs
+- Action: the errors name the entry's INDEX and the expected shape, never the
+  entry or any prefix of it.
+- Modified: `packages/crypto/src/index.ts:19-40`
+
+### SEC-R6-4 [Major] — a fresh unzeroizable PEM per request
+- Action: `privateKey()` memoized on the instance. It cannot go below one copy
+  without abandoning the scrub, and one is what the surrounding design already
+  accepts.
+- Modified: `packages/connectors/google-workspace/src/index.ts:202`
+
+### SEC-R6-5 [Major, R49] — the closure claim was wider than the fix
+- Action: both. The comment now says it closes the DECRYPT half and names the
+  remaining members, and the encrypt-side buffers at `saas-apps.ts` are zeroed in
+  a `finally` — stated as defence in depth, since the surrounding
+  `JSON.stringify` result is an unzeroizable string.
+
+### T2, T3 [Major] — the deadline had no observer on either job
+- Action: `AbortSignal.timeout` is spied (passthrough by default), so one cell
+  asserts the deadline was composed with the right constant and another makes it
+  fire and asserts the run ends while the caller's signal stays unaborted.
+  `runTokenAudit` gained the counterpart cell it never had.
+- Modified: `apps/worker/src/{sync,token-audit}.ts` (constants exported), `apps/worker/test/{sync,token-audit}.integration.test.ts`
+
+### T4, T5 [Major] — Google's second throw site and its backoff
+- Action: the retries-exhausted cell now asserts the cause is a scrubbed
+  projection carrying `statusCode: 500`, and the sleep mock takes a parameter so
+  the schedule is asserted by argument rather than by call count.
+
+### T6 [Major] — the listener-removal cell
+- Action: `addEventListener` is spied alongside `removeEventListener` and the
+  identities are compared pairwise; the rejection path gained its own cell.
+
+### F5, SEC-R6-6, T7-T12, T14 [Minor] — applied
+- One adjudicator for the admin email (`type="email"` dropped, `inputMode`
+  retained); `Object.hasOwn` before the rejector lookup; the second zeroization
+  cell replaced by two that observe `withDecryptedCredentials` on its return AND
+  throw paths; `beforeEach` hooks for `captured`, `FakeConnector.lastSignal` and
+  `construct`; a cell for `privateKey()`'s catch arm asserting a `ConnectorError`
+  rather than a `SyntaxError`; a truncation guard on `factoryBody`;
+  `required` → `aria-required` on the manager's inert inputs.
+
+### Process finding — rounds 2-5 were never written to this file
+- Action: restored above from the commit bodies. Step 3-4 requires each round's
+  findings here; four rounds of this loop existed only in `git log`.
+
+## Round 6 verification
+
+typecheck 0 / lint 0 / **855 tests passed** (613 unit, 242 integration; was
+603/235) / build 0.

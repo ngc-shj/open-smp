@@ -122,7 +122,9 @@ beforeEach(async () => {
 
   const syncQueue = new Queue<SyncJobData>(SYNC_QUEUE, { connection: redisConnection });
   const matchQueue = new Queue<MatchJobData>(MATCH_QUEUE, { connection: redisConnection });
-  const tokenAuditQueue = new Queue<TokenAuditJobData>(TOKEN_AUDIT_QUEUE, { connection: redisConnection });
+  const tokenAuditQueue = new Queue<TokenAuditJobData>(TOKEN_AUDIT_QUEUE, {
+    connection: redisConnection,
+  });
   await syncQueue.obliterate({ force: true }).catch(() => undefined);
   await matchQueue.obliterate({ force: true }).catch(() => undefined);
   await tokenAuditQueue.obliterate({ force: true }).catch(() => undefined);
@@ -148,7 +150,7 @@ beforeEach(async () => {
 });
 
 describe('error-shape acceptance: framework-generated responses stay flat and opaque', () => {
-  it('an unmatched route returns the flat not-found shape, not Fastify\'s default', async () => {
+  it("an unmatched route returns the flat not-found shape, not Fastify's default", async () => {
     // An unmatched route never reaches setErrorHandler, so without an explicit
     // not-found handler Fastify's default body survives — it carries `message`
     // and echoes the requested route back. Deep-equal rather than a status
@@ -279,18 +281,24 @@ describe('C6 acceptance: 401 sweep over every non-login route', () => {
 
 describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
   it('non-GET request with missing Origin returns 403 on every mutation route, no exemptions', async () => {
-    const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET' && route.method !== 'HEAD');
+    const nonGetRoutes = app.apiRoutes.filter(
+      (route) => route.method !== 'GET' && route.method !== 'HEAD',
+    );
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
       const url = route.url.replace(/:[A-Za-z]+/g, () => randomUUID());
       const res = await app.inject({ method: route.method as 'POST', url });
-      expect(res.statusCode, `${route.method} ${route.url} should 403 with missing Origin`).toBe(403);
+      expect(res.statusCode, `${route.method} ${route.url} should 403 with missing Origin`).toBe(
+        403,
+      );
     }
   });
 
   it('non-GET request with mismatched Origin returns 403 on every mutation route, no exemptions', async () => {
-    const nonGetRoutes = app.apiRoutes.filter((route) => route.method !== 'GET' && route.method !== 'HEAD');
+    const nonGetRoutes = app.apiRoutes.filter(
+      (route) => route.method !== 'GET' && route.method !== 'HEAD',
+    );
     expect(nonGetRoutes.length).toBeGreaterThan(0);
 
     for (const route of nonGetRoutes) {
@@ -300,7 +308,9 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
         url,
         headers: { origin: 'https://evil.example' },
       });
-      expect(res.statusCode, `${route.method} ${route.url} should 403 with mismatched Origin`).toBe(403);
+      expect(res.statusCode, `${route.method} ${route.url} should 403 with mismatched Origin`).toBe(
+        403,
+      );
     }
   });
 
@@ -326,7 +336,11 @@ describe('C6 acceptance: Origin 403 sweep over every non-GET route', () => {
 
 describe('C6 acceptance: login rate limit', () => {
   it('returns 429 on the 6th login attempt within a minute', async () => {
-    const payload = { tenantSlug: 'no-such-tenant-rl', email: 'nobody@example.com', password: 'wrong' };
+    const payload = {
+      tenantSlug: 'no-such-tenant-rl',
+      email: 'nobody@example.com',
+      password: 'wrong',
+    };
     let lastStatus = 0;
     let lastBody = '';
     for (let i = 0; i < 6; i += 1) {
@@ -444,7 +458,10 @@ describe('C6 acceptance: saas-apps credentials never leak', () => {
       payload: {
         key: 'google-workspace',
         displayName: 'GWS',
-        credentials: { serviceAccountJson: '{"secret":"value"}' },
+        credentials: {
+          serviceAccountJson: '{"secret":"value"}',
+          impersonateAdminEmail: 'admin@corp.example',
+        },
       },
     });
 
@@ -488,7 +505,11 @@ describe('C6 acceptance: hr-import', () => {
     const tenantId = await seedTenant(`tenant-hr-${randomUUID()}`, 'HR Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed in test setup');
     return cookie;
   }
@@ -583,7 +604,11 @@ describe('SC3 acceptance: a token-audit row reaches the reader', () => {
     const tenantId = await seedTenant(`tenant-tokens-${randomUUID()}`, 'Token Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed');
 
     await withTenant(appPool, tenantId, async (tx) => {
@@ -597,7 +622,13 @@ describe('SC3 acceptance: a token-audit row reaches the reader', () => {
             scanned: 9,
             failed: 1,
             applications: [
-              { clientId: 'shadow-it', displayName: 'Shadow IT', userCount: 4, anonymous: true, scopes: ['https://mail.google.com/'] },
+              {
+                clientId: 'shadow-it',
+                displayName: 'Shadow IT',
+                userCount: 4,
+                anonymous: true,
+                scopes: ['https://mail.google.com/'],
+              },
             ],
           }),
         ],
@@ -615,7 +646,13 @@ describe('SC3 acceptance: a token-audit row reaches the reader', () => {
     expect(items).toHaveLength(1);
     expect(items[0]!.payload).toMatchObject({ runId: 'run-tokens', scanned: 9, failed: 1 });
     expect(items[0]!.payload.applications).toEqual([
-      { clientId: 'shadow-it', displayName: 'Shadow IT', userCount: 4, anonymous: true, scopes: ['https://mail.google.com/'] },
+      {
+        clientId: 'shadow-it',
+        displayName: 'Shadow IT',
+        userCount: 4,
+        anonymous: true,
+        scopes: ['https://mail.google.com/'],
+      },
     ]);
   });
 });
@@ -625,7 +662,11 @@ describe('C6/S5 acceptance: events payload projection', () => {
     const tenantId = await seedTenant(`tenant-events-${randomUUID()}`, 'Events Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed');
 
     await withTenant(appPool, tenantId, async (tx) => {
@@ -661,7 +702,11 @@ describe('C6/S5 acceptance: events payload projection', () => {
     const tenantId = await seedTenant(`tenant-rawproj-${randomUUID()}`, 'Raw Projection Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed');
 
     await withTenant(appPool, tenantId, async (tx) => {
@@ -695,7 +740,11 @@ describe('C6/S5 acceptance: events payload projection', () => {
     const tenantId = await seedTenant(`tenant-unkproj-${randomUUID()}`, 'Unknown Kind Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed');
 
     await withTenant(appPool, tenantId, async (tx) => {
@@ -713,10 +762,17 @@ describe('C6/S5 acceptance: events payload projection', () => {
   });
 
   it('label audit events serve their own four fields', async () => {
-    const tenantId = await seedTenant(`tenant-auditproj-${randomUUID()}`, 'Audit Projection Tenant');
+    const tenantId = await seedTenant(
+      `tenant-auditproj-${randomUUID()}`,
+      'Audit Projection Tenant',
+    );
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed');
 
     const actorUserId = randomUUID();
@@ -838,7 +894,11 @@ describe('C7 acceptance: expired or deleted session returns 401 (CT6)', () => {
     const tenantId = await seedTenant(`tenant-sess-${randomUUID()}`, 'Session Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed in test setup');
     return { cookie, tenantId };
   }
@@ -884,7 +944,11 @@ describe('C6 acceptance: sliding session TTL refreshes on authenticated request 
     const tenantId = await seedTenant(`tenant-ttl-${randomUUID()}`, 'TTL Tenant');
     await seedUser(tenantId, 'admin@example.com', 'correct-password');
     const slugRow = await appPool.query('SELECT slug FROM tenants WHERE id = $1', [tenantId]);
-    const cookie = await loginAndGetCookie(slugRow.rows[0].slug, 'admin@example.com', 'correct-password');
+    const cookie = await loginAndGetCookie(
+      slugRow.rows[0].slug,
+      'admin@example.com',
+      'correct-password',
+    );
     if (!cookie) throw new Error('login failed in test setup');
 
     const tokenHash = tokenHashFromCookie(cookie);
@@ -997,7 +1061,13 @@ describe('C11 acceptance: account labeling', () => {
     tenantId: string,
     accountId: string,
   ): Promise<
-    { kind: string; note: string | null; created_by: string | null; created_at: Date; updated_at: Date }[]
+    {
+      kind: string;
+      note: string | null;
+      created_by: string | null;
+      created_at: Date;
+      updated_at: Date;
+    }[]
   > {
     return withTenant(appPool, tenantId, async (tx) => {
       const result = await tx.query(
@@ -1097,7 +1167,11 @@ describe('C11 acceptance: account labeling', () => {
       expect(rowsAfterDelete[0]!.created_by).toBeNull();
 
       const secondUserId = await seedUser(tenantId, 'second@example.com', 'correct-password-2');
-      const secondCookie = await loginAndGetCookie(slug, 'second@example.com', 'correct-password-2');
+      const secondCookie = await loginAndGetCookie(
+        slug,
+        'second@example.com',
+        'correct-password-2',
+      );
       expect(secondCookie).not.toBeNull();
 
       const put2 = await app.inject({
@@ -1241,7 +1315,11 @@ describe('C11 acceptance: account labeling', () => {
 
     it('DELETE by a tenant-B session on a labeled tenant-A account is 404 and leaves the label intact', async () => {
       const tenantA = await seedTenantWithAccount('l5-del-a');
-      const cookieA = await loginAndGetCookie(tenantA.slug, 'admin@example.com', 'correct-password');
+      const cookieA = await loginAndGetCookie(
+        tenantA.slug,
+        'admin@example.com',
+        'correct-password',
+      );
       expect(cookieA).not.toBeNull();
       const put = await app.inject({
         method: 'PUT',
@@ -1593,21 +1671,24 @@ describe('C11 acceptance: account labeling', () => {
   // ---- C24/I24.1: note newline rejection ----
 
   describe('T-N1: notes containing line breaks are rejected at the boundary', () => {
-    it.each(['a\r\nb', 'a\nb', 'a\rb'])('rejects note %j with 400 and writes no label', async (note) => {
-      const { tenantId, slug, accountId } = await seedTenantWithAccount('n1');
-      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    it.each(['a\r\nb', 'a\nb', 'a\rb'])(
+      'rejects note %j with 400 and writes no label',
+      async (note) => {
+        const { tenantId, slug, accountId } = await seedTenantWithAccount('n1');
+        const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
 
-      const res = await app.inject({
-        method: 'PUT',
-        url: `/api/accounts/${accountId}/label`,
-        headers: { origin: APP_ORIGIN, cookie: cookie! },
-        payload: { kind: 'known_shared', note },
-      });
+        const res = await app.inject({
+          method: 'PUT',
+          url: `/api/accounts/${accountId}/label`,
+          headers: { origin: APP_ORIGIN, cookie: cookie! },
+          payload: { kind: 'known_shared', note },
+        });
 
-      expect(res.statusCode).toBe(400);
-      expect(await labelRow(tenantId, accountId)).toHaveLength(0);
-      expect(await eventCount(tenantId)).toBe(0);
-    });
+        expect(res.statusCode).toBe(400);
+        expect(await labelRow(tenantId, accountId)).toHaveLength(0);
+        expect(await eventCount(tenantId)).toBe(0);
+      },
+    );
   });
 
   describe('T-N2: ordinary notes and absent notes both still succeed', () => {
@@ -1692,9 +1773,10 @@ describe('C11 acceptance: account labeling', () => {
         'PUT /api/accounts/:saasAccountId/label',
       ]);
       for (const route of app.apiRoutes) {
-        expect(route.hasRateLimit, `${route.method} ${route.url} should carry a rate-limit config`).toBe(
-          true,
-        );
+        expect(
+          route.hasRateLimit,
+          `${route.method} ${route.url} should carry a rate-limit config`,
+        ).toBe(true);
       }
     });
   });
@@ -1730,7 +1812,10 @@ describe('SC2/C2 acceptance: the application ceiling on POST /saas-apps', () => 
   const payload = {
     key: 'google-workspace',
     displayName: 'GWS At The Ceiling',
-    credentials: { serviceAccountJson: '{"client_email":"a@b.iam.gserviceaccount.com"}' },
+    credentials: {
+      serviceAccountJson: '{"client_email":"a@b.iam.gserviceaccount.com"}',
+      impersonateAdminEmail: 'admin@corp.example',
+    },
   };
 
   async function tenantAtCount(
@@ -1827,7 +1912,10 @@ describe('C13 acceptance: saas-apps duplicate key', () => {
       const payload = {
         key: 'google-workspace',
         displayName: 'GWS Primary',
-        credentials: { serviceAccountJson: '{"client_email":"a@b.iam.gserviceaccount.com"}' },
+        credentials: {
+          serviceAccountJson: '{"client_email":"a@b.iam.gserviceaccount.com"}',
+          impersonateAdminEmail: 'admin@corp.example',
+        },
       };
 
       const first = await app.inject({
@@ -1949,7 +2037,11 @@ describe('C18 acceptance: identity detail', () => {
       confidence: '0.95',
     });
 
-    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${identityId}`,
+      headers: { cookie },
+    });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.status).toBe('active');
@@ -1979,7 +2071,11 @@ describe('C18 acceptance: identity detail', () => {
       confidence: '0.90',
     });
 
-    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${identityId}`,
+      headers: { cookie },
+    });
     const body = res.json();
     expect(body.status).toBe('left');
     expect(body.leftAt).not.toBeNull();
@@ -1996,7 +2092,11 @@ describe('C18 acceptance: identity detail', () => {
       email: 'none@example.com',
     });
 
-    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${identityId}`,
+      headers: { cookie },
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json().accounts).toEqual([]);
   });
@@ -2022,7 +2122,11 @@ describe('C18 acceptance: identity detail', () => {
 
   it('a non-uuid identityId returns 400', async () => {
     const { cookie } = await setup('idt5');
-    const res = await app.inject({ method: 'GET', url: '/api/identities/not-a-uuid', headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/identities/not-a-uuid',
+      headers: { cookie },
+    });
     expect(res.statusCode).toBe(400);
   });
 
@@ -2047,7 +2151,11 @@ describe('C18 acceptance: identity detail', () => {
       confidence: '0.00',
     });
 
-    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${identityId}`,
+      headers: { cookie },
+    });
     const body = res.json();
     expect(body.accounts).toHaveLength(1);
     expect(body.accounts[0].email).toBe('match@example.com');
@@ -2079,7 +2187,11 @@ describe('C18 acceptance: identity detail', () => {
       );
     });
 
-    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${identityId}`,
+      headers: { cookie },
+    });
     const body = res.json();
     expect(body.accounts).toHaveLength(50);
     expect(body.accountsTruncated).toBe(true);
@@ -2111,7 +2223,11 @@ describe('C18 acceptance: identity detail', () => {
       );
     });
 
-    const res = await app.inject({ method: 'GET', url: `/api/identities/${identityId}`, headers: { cookie } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/identities/${identityId}`,
+      headers: { cookie },
+    });
     const body = res.json();
     expect(body.accounts).toHaveLength(50);
     // This is the case that distinguishes "capped" from "happens to be 50" —
@@ -2139,7 +2255,10 @@ describe('C22 acceptance: SaaS app management', () => {
       payload: {
         key: 'google-workspace',
         displayName: 'GWS Original',
-        credentials: { serviceAccountJson: '{"client_email":"a@b.c"}', impersonateAdminEmail: 'a@b.c' },
+        credentials: {
+          serviceAccountJson: '{"client_email":"a@b.c"}',
+          impersonateAdminEmail: 'a@b.c',
+        },
       },
     });
     expect(res.statusCode).toBe(201);
@@ -2181,7 +2300,11 @@ describe('C22 acceptance: SaaS app management', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ id: saasAppId, key: 'google-workspace', displayName: 'GWS Renamed' });
+    expect(res.json()).toEqual({
+      id: saasAppId,
+      key: 'google-workspace',
+      displayName: 'GWS Renamed',
+    });
 
     const after = await readCredentials(tenantId, saasAppId);
     expect(after.displayName).toBe('GWS Renamed');
@@ -2191,12 +2314,76 @@ describe('C22 acceptance: SaaS app management', () => {
     expect(after.keyVersion).toBe(before.keyVersion);
   });
 
+  it.each([
+    ['an empty credential object', {}],
+    ['a credential set missing one required field', { serviceAccountJson: '{"a":1}' }],
+    [
+      'a required field present but blank',
+      { serviceAccountJson: '{"a":1}', impersonateAdminEmail: '   ' },
+    ],
+  ])(
+    'refuses to replace a working credential with %s, and changes nothing',
+    async (label, replacement) => {
+      // Review round 6. `credentials` was a bare `z.record(z.string(),
+      // z.string())`, so every one of these passed validation, was encrypted over
+      // the working credential and returned 200 — with no prior copy, since the
+      // row is the only holder. The operator's recovery was re-entering a
+      // credential they can no longer read.
+      //
+      // The MUTATION is asserted, not only the status (RT8): a check that returns
+      // 400 after writing is the failure this cell exists to catch.
+      const { tenantId, headers } = await setup(`c22-reject-${label.replace(/\W+/g, '-')}`);
+      const saasAppId = await registerApp(headers);
+      const before = await readCredentials(tenantId, saasAppId);
+
+      const res = await app.inject({
+        method: 'PATCH',
+        url: `/api/saas-apps/${saasAppId}`,
+        headers,
+        payload: { credentials: replacement },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_credentials' });
+
+      const after = await readCredentials(tenantId, saasAppId);
+      expect(after.blob.equals(before.blob), 'the credential was overwritten anyway').toBe(true);
+      expect(after.keyVersion).toBe(before.keyVersion);
+    },
+  );
+
+  it('still accepts a rename in the same body as a rejected credential, only by rolling both back', async () => {
+    // The allow side of the same guard is the cell above; this is the
+    // composition. `displayName` is written before the credential check, so
+    // without the error travelling out of the transaction the rename would
+    // commit while the replacement did not — half a request applied.
+    const { tenantId, headers } = await setup('c22-reject-partial');
+    const saasAppId = await registerApp(headers);
+    const before = await readCredentials(tenantId, saasAppId);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/saas-apps/${saasAppId}`,
+      headers,
+      payload: { displayName: 'Renamed Anyway', credentials: {} },
+    });
+
+    expect(res.statusCode).toBe(400);
+    const after = await readCredentials(tenantId, saasAppId);
+    expect(after.displayName, 'the rename committed while the replacement was refused').toBe(
+      before.displayName,
+    );
+  });
+
   it('credential replacement re-encrypts and decrypts back to the submitted plaintext', async () => {
     const { tenantId, headers } = await setup('c22b');
     const saasAppId = await registerApp(headers);
     const before = await readCredentials(tenantId, saasAppId);
 
-    const replacement = { serviceAccountJson: '{"client_email":"new@example.com"}', impersonateAdminEmail: 'new@example.com' };
+    const replacement = {
+      serviceAccountJson: '{"client_email":"new@example.com"}',
+      impersonateAdminEmail: 'new@example.com',
+    };
     const res = await app.inject({
       method: 'PATCH',
       url: `/api/saas-apps/${saasAppId}`,
@@ -2238,7 +2425,10 @@ describe('C22 acceptance: SaaS app management', () => {
     const rolloutApp = buildApp({ ...deps, encryptionKeys: twoVersionKeys });
     await rolloutApp.ready();
     try {
-      const replacement = { serviceAccountJson: '{"client_email":"rolled@example.com"}' };
+      const replacement = {
+        serviceAccountJson: '{"client_email":"rolled@example.com"}',
+        impersonateAdminEmail: 'rolled@example.com',
+      };
       const res = await rolloutApp.inject({
         method: 'PATCH',
         url: `/api/saas-apps/${saasAppId}`,
@@ -2331,7 +2521,7 @@ describe('C22 acceptance: SaaS app management', () => {
     });
   });
 
-  it('PATCH and DELETE on another tenant\'s app return 404, not 403', async () => {
+  it("PATCH and DELETE on another tenant's app return 404, not 403", async () => {
     const { headers } = await setup('c22g');
     const otherSlug = `tenant-c22other-${randomUUID()}`;
     const otherTenantId = await seedTenant(otherSlug, 'Other Tenant');
@@ -2360,7 +2550,9 @@ describe('C22 acceptance: SaaS app management', () => {
     expect(deleted.statusCode).toBe(404);
 
     const survived = await withTenant(appPool, otherTenantId, async (tx) =>
-      tx.query<{ display_name: string }>('SELECT display_name FROM saas_apps WHERE id = $1', [foreignAppId]),
+      tx.query<{ display_name: string }>('SELECT display_name FROM saas_apps WHERE id = $1', [
+        foreignAppId,
+      ]),
     );
     expect(survived.rows[0]!.display_name).toBe('Theirs');
   });
@@ -2386,7 +2578,11 @@ describe('C23 acceptance: label filtering and bulk labeling', () => {
     return { tenantId, cookie, headers: { origin: APP_ORIGIN, cookie }, saasAppId };
   }
 
-  async function seedAccounts(tenantId: string, saasAppId: string, count: number): Promise<string[]> {
+  async function seedAccounts(
+    tenantId: string,
+    saasAppId: string,
+    count: number,
+  ): Promise<string[]> {
     return withTenant(appPool, tenantId, async (tx) => {
       const result = await tx.query<{ id: string }>(
         `INSERT INTO saas_accounts
@@ -2457,7 +2653,7 @@ describe('C23 acceptance: label filtering and bulk labeling', () => {
     expect(await auditCount(tenantId)).toBe(0);
   });
 
-  it('another tenant\'s account is indistinguishable from an absent one', async () => {
+  it("another tenant's account is indistinguishable from an absent one", async () => {
     const { tenantId, headers, saasAppId } = await setup('c23c');
     const ids = await seedAccounts(tenantId, saasAppId, 1);
 
@@ -2484,7 +2680,7 @@ describe('C23 acceptance: label filtering and bulk labeling', () => {
     expect(await labelCount(tenantId)).toBe(0);
   });
 
-  it('re-labelling in bulk records each account\'s prior state', async () => {
+  it("re-labelling in bulk records each account's prior state", async () => {
     const { tenantId, headers, saasAppId } = await setup('c23d');
     const ids = await seedAccounts(tenantId, saasAppId, 2);
 
@@ -2529,7 +2725,10 @@ describe('C23 acceptance: label filtering and bulk labeling', () => {
       method: 'POST',
       url: '/api/accounts/labels/bulk',
       headers,
-      payload: { accountIds: Array.from({ length: 101 }, () => randomUUID()), kind: 'known_shared' },
+      payload: {
+        accountIds: Array.from({ length: 101 }, () => randomUUID()),
+        kind: 'known_shared',
+      },
     });
     expect(overCap.statusCode).toBe(400);
 
@@ -2567,7 +2766,11 @@ describe('C23 acceptance: label filtering and bulk labeling', () => {
     });
 
     const listWith = async (query: string) => {
-      const res = await app.inject({ method: 'GET', url: `/api/accounts?${query}`, headers: { cookie } });
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/accounts?${query}`,
+        headers: { cookie },
+      });
       expect(res.statusCode).toBe(200);
       return res.json().items as { accountId: string }[];
     };
@@ -2629,7 +2832,9 @@ describe('C23 acceptance: label filtering and bulk labeling', () => {
     });
     const body2 = page2.json();
 
-    const seen = [...body1.items, ...body2.items].map((item: { accountId: string }) => item.accountId);
+    const seen = [...body1.items, ...body2.items].map(
+      (item: { accountId: string }) => item.accountId,
+    );
     const labeled = new Set(sorted.slice(0, 10));
     // All 60 unlabeled accounts across the two pages, none missing and none
     // repeated, and no labeled account leaking through — the clause that
@@ -2817,7 +3022,10 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
 
     // Without the binding these would return a silently unfiltered page that
     // omits every non-label row newer than the cursor position.
-    for (const url of [`/api/events?cursor=${cursor}`, `/api/events?source=matcher&cursor=${cursor}`]) {
+    for (const url of [
+      `/api/events?cursor=${cursor}`,
+      `/api/events?source=matcher&cursor=${cursor}`,
+    ]) {
       const res = await app.inject({ method: 'GET', url, headers: { cookie } });
       expect(res.statusCode, url).toBe(400);
     }
@@ -2845,12 +3053,12 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
       // the live API before the calendar and year-zero checks landed: Date.parse
       // rolls Feb 30 forward instead of failing, and JS numbers years
       // astronomically so year 0 survives a field-by-field round-trip.
-      Buffer.from(JSON.stringify({ t: '2026-02-30T00:00:00Z', id: randomUUID(), s: null })).toString(
-        'base64url',
-      ),
-      Buffer.from(JSON.stringify({ t: '0000-01-01T00:00:00Z', id: randomUUID(), s: null })).toString(
-        'base64url',
-      ),
+      Buffer.from(
+        JSON.stringify({ t: '2026-02-30T00:00:00Z', id: randomUUID(), s: null }),
+      ).toString('base64url'),
+      Buffer.from(
+        JSON.stringify({ t: '0000-01-01T00:00:00Z', id: randomUUID(), s: null }),
+      ).toString('base64url'),
     ];
     for (const cursor of malformed) {
       const res = await app.inject({
@@ -2866,7 +3074,11 @@ describe('C20 acceptance: chronological events with a filter-bound cursor', () =
       expect(res.body).not.toMatch(/date\/time|timestamptz|out of range/i);
     }
 
-    const empty = await app.inject({ method: 'GET', url: '/api/events?cursor=', headers: { cookie } });
+    const empty = await app.inject({
+      method: 'GET',
+      url: '/api/events?cursor=',
+      headers: { cookie },
+    });
     expect(empty.statusCode).toBe(200);
   });
 

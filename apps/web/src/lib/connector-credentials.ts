@@ -42,8 +42,18 @@ export const CREDENTIAL_FIELDS: Record<ConnectorAppKey, readonly CredentialField
       kind: 'multiline',
       required: true,
     },
-    { name: 'impersonateAdminEmail', labelKey: 'field.adminEmail', kind: 'email', required: true },
-    { name: 'customerId', labelKey: 'saasapp.customerId', kind: 'text', required: false },
+    {
+      name: 'impersonateAdminEmail',
+      labelKey: 'field.adminEmail',
+      kind: 'email',
+      required: true,
+    },
+    {
+      name: 'customerId',
+      labelKey: 'saasapp.customerId',
+      kind: 'text',
+      required: false,
+    },
   ],
   slack: [
     // `secret`, so it renders as a password input. The service-account JSON is a
@@ -91,10 +101,18 @@ const REJECTORS: Record<
 /**
  * Rejects credentials the browser can already tell are wrong.
  *
- * This is not defence — the API validates and the worker validates again. It is
- * what keeps a wrong paste from being SENT: four E2E specs assert zero requests
- * to `/api/saas-apps` on a malformed input, because credential material that
- * never leaves the page cannot be logged by anything in between.
+ * This is not defence — `POST`/`PATCH /saas-apps` reject a blank required field
+ * and the worker validates again. It is what keeps a wrong paste from being
+ * SENT: four E2E specs assert zero requests to `/api/saas-apps` on a malformed
+ * input, because credential material that never leaves the page cannot be logged
+ * by anything in between.
+ *
+ * The API half of that sentence was untrue until review round 6 — `credentials`
+ * was an unbounded string record with no field check, so this function was the
+ * only enforcement anywhere and a direct call bypassed it (R49). The
+ * server-side declaration is `REQUIRED_CREDENTIAL_FIELDS` in
+ * apps/api/src/routes/saas-apps.ts, and the unit test below pins the two to
+ * each other.
  *
  * A `Record<ConnectorAppKey, …>` like `CREDENTIAL_FIELDS`, and for the same
  * reason the header gives. This was an `if (key === 'google-workspace') … else`
@@ -116,7 +134,14 @@ export function rejectCredentials(
   key: string,
   values: Readonly<Record<string, string>>,
 ): CredentialRejection | null {
-  const reject = REJECTORS[key as ConnectorAppKey];
+  // `Object.hasOwn`, not a bare index. `key` widened from `ConnectorAppKey` to
+  // `string` when non-connector apps started reaching here, and an object
+  // literal's members include `Object.prototype`'s — so `constructor`,
+  // `toString` and `valueOf` all resolved to truthy inherited functions and were
+  // CALLED. `app.key` is arbitrary tenant-supplied DB text (POST
+  // /contract-import writes it from a CSV cell), so an application named
+  // `constructor` was enough to reach it.
+  const reject = Object.hasOwn(REJECTORS, key) ? REJECTORS[key as ConnectorAppKey] : undefined;
   return reject ? reject(values) : null;
 }
 

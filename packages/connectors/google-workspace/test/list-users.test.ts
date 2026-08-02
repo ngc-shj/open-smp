@@ -117,14 +117,29 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
   });
 
   it('gives up after max attempts on repeated 5xx and reports transient, retryable', async () => {
+    const PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nDEMO\n-----END PRIVATE KEY-----\n';
     const usersList = vi.fn(async () => {
-      const error = Object.assign(new Error('Internal Error'), { code: 500 });
+      const error = Object.assign(new Error(`Internal Error signed with ${PRIVATE_KEY}`), {
+        code: 500,
+        config: { headers: { Authorization: 'Bearer ya29.secret' } },
+      });
       throw error;
     });
-    const sleep = vi.fn(async () => {});
+    // The parameter exists so the argument can be asserted. Declared
+    // `async () => {}` the mock was structurally incapable of observing the
+    // backoff, which is why `sleep(0)` — a hot loop of five immediate requests
+    // inside the open sync transaction — was green here while the Slack sibling
+    // pinned the same schedule.
+    const sleep = vi.fn(async (_ms: number) => {});
 
     const connector = new GoogleWorkspaceConnector(
-      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      {
+        serviceAccountJson: JSON.stringify({
+          client_email: 'a@b.iam.gserviceaccount.com',
+          private_key: PRIVATE_KEY,
+        }),
+        impersonateAdminEmail: 'admin@corp.example',
+      },
       { usersList, sleep },
     );
 
@@ -138,6 +153,64 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(caught).toBeInstanceOf(ConnectorError);
     expect(caught).toMatchObject({ kind: 'transient', retryable: true });
     expect(usersList).toHaveBeenCalledTimes(5);
+
+    // THE SECOND THROW SITE. Both sites carry `cause: diagnose(...)`, and every
+    // other cell in this file reaches the auth site at 401/403 — so reverting
+    // this one to `cause: error` left the package green. Slack has covered both
+    // of its sites since round 2; this is the other member of that class.
+    const serialized = JSON.stringify((caught as Error).cause);
+    expect(serialized).not.toContain(PRIVATE_KEY);
+    expect(serialized).not.toContain('ya29.secret');
+    expect((caught as Error).cause).toMatchObject({ statusCode: 500 });
+
+    // The schedule, not the count. `2 ** (attempt - 1) * 1000` plus jitter, so
+    // each wait is at least the previous one's floor and never zero.
+    expect(sleep).toHaveBeenCalledTimes(4);
+    const waits = sleep.mock.calls.map((call) => call[0]);
+    expect(waits[0]).toBeGreaterThanOrEqual(1000);
+    expect(waits[3]).toBeGreaterThanOrEqual(8000);
+  });
+
+  it('reports an unparseable service account as a ConnectorError, not a SyntaxError', async () => {
+    // `privateKey()`'s catch arm, which had no case while the core suite's
+    // fixture comment names "an unparseable service account" as the reachable
+    // shape motivating diagnose's empty-secret guard. In production this is
+    // evaluated at the `withRetry` call, so without the catch a `SyntaxError`
+    // replaces the ConnectorError the worker's error handling is written
+    // against.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Forbidden'), { code: 403 });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{not json', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep: async () => {} },
+    );
+
+    const caught = await collect(connector.listUsers(makeContext())).catch(
+      (error: unknown) => error,
+    );
+
+    expect(caught).toBeInstanceOf(ConnectorError);
+    expect(caught).toMatchObject({ kind: 'auth' });
+    expect((caught as Error).cause).toMatchObject({ statusCode: 403 });
+  });
+
+  it('forwards the run signal to the SDK so an abort cuts an in-flight request', async () => {
+    // Without this the deadline only fires BETWEEN pages: a request that never
+    // answers holds the open withTenant transaction regardless of
+    // SYNC_DEADLINE_MS.
+    const controller = new AbortController();
+    const usersList = vi.fn(async () => ({ data: page3 as UsersListResponseData }));
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList },
+    );
+
+    await collect(connector.listUsers({ ...makeContext(), signal: controller.signal }));
+
+    expect(usersList).toHaveBeenCalledWith(expect.anything(), { signal: controller.signal });
   });
 
   it('declares the capability its listTokens implements', () => {

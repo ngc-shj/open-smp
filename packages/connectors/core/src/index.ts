@@ -120,14 +120,30 @@ export function diagnose(error: unknown, secret: string): Record<string, unknown
     (value): value is number => typeof value === 'number',
   );
   const data = source.data as { error?: unknown } | undefined;
-  // Scrubbed like the other strings. Both providers put an enum here today, but
-  // it is a provider-controlled path and this round added a second one.
-  const rawPlatformError =
-    typeof data?.error === 'string'
-      ? data.error
-      : typeof response?.data?.error === 'string'
-        ? response.data.error
-        : undefined;
+  // Scrubbed like the other strings, and read from BOTH GRAMMARS. Slack puts a
+  // bare enum string here (`invalid_auth`, `ratelimited`). Google does not: an
+  // Admin SDK failure carries an OBJECT, which is why widening the envelope
+  // (`data.error` → also `response.data.error`) in an earlier round still left
+  // every real Google diagnosis at `platformError: undefined` — both arms
+  // required a string. gaxios' own extractor takes the same two branches
+  // (`typeof res.data.error === 'string'` then `=== 'object'`), reading
+  // `.status` for the AIP-193 spelling; the classic Admin SDK shape carries the
+  // machine-readable reason in `errors[0].reason` instead, so both are read.
+  //
+  // The fixture is the reason this survived three rounds: the Google case
+  // asserted a Slack-shaped body under a Google envelope, a payload googleapis
+  // cannot produce (RT1).
+  const platformErrorOf = (value: unknown): string | undefined => {
+    if (typeof value === 'string') return value;
+    if (typeof value !== 'object' || value === null) return undefined;
+    const record = value as { status?: unknown; errors?: unknown };
+    if (typeof record.status === 'string') return record.status;
+    const reason = (Array.isArray(record.errors) ? record.errors[0] : undefined) as
+      | { reason?: unknown }
+      | undefined;
+    return typeof reason?.reason === 'string' ? reason.reason : undefined;
+  };
+  const rawPlatformError = platformErrorOf(data?.error) ?? platformErrorOf(response?.data?.error);
   const platformError = rawPlatformError === undefined ? undefined : scrub(rawPlatformError);
 
   return {
@@ -183,6 +199,18 @@ export function waitUnlessAborted(
     );
   });
 }
+
+/**
+ * The per-request ceiling every connector applies.
+ *
+ * HERE, not once per connector: the Slack client was given one in review round
+ * 1 and the Google client was still on the SDK default (none) in round 6 — the
+ * one-member-per-connector class this module exists for. `runSync` iterates a
+ * connector INSIDE an open `withTenant` transaction, so a hung request holds a
+ * pooled Postgres connection and an idle-in-transaction session for as long as
+ * it hangs, and the sync worker's `concurrency: 1` stalls every other tenant.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 export class ConnectorError extends Error {
   kind: ConnectorErrorKind;

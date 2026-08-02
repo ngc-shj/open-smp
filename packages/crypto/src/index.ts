@@ -16,22 +16,36 @@ export interface CredentialContext {
 export function parseEncryptionKeys(env: string): Map<number, Buffer> {
   const keys = new Map<number, Buffer>();
 
-  for (const entry of env.split(',')) {
+  // POSITION, NEVER CONTENT. These messages reach stderr on every boot path
+  // (apps/worker/src/main.ts, apps/api/src/main.ts, seed.ts, the rotation CLI),
+  // and stderr is what ships to the log aggregator. The two likeliest operator
+  // mistakes both make the offending text the KEY ITSELF: omitting the `1:`
+  // prefix leaves `trimmed` as the bare 44-character base64 AES-256 key, and
+  // transposing it to `<key>:1` leaves `versionText` as the key, since base64's
+  // alphabet contains no `:` to truncate on. Interpolating either published the
+  // master key of every tenant's credentials into a store with a wider read
+  // audience than the secret store, recoverable only by a full key rotation.
+  const entries = env.split(',');
+  for (const [index, entry] of entries.entries()) {
     const trimmed = entry.trim();
     if (trimmed === '') {
-      throw new Error(`Invalid ENCRYPTION_KEYS entry: empty segment`);
+      throw new Error(`Invalid ENCRYPTION_KEYS entry at index ${index}: empty segment`);
     }
 
     const separatorIndex = trimmed.indexOf(':');
     if (separatorIndex === -1) {
-      throw new Error(`Invalid ENCRYPTION_KEYS entry: "${trimmed}"`);
+      throw new Error(
+        `Invalid ENCRYPTION_KEYS entry at index ${index}: expected "version:base64key"`,
+      );
     }
 
     const versionText = trimmed.slice(0, separatorIndex);
     const base64Key = trimmed.slice(separatorIndex + 1);
 
     if (!/^\d+$/.test(versionText)) {
-      throw new Error(`Invalid ENCRYPTION_KEYS version: "${versionText}"`);
+      throw new Error(
+        `Invalid ENCRYPTION_KEYS entry at index ${index}: version is not a decimal integer`,
+      );
     }
     const version = Number.parseInt(versionText, 10);
 
@@ -118,7 +132,7 @@ export function decryptCredentials(
   decipher.setAAD(buildAad(ctx, keyVersion));
   decipher.setAuthTag(tag);
 
-  // The INTERMEDIATES are zeroed, not just the result.
+  // The INTERMEDIATES are zeroed, not just the result, and ON BOTH EXITS.
   //
   // `Buffer.concat([update(...), final(...)])` allocates a third buffer and
   // leaves the first two holding the complete plaintext — for AES-256-GCM
@@ -129,14 +143,60 @@ export function decryptCredentials(
   // `update` output was the ONLY surviving plaintext for every tenant's every
   // key.
   //
+  // THE THROW PATH. `final()` is where GCM verifies the tag, and it is the call
+  // that throws — on a tampered blob, on a retired key version, on any AAD
+  // mismatch. GCM decrypts in CTR mode BEFORE authenticating, so at that moment
+  // `head` holds the genuine plaintext, not garbage. The first version of this
+  // fix had no `try`, so the whole class stayed open on the error path: the
+  // rotation sweep catches per row and continues, leaving one uncleared
+  // credential per failed row resident for the life of the process.
+  //
   // Fixed at the primitive rather than at a fourth call site. There is exactly
-  // one `createDecipheriv` in this repository, so this is the whole class —
-  // which is what R42 clause ①b prescribes once a member set has grown by
-  // accretion twice.
-  const head = decipher.update(ciphertext);
-  const tail = decipher.final();
-  const plaintext = Buffer.concat([head, tail]);
-  head.fill(0);
-  tail.fill(0);
-  return plaintext;
+  // one `createDecipheriv` in this repository, so this closes the DECRYPT half
+  // of the class — which is what R42 clause ①b prescribes once a member set has
+  // grown by accretion twice. It is not the whole class: the encrypt-side input
+  // buffers at apps/api/src/routes/saas-apps.ts and the JS strings derived from
+  // the plaintext by sync.ts / token-audit.ts are separate members, handled
+  // where they are allocated and accepted respectively (C9's in-memory
+  // lifecycle note). `withDecryptedCredentials` below is what keeps the callers'
+  // half of the class at one member.
+  let head: Buffer | undefined;
+  let tail: Buffer | undefined;
+  try {
+    head = decipher.update(ciphertext);
+    tail = decipher.final();
+    return Buffer.concat([head, tail]);
+  } finally {
+    head?.fill(0);
+    tail?.fill(0);
+  }
+}
+
+/**
+ * Decrypts, hands the plaintext to `use`, and zeroes it however `use` ends.
+ *
+ * THE CALLERS' HALF OF THE CLASS, AT ONE MEMBER. Three worker call sites were
+ * each taught to zero the returned buffer, one per review round — sync.ts, then
+ * token-audit.ts, then rotate-credentials.ts — and each time the class was
+ * declared enumerated and was not. R42 clause ①b: after a member set has grown
+ * by accretion twice, stop appending sites and derive the control from the
+ * primitive. Every production decrypt goes through here, so the `finally` is
+ * written once and cannot be forgotten by a fourth caller.
+ *
+ * `packages/crypto/test/zeroization.test.ts` enumerates the class mechanically
+ * and reds if a production module calls `decryptCredentials` directly.
+ */
+export async function withDecryptedCredentials<T>(
+  blob: Uint8Array,
+  keyVersion: number,
+  ctx: CredentialContext,
+  keys: Map<number, Buffer>,
+  use: (plaintext: Uint8Array) => T | Promise<T>,
+): Promise<T> {
+  const plaintext = decryptCredentials(blob, keyVersion, ctx, keys);
+  try {
+    return await use(plaintext);
+  } finally {
+    plaintext.fill(0);
+  }
 }
