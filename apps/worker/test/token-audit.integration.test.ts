@@ -25,14 +25,18 @@ const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 function fakeConnector(
   listTokens?: (ctx: unknown, userKey: string) => Promise<readonly RawToken[]>,
+  // SC2/C4. The declaration and the method are the same claim, and a real
+  // connector is asserted to keep them agreeing (connector-registry.test.ts).
+  // A FAKE is the only thing that can be in the disagreeing states, which is
+  // why the override exists — without it the two operands of the audit's
+  // condition are perfectly correlated in every test and `||` could be `&&`
+  // with nothing noticing. Measured in review.
+  capabilityOverride?: SaaSConnector['tokenCapability'],
 ): SaaSConnector {
   return {
     id: 'google-workspace',
     authKind: 'oauth2',
-    // The declaration and the method are the same claim, so the fake keeps them
-    // agreeing: a fake that declared `per-user-grants` with no `listTokens`
-    // would exercise a state SC2/C4 asserts no real connector can be in.
-    tokenCapability: listTokens ? 'per-user-grants' : 'none',
+    tokenCapability: capabilityOverride ?? (listTokens ? 'per-user-grants' : 'none'),
     // Not reached: the audit reads saas_accounts, not the connector's user
     // stream. That is the property, so the fake makes a regression loud rather
     // than quietly re-fetching the domain on every audit.
@@ -263,5 +267,44 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     // Still recorded: "nobody has synced this application yet" is a fact an
     // operator needs, and an audit that logs nothing looks like one that never ran.
     expect((await eventsFor(tenantId))[0]!.kind).toBe('token_audit_completed');
+  });
+
+  it.each([
+    [
+      'declares per-user-grants and has no listTokens',
+      undefined,
+      'per-user-grants' as const,
+    ],
+    [
+      'declares none while carrying listTokens',
+      vi.fn(async () => []),
+      'none' as const,
+    ],
+  ])('records unsupported when a connector %s', async (_label, listTokens, capability) => {
+    // Neither state can arise from a real connector — connector-registry
+    // asserts that — which is exactly why only a fake can reach these arms.
+    // The first would be a TypeError inside the audit loop if the method check
+    // were dropped; the second is the declaration winning over a method that
+    // happens to exist, which is what makes the declaration load-bearing rather
+    // than decorative.
+    const saasAppId = await seedApp(tenantId, 2);
+
+    const result = await runTokenAudit(
+      {
+        pool,
+        connectorRegistry: registryFor(fakeConnector(listTokens, capability)),
+        encryptionKeys,
+        logger,
+      },
+      { tenantId, saasAppId },
+    );
+
+    expect(result).toMatchObject({ scanned: 0, applications: 0 });
+    if (listTokens) {
+      expect(listTokens, 'the declaration must win over a present method').not.toHaveBeenCalled();
+    }
+    const events = await eventsFor(tenantId);
+    expect(events[0]!.kind).toBe('token_audit_unsupported');
+    expect(events[0]!.payload.capability).toBe(capability);
   });
 });

@@ -52,7 +52,7 @@ assert_status 'shared.mailbox@demo.example' 'ambiguous'
 assert_status 'unknown.contractor@demo.example' 'orphan'
 assert_status 'chris.wong@demo.example' 'orphan'
 
-# Labels are checked on ALL FOUR seeded accounts, not just the orphan: a
+# Labels are checked on EVERY seeded account, not just the orphan: a
 # bulk-labeling spec touches several of them, and a teardown that misses one
 # leaves the shared stack poisoned for every later run — silently, if the gate
 # only ever inspected the orphan.

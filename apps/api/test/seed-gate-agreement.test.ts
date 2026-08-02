@@ -232,6 +232,38 @@ describe('C38 acceptance: the seed gate and the e2e fixture assert the same fact
     expect(parseGate(line)).toHaveLength(1);
   });
 
+  // The extractor SC2/C5 rewrote, given the paired self-tests its two siblings
+  // already had. Without them a reformat of seed-facts.ts that this regex stops
+  // matching surfaces only as "expected 10, got 8" — which names neither the
+  // entry nor the spelling that broke it, and is the reason those siblings
+  // exist (see the comment above them).
+  it.each([
+    ['a single-line entry', "  matched: { email: 'a@x', displayName: 'A', status: 'matched' },"],
+    ['a multi-line entry', "  matched: {\n    email: 'a@x',\n    displayName: 'A',\n    status: 'matched',\n  },"],
+    ['fields between email and status', "  m: { email: 'a@x', displayName: 'A', note: 'x', status: 'matched' },"],
+  ])('extracts %s', (_label, source) => {
+    expect(parseFixture(source)).toEqual([{ email: 'a@x', status: 'matched' }]);
+  });
+
+  it.each([
+    ['status before email', "  m: { status: 'matched', email: 'a@x' },"],
+    ['double-quoted values', '  m: { email: "a@x", status: "matched" },'],
+    ['an entry with no status at all', "  m: { email: 'a@x', displayName: 'A' },"],
+  ])('does not extract %s — a known miss, caught by the derived count', (_label, source) => {
+    // Every miss SHRINKS the extracted set, and the count assertion above is
+    // derived from that set — so an unmatched spelling reds rather than being
+    // silently exempt. Measured: a field reorder produces "expected 8, got 10".
+    expect(parseFixture(source)).toEqual([]);
+  });
+
+  it('does not pair one entry\'s email with the next entry\'s status', () => {
+    // `[^}]*` cannot cross a closing brace, which is what stops an entry
+    // missing a status from stealing the following entry's.
+    expect(
+      parseFixture("  a: { email: 'a@x' },\n  b: { email: 'b@x', status: 'orphan' },"),
+    ).toEqual([{ email: 'b@x', status: 'orphan' }]);
+  });
+
   it('does not mistake the function definitions for calls', () => {
     expect(parseGate('assert_status() {\nassert_label_null() {')).toEqual([]);
   });

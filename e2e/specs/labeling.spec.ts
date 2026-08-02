@@ -103,26 +103,26 @@ test.describe('labeling', () => {
     const noteInput = row.getByPlaceholder('Note (optional)');
     await expect(noteInput).toHaveValue('original note');
     await noteInput.fill('updated note');
-    await row.getByRole('button', { name: 'Save' }).click();
 
-    // NOT `expect('Known shared').toBeVisible()` here, which is what this line
-    // used to be: the kind did not change, so that chip was already on screen
-    // and the assertion passed without waiting for anything. The save fires a
-    // PUT and a router.refresh(), and reopening the editor seeds its state from
-    // whatever prop is rendered AT CLICK TIME — so the next step read the note
-    // from before the refresh landed, and no amount of retrying the value
-    // assertion helps, because the editor does not re-seed once open.
+    // Armed BEFORE the click, and it is the PUT itself — not a rendered
+    // consequence. The previous two attempts both waited for the "Known shared"
+    // chip, which the FIRST save had already put on screen: it was true before
+    // this save, after it, and against a stale server render, so it waited for
+    // nothing. Re-navigating narrowed the window and left the race; review
+    // measured that the replacement assertion was exactly as blind as the line
+    // it replaced.
     //
-    // Measured: this raced once in a full-suite run and passed alone. SC2/C5
-    // did not create it — a second orphan row made the refresh slower and the
-    // window wider, which is the thing that turns a latent race into a flake
-    // CI's single retry would then hide.
-    //
-    // A fresh navigation is what makes the read deterministic: the row comes
-    // from the server, not from a component that has already decided.
+    // LabelControl seeds its editor in openEditor() and nothing re-seeds it, so
+    // reopening before the write lands reads the old note and no retry can
+    // recover — which is why the wait has to be on the mutation.
+    const saved = page.waitForResponse(
+      (res) => /\/api\/accounts\/[^/]+\/label$/.test(new URL(res.url()).pathname) && res.request().method() === 'PUT',
+    );
+    await row.getByRole('button', { name: 'Save' }).click();
+    expect((await saved).ok()).toBe(true);
+
     const reloaded = await orphanRow(page);
     const reloadedButton = labelButton(reloaded);
-    await expect(reloadedButton).toHaveText('Known shared');
 
     await reloadedButton.click();
     await expect(reloaded.getByRole('combobox')).toHaveValue('known_shared');

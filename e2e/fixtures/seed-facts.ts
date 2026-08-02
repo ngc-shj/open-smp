@@ -59,7 +59,10 @@ export const SEEDED_DISCOVERED_UNSTATED_CLIENT_ID = 'unstated-client.example.com
 // SC2/C5. Accounts, a connector, and no contract — the third of SCL16's four
 // states, and the one the demo could not reach with a single synced app.
 export const SLACK_APP_KEY = 'slack';
-export const SLACK_APP_DISPLAY_NAME = 'Slack';
+// No SLACK_APP_DISPLAY_NAME here. Its Google twin exists because
+// seed-gate-agreement.test.ts compares it against the shell gate; a Slack copy
+// with no such comparison would be a second hand-synced literal with nothing
+// checking it — the exact class the C38 gate was written for.
 
 export const CONTRACT_ONLY_APP_KEY = 'notion';
 export const CONTRACT_ONLY_APP_DISPLAY_NAME = 'Notion';

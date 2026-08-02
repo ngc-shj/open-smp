@@ -44,7 +44,15 @@ export default async function DiscoveryPage() {
             data-testid={`unauditable-${app.auditedAppKey}`}
             className="mb-3 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-500"
           >
-            {t('discovery.unauditable', { app: app.auditedAppKey })}
+            {/* The capability decides the sentence. `workspace-apps` is a
+                provider that DOES report applications, without saying who
+                granted them — telling an operator it reports none would be
+                false, and collapsing the two is the flattening C4 exists to
+                stop. It is unimplemented today and the branch is what stops
+                the distinction from being decorative. */}
+            {app.capability === 'workspace-apps'
+              ? t('discovery.unauditable.workspaceApps', { app: app.auditedAppKey })
+              : t('discovery.unauditable.none', { app: app.auditedAppKey })}
           </p>
         ))}
 

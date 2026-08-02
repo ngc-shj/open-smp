@@ -256,5 +256,12 @@ describe('SlackConnector.listUsers', () => {
 
     expect('listTokens' in connector).toBe(false);
     expect(connector.authKind).toBe('apikey');
+    // PINNED, and not merely "not per-user-grants". `workspace-apps` is the
+    // shape Slack's admin.apps.approved.list actually has, and declaring it
+    // here would claim a capability these credentials cannot exercise — the
+    // overstated-control failure one level up from the one C4 replaces.
+    // Measured in review: without this line that mutation survived the whole
+    // tree, including the plan's own mutation table claiming it redded.
+    expect(connector.tokenCapability).toBe('none');
   });
 });

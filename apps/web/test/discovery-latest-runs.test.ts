@@ -74,38 +74,61 @@ describe('latestRuns picks what is true now', () => {
 });
 
 describe('SC2/C4: applications whose connector cannot be audited', () => {
-  it('reports one per application, newest first', () => {
+  it('reports the NEWEST unsupported event per application', () => {
+    // The payloads differ, so the assertion can see WHICH survived. They used
+    // to be identical apart from an id the result never carries — measured in
+    // review: deleting the per-application dedupe left every test green.
     const found = latestUnauditable([
-      event({ id: 'new', kind: 'token_audit_unsupported', payload: { auditedAppKey: 'slack', capability: 'none' } }),
-      event({ id: 'old', kind: 'token_audit_unsupported', payload: { auditedAppKey: 'slack', capability: 'none' } }),
+      event({ id: 'new', kind: 'token_audit_unsupported', createdAt: '2026-08-02T00:00:00.000Z', payload: { auditedAppKey: 'slack', capability: 'workspace-apps' } }),
+      event({ id: 'old', kind: 'token_audit_unsupported', createdAt: '2026-01-01T00:00:00.000Z', payload: { auditedAppKey: 'slack', capability: 'none' } }),
     ]);
 
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ auditedAppKey: 'slack', capability: 'none' });
+    expect(found[0]).toMatchObject({
+      auditedAppKey: 'slack',
+      capability: 'workspace-apps',
+      createdAt: '2026-08-02T00:00:00.000Z',
+    });
   });
 
   it('does not treat a failed audit as an unauditable connector', () => {
-    // The distinction the new event kind exists for. A run that could not
-    // authenticate is something to go and fix; a connector with no grant
-    // concept is a permanent property of the integration, and reporting the
-    // first as the second tells an operator to stop looking.
+    // A run that could not authenticate says nothing about the connector's
+    // capability. Reporting the first as the second tells an operator to stop
+    // looking at something they should go and fix.
     expect(latestUnauditable([event({ kind: 'token_audit_failed', payload: { auditedAppKey: 'gws' } })])).toEqual([]);
     expect(latestUnauditable([event({ kind: 'token_audit_completed', payload: { auditedAppKey: 'gws' } })])).toEqual([]);
   });
 
-  it('is disjoint from the completed runs the page renders beside it', () => {
-    // Both readers walk the same list. An application in both would be one that
-    // reported grants and then declared it could not — and the page would show
-    // a table and a "cannot be audited" line for the same key.
-    const items = [
-      event({ id: 'a', kind: 'token_audit_completed', payload: { auditedAppKey: 'gws', applications: [] } }),
-      event({ id: 'b', kind: 'token_audit_unsupported', payload: { auditedAppKey: 'slack', capability: 'none' } }),
+  it('is disjoint from the completed runs FOR THE SAME APPLICATION', () => {
+    // The version of this test that shipped used two different keys, so it
+    // could not fail for the reason it named — and `discovery_events` has
+    // UPDATE and DELETE REVOKEd, so an application that once reported
+    // `unsupported` and later completed a run would have satisfied both
+    // readers forever. One key, both kinds, both orders.
+    const completedNewer = [
+      event({ id: '1', kind: 'token_audit_completed', createdAt: '2026-08-02T00:00:00.000Z', payload: { auditedAppKey: 'slack', scanned: 3, applications: [] } }),
+      event({ id: '2', kind: 'token_audit_unsupported', createdAt: '2026-01-01T00:00:00.000Z', payload: { auditedAppKey: 'slack', capability: 'none' } }),
     ];
-    const runKeys = latestRuns(items).map((r) => r.auditedAppKey);
-    const unauditableKeys = latestUnauditable(items).map((u) => u.auditedAppKey);
+    expect(latestRuns(completedNewer).map((r) => r.auditedAppKey)).toEqual(['slack']);
+    expect(latestUnauditable(completedNewer)).toEqual([]);
 
-    expect(runKeys).toEqual(['gws']);
-    expect(unauditableKeys).toEqual(['slack']);
-    expect(runKeys.filter((k) => unauditableKeys.includes(k))).toEqual([]);
+    const unsupportedNewer = [
+      event({ id: '3', kind: 'token_audit_unsupported', createdAt: '2026-08-02T00:00:00.000Z', payload: { auditedAppKey: 'slack', capability: 'none' } }),
+      event({ id: '4', kind: 'token_audit_completed', createdAt: '2026-01-01T00:00:00.000Z', payload: { auditedAppKey: 'slack', scanned: 3, applications: [] } }),
+    ];
+    expect(latestRuns(unsupportedNewer)).toEqual([]);
+    expect(latestUnauditable(unsupportedNewer).map((u) => u.auditedAppKey)).toEqual(['slack']);
+  });
+
+  it('lets a completed run outlive a later FAILED one', () => {
+    // The property latestRuns had before C4 and must keep: a failed attempt
+    // does not erase a finding. Only `unsupported` supersedes, because only it
+    // is a statement about the connector.
+    const items = [
+      event({ id: '5', kind: 'token_audit_failed', createdAt: '2026-08-02T00:00:00.000Z', payload: { auditedAppKey: 'gws' } }),
+      event({ id: '6', kind: 'token_audit_completed', createdAt: '2026-01-01T00:00:00.000Z', payload: { auditedAppKey: 'gws', scanned: 7, applications: [] } }),
+    ];
+
+    expect(latestRuns(items)).toMatchObject([{ auditedAppKey: 'gws', scanned: 7 }]);
   });
 });

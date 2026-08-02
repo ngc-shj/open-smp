@@ -331,14 +331,6 @@ async function ensureSaasApp(
 }
 
 /**
- * The application the connectors do not sync (C6, FR1's demo case).
- *
- * No credentials, so `GET /licenses` reports `hasConnector: false`, and no
- * accounts, so it reports `matchState: 'no-accounts'` — the state a contract
- * uploaded for a tool nobody has connected produces, and the one the licences
- * screen would otherwise never show.
- */
-/**
  * The application with accounts and no contract (SC2/C5, SCL16).
  *
  * Credentials are seeded so `GET /licenses` reports `hasConnector: true` — the
@@ -359,14 +351,26 @@ async function ensureSlackApp(
        RETURNING id`,
       [tenantId, SLACK_APP_KEY, SLACK_APP_DISPLAY_NAME],
     );
-    const { rows } = await tx.query<{ id: string }>(
-      'SELECT id FROM saas_apps WHERE tenant_id = $1 AND key = $2',
-      [tenantId, SLACK_APP_KEY],
-    );
-    const saasAppId = inserted.rows[0]?.id ?? rows[0]?.id;
-    if (!saasAppId) {
-      throw new Error('seed: slack app neither inserted nor found');
+    const insertedId = inserted.rows[0]?.id;
+    if (!insertedId) {
+      // Already registered — and the credentials are LEFT ALONE, the same
+      // discipline ensureSaasApp holds by returning here. The seeder runs on
+      // every `docker compose up`, and PATCH /saas-apps accepts a credential
+      // update, so re-encrypting unconditionally would silently revert an
+      // operator's real bot token to the demo one on the next restart, with no
+      // gate observing it. Found in review; the peer's guard had not been
+      // propagated to this copy of it.
+      const { rows } = await tx.query<{ id: string }>(
+        'SELECT id FROM saas_apps WHERE tenant_id = $1 AND key = $2',
+        [tenantId, SLACK_APP_KEY],
+      );
+      const existingId = rows[0]?.id;
+      if (!existingId) {
+        throw new Error('seed: slack app neither inserted nor found');
+      }
+      return existingId;
     }
+    const saasAppId = insertedId;
 
     const { blob, keyVersion } = encryptCredentials(
       new TextEncoder().encode(JSON.stringify({ botToken: 'xoxb-demo-not-a-real-token' })),
@@ -382,6 +386,14 @@ async function ensureSlackApp(
   });
 }
 
+/**
+ * The application the connectors do not sync (C6, FR1's demo case).
+ *
+ * No credentials, so `GET /licenses` reports `hasConnector: false`, and no
+ * accounts, so it reports `matchState: 'no-accounts'` — the state a contract
+ * uploaded for a tool nobody has connected produces, and the one the licences
+ * screen would otherwise never show.
+ */
 async function ensureContractOnlyApp(
   pool: ReturnType<typeof createPool>,
   tenantId: string,
