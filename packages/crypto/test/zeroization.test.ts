@@ -177,7 +177,13 @@ describe('the credential-plaintext class has one member', () => {
   // derivation, run in CI rather than remembered: every production module that
   // decrypts a credential must go through `withDecryptedCredentials`, whose
   // `finally` cannot be forgotten. A fourth caller reaching for
-  // `decryptCredentials` directly reds this cell.
+  // `decryptCredentials` directly reds this cell — measured, not assumed.
+  //
+  // WHAT IT DOES NOT COVER, so it is not read as more than it is: a text scan
+  // sees the spelling, not the binding. `const d = decryptCredentials; d(...)`
+  // passes it, as would a dynamic import. That residue is stated rather than
+  // papered over; what it does close is the shape this class actually grew by,
+  // which was three straightforward direct calls added one per round.
   const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
   const PRODUCTION_ROOTS = ['apps/api/src', 'apps/web/src', 'apps/worker/src'];
 

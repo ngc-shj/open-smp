@@ -623,5 +623,43 @@ F4's "the API validates").
 
 ## Round 6 verification
 
-typecheck 0 / lint 0 / **855 tests passed** (613 unit, 242 integration; was
-603/235) / build 0.
+typecheck 0 / lint 0 / **863 tests passed** (622 unit, 241 integration; was
+603/235) / build 0 / **E2E 62 passed** / seed-preservation gate 0.
+
+### Round 6 mutations
+
+Seventeen run, **seventeen red, no survivors**. One probe initially reported a
+survivor and the probe was wrong, not the guard: the class-enumeration cell looks
+for a CALL and the mutation only rebound the name. Re-run with a real call, it
+reds.
+
+| mutation | result |
+|---|---|
+| the throw path stops zeroing the intermediates again | reds |
+| the helper stops zeroing the plaintext it lends | reds |
+| a fourth call site decrypts without the helper | reds |
+| platformError goes back to string-only | reds |
+| the Google client goes back to the SDK retry default | reds |
+| the Google client loses its request timeout | reds |
+| the run signal stops reaching the Google SDK | reds |
+| the retries-exhausted throw carries the raw provider error again | reds |
+| the Google backoff collapses to a hot loop | reds |
+| the private key is re-parsed per request again | reds |
+| the sync deadline is removed from the composite | reds |
+| the token-audit deadline collapses to the `??` form | reds |
+| the API stops refusing a blank required credential | reds |
+| the master key goes back into the ENCRYPTION_KEYS error | reds |
+| the rejector lookup resolves through Object.prototype again | reds |
+| `waitUnlessAborted` removes some other listener | reds |
+| `waitUnlessAborted` leaks the listener on the rejection path | reds |
+
+Writing the spec found three fixes with no observer at all — the round's own work
+exhibiting the defect the round reported five times elsewhere. Those observers
+were added before the run rather than after it.
+
+**R42 class `credential-plaintext`: member-set expanded 3x (sync.ts → token-audit.ts
+→ rotate-credentials.ts → the primitive) — closed by mutation-verified guard
+`packages/crypto/test/zeroization.test.ts` (red-proven: a production module
+calling `decryptCredentials` directly), wired into the `unit` project and listed
+in `CONTROL_FILES`.** Its limit is stated in the file: a text scan sees the
+spelling, not the binding.
