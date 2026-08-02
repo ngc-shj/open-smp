@@ -897,3 +897,214 @@ unchanged on `main`, outside this branch's diff, and is a development-stack
 default rather than something this branch introduced — but any deployment that
 inherits that compose value has every tenant's credentials decryptable from a
 public repository. Raised for an operator decision rather than changed here.
+
+---
+
+# Round 8 — Critical 0 / Major 7 / Minor 12
+
+Date: 2026-08-03. Reviewed: `git diff 6a96d13..HEAD` (the Round 7 fixes) as the
+primary diff and `git diff main...HEAD` as the secondary.
+
+**The first round since Round 1 with no Critical.**
+
+## Changes from Previous Round
+
+Round 7 fixed the Critical Round 6 introduced, closed the encrypt half at the
+primitive, and hardened the class-enumeration guard. Round 8 found that the
+guard's new "structural" exemption excused exactly the three files the class had
+grown in, that the token-exchange bound Round 7 added did not include the retry
+loop its own comment said was absent, and that two controls were tested at the
+helper rather than at the call site — the same sampling error Round 7 had just
+fixed elsewhere.
+
+## Convergence
+
+| Issue | Experts | Floor |
+|---|---|---|
+| The class-enumeration exemption is whole-file and applies to both patterns | Security S1, Functionality F7, Testing T5 | **Major** (3-way) |
+| The derived root walk is seeded from two literals, not from the workspace file | Security S3, Testing T6 | Minor |
+| `isTransportError`'s closure claim is false for `WebAPIRateLimitedError` | Security S4, Testing T12 | Minor |
+| `SaasAppForm`'s comment cites a rationale the same commit deleted | Functionality F4, Testing T11 | Minor |
+
+## A false positive, recorded because its cause is real
+
+Functionality **F1** reported an uncommitted `decryptCredentials` probe in
+`apps/api/src/routes/saas-apps.ts` and concluded Round 7's verification numbers
+did not describe the tree. **They did.** The probe belonged to the Security
+expert, which injected it to measure S1 and restored it; the three experts ran
+CONCURRENTLY, and the Functionality expert observed the other's edit in flight.
+`git status` was clean at HEAD `9ed42ae` and the route contained no such call.
+
+The finding is void; its cause is not. Running tree-mutating verifiers in
+parallel against one worktree makes every one of them an unreliable observer of
+the others. Future rounds either run such agents serially or give each an
+isolated worktree.
+
+## Functionality Findings
+
+- **F2 [Major]** — Round 7's `transporterOptions` comment claimed the token
+  exchange had "no timeout, no signal and no retry" and supplied only the
+  timeout. `gtoken` passes its own `retryConfig: { httpMethodsToRetry: ['POST'] }`
+  and gaxios arms its interceptor on that object's mere presence: `retry`
+  defaults to 3, `noResponseRetries` to 2, each attempt re-arming a fresh
+  30-second deadline. ~93 s per exchange, multiplied by `MAX_ATTEMPTS` by the
+  transport arm added in the same round — ~7.7 minutes inside `runSync`'s open
+  transaction, where before Round 7 the same failure threw on attempt 1.
+- **F3 [Major]** — domain-wide delegation that was never granted, and a
+  non-existent impersonated subject, are returned by the token endpoint as
+  **HTTP 400** with `unauthorized_client` / `invalid_grant`; RFC 6749 §5.2
+  reserves 401 for `invalid_client`. A 400 missed the auth arm, was not 429 or
+  5xx, and came out `transient`. `token-audit.ts` short-circuits only on `auth`
+  or `fatal`, so it repeated the same doomed exchange for up to
+  `TOKEN_AUDIT_MAX_ACCOUNTS` accounts and wrote `token_audit_completed` with zero
+  grants — a silent false negative on SC3/C1's headline output.
+- **F5 [Minor]** — `encryptCredentialRecord(value: unknown, …)`:
+  `JSON.stringify(undefined)` is `undefined` and `TextEncoder#encode()` defaults
+  to `''`, so the widened parameter would encrypt and persist a zero-length
+  plaintext with a valid tag, failing much later as a `JSON.parse('')` in the
+  worker.
+- **F6 [Minor, R29]** — the regex verifies character-for-character against the
+  HTML Living Standard, but the comment calls it an "ABNF"; the standard
+  publishes it as a regular expression and a willful violation of RFC 5322.
+
+## Security Findings
+
+- **S1 [Major]** — the exemption `!/\bwithDecryptedCredentials\s*\(/.test(source)`
+  is evaluated over the whole FILE and applied to BOTH patterns. The three
+  modules containing that spelling are `sync.ts`, `token-audit.ts` and
+  `rotate-credentials.ts` — the three sites this class grew by, one per round,
+  and the three whose own `.fill(0)` lines Round 6 deleted in reliance on this
+  guard. Measured: a direct `decryptCredentials` call added to `sync.ts` left the
+  cell green; the same edit in a non-exempt file reddened it.
+- **S2 [Minor]** — `createCipheriv` had no cardinality assertion, in the commit
+  that moved the encrypt half into the crypto package (R3 inside one commit).
+- **S5 [Minor, R43]** — the transport arm accepted **any** string `code`, which
+  admits Node's own: a truncated PEM throws `ERR_OSSL_UNSUPPORTED`, a permanent
+  credential fault, retried five times with cumulative backoff inside the open
+  transaction and reported as `transient`.
+- **S6 [Minor]** — the two `JSON.parse` calls whose input is the DECRYPTED
+  credential were unguarded, and V8's `SyntaxError` quotes a window of its input
+  into `discovery_events`. No producer writes non-JSON today; the finding is that
+  the round enumerated this class and stopped at three of five sites, leaving
+  exactly the two whose input is the secret.
+
+## Testing Findings
+
+- **T1 [Major]** — the token-exchange cell drove `listUsers` only, so the tokens
+  client's `transporterOptions` had no observer (RT7 shape (g): N parallel arms
+  need N mutations). The Round 7 mutation spec had the same blind spot.
+- **T2 [Major]** — `credentialFieldsFor` was tested at the HELPER; nothing
+  observed that `SaasAppManager` calls it. Reverting the component alone left all
+  910 tests green — the sampled-the-helper-not-the-site trap Round 7 fixed for
+  `missingRequiredCredentials` and reintroduced here in the same commit.
+- **T3 [Major]** — the WHATWG allow table could not pin the standard. Measured
+  twice: narrowing the local-part class (which rejects `first_last@corp.example`)
+  and requiring a dot in the domain BOTH left 660 tests green.
+- **T4 [Major]** — `required` → `aria-required` is a behaviour change with no
+  observer at any tier.
+- **T7-T10, T12 [Minor]** — the token-audit deadline cell lacked the
+  discriminator its sync twin gained in the same commit; two global-prototype
+  spies restored in bodies in the round that moved a third into hooks; two deny
+  rows named for the tightening pass under the predicate it replaced; the
+  encrypt-half cell asserts over every `TextEncoder` encode in its block rather
+  than the buffer it names.
+
+## From an external security review, verified independently
+
+- **`GET /api/jobs/:jobId` does not check tenant ownership** — confirmed. The
+  handler never compares `jobId` against `req.sessionContext.tenantId`, and
+  `getJob` discards `job.data.tenantId`. **Out of this branch's diff**
+  (`apps/api/src/routes/sync-match.ts` and `apps/api/src/main.ts` are unchanged
+  from `main`), so it is recorded here for a separate contract rather than fixed.
+  One correction to the report: job ids are `${QUEUE}:${tenantId}:${saasAppId}`,
+  so the attack needs another tenant's UUID from elsewhere — which is not an
+  authorization control, but does bound the exposure.
+- **`pnpm audit --prod`: 5 high / 1 moderate** — confirmed, and out of branch.
+  Reachability is narrower than the scanner's rating: `postcss` is `next`'s
+  build-time dependency and `brace-expansion` arrives via
+  `googleapis>…>rimraf>glob`, off the runtime path. `drizzle-orm` is the only
+  direct production dependency among them.
+- **`parseEncryptionKeys` accepts ambiguous input** — partially confirmed and
+  **fixed here**, because it is in a file this branch changed. A repeated version
+  silently won via `Map.set`, so `ENCRYPTION_KEYS=1:<a>,1:<b>` booted cleanly
+  under `<b>` while every credential sealed under `<a>` failed its GCM tag on the
+  next read. The base64 half is largely covered by the existing 32-byte length
+  check (a malformed string decodes short and is refused); what remains is a
+  non-canonical encoding that still decodes to exactly 32 bytes, which is not
+  fixed and is noted here.
+
+## Resolution Status — Round 8
+
+### S1 / F7 / T5 [Major, 3-way] — the exemption excused the class
+- Action: the exemption is **per half**. The decrypt half takes none — nothing
+  legitimate calls `decryptCredentials` outside the crypto package. The encrypt
+  half keeps one, for the rotation sweep's re-encrypt shape, and what it still
+  cannot see (a second, unrelated `encryptCredentials(` in a lending module) is
+  stated next to it rather than claimed away.
+- Red-proven before and after: the same probe that left the cell green under
+  Round 7's form now reds.
+
+### F2, F3, S5 [Major/Minor] — three predicates that admitted the wrong class
+- `transporterOptions` carries `retryConfig: { retry: 0, noResponseRetries: 0 }`
+  on both clients; the comment says what is bound rather than what is absent.
+- The auth arm classifies on the normalised `platformError` against
+  `OAUTH_AUTH_ERRORS` (RFC 6749 §5.2's registry, restricted to what a
+  service-account assertion can produce), with an allow case proving an ordinary
+  400 stays `transient`.
+- `TRANSPORT_CODE` enumerates the class — libuv/DNS codes and the two SDK
+  spellings. Small and stable, unlike a vendor's token format, so the R47
+  objection `rejectBotToken` raises does not transfer.
+
+### T1, T2, T3, T4 [Major] — four controls observed somewhere other than where they act
+- The token-exchange cell is parameterised over both clients and asserts `retry`
+  as well as `timeout`.
+- A source scan over **every component** asserts none indexes a tenant-keyed
+  record directly — which immediately found the register form doing the same
+  thing. That site is type-safe, but it was routed through the accessor rather
+  than exempted, so the rule stays flat and the next component is covered.
+- The email allow table pins one class of the production per row.
+- `aria-required` is asserted; the `required` removal is covered by the
+  classifier cells that now own blankness on both surfaces.
+
+### S2, S3/T6, S4/T12, S6, F4/T11, F5, F6, T7-T10 [Minor] — applied
+- `createCipheriv` gained the cardinality cell; the scan's top-level roots are
+  read from `pnpm-workspace.yaml`; the `isTransportError` docstring states that
+  callers must decide rate-limit first and why; `parseCredentialRecord` guards
+  both worker parses; the stale `SaasAppForm` rationale is corrected;
+  `encryptCredentialRecord` takes `Record<string, string>`; the citation says
+  "regular expression" and names the willful violation; the token-audit cell
+  gained its twin's discriminator; `vi.restoreAllMocks()` in `afterEach` for both
+  global-prototype spies; the two pre-existing deny rows moved to a cell named
+  for what they pin; the encrypt-half cell asserts `captured[0]`.
+
+## Round 8 mutations
+
+Fifteen run, **fifteen red, no survivors**.
+
+| mutation | result |
+|---|---|
+| a lending module decrypts directly | reds |
+| the encrypt primitive gains a second call site | reds |
+| the scan roots stop being read from the workspace manifest | reds |
+| the users client loses its token-exchange retry disable | reds |
+| the TOKENS client loses its token-exchange ceiling | reds |
+| a delegation failure is transient again | reds |
+| the auth arm widens to every 400 | reds |
+| the transport class goes back to any string code | reds |
+| the transport class loses its DNS codes | reds |
+| a component indexes the credential record directly again | reds |
+| the email predicate narrows its local-part class | reds |
+| the email predicate requires a dotted domain | reds |
+| a repeated encryption key version wins silently again | reds |
+| the encrypt-side plaintext is left unzeroed again | reds |
+| the token-audit deadline is constructed and then discarded | reds |
+
+A sixteenth was written and removed rather than declared: mutating the exemption
+predicate itself cannot red, because weakening a guard is unobservable unless a
+violating input exists at the same time and the harness mutates one file per
+entry. The proof is the first entry, measured on both sides of the fix.
+
+## Round 8 verification
+
+typecheck 0 / lint 0 / **926 tests passed** (699 unit, 227 integration) / build 0
+/ **E2E 62 passed** / seed-preservation gate 0 / **15/15 mutations red**.
