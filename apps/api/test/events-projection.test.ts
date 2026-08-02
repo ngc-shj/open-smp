@@ -247,6 +247,8 @@ describe('SC3 acceptance: the token-audit projection serves what a run observed'
 });
 
 describe('SC2/C4: the capability a connector reported', () => {
+  const RUN = '66666666-6666-6666-6666-666666666666';
+
   it.each(['per-user-grants', 'workspace-apps', 'none'])('serves the vocabulary member %s', (capability) => {
     expect(projectTokenAuditPayload({ runId: RUN, auditedAppKey: 'slack', capability })).toMatchObject({
       capability,
