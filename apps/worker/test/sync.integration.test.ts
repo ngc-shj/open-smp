@@ -37,7 +37,11 @@ class FakeConnector implements SaaSConnector {
   authKind: SaaSConnector['authKind'] = 'apikey';
   tokenCapability: SaaSConnector['tokenCapability'] = 'none';
 
+  /** The signal of the most recent run, so a test can see WHICH signal arrived. */
+  static lastSignal: AbortSignal | undefined;
+
   async *listUsers(ctx: ConnectorContext): AsyncIterable<RawAccount> {
+    FakeConnector.lastSignal = ctx.signal;
     // The signal IS observed, like both real connectors observe it. A fake that
     // ignored it made the deadline unobservable at this tier — reverting
     // runSync to a never-aborting controller left this suite green, which is
@@ -277,8 +281,16 @@ describe('C5 runSync acceptance', () => {
     );
 
     // The run completes — a never-aborting signal must not break it — and the
-    // composite it ran under is not the one that was passed in.
+    // signal the connector SAW is not the one that was passed in. That is the
+    // whole difference between `AbortSignal.any([deps.signal, deadline])` and
+    // `deps.signal ?? deadline`: both satisfy "the run finished" and "the
+    // caller's controller never aborted", and only this distinguishes them.
+    // Measured — the `??` form left the previous version of this cell green.
     expect(result.upserted).toBeGreaterThan(0);
     expect(never.aborted).toBe(false);
+    expect(FakeConnector.lastSignal, 'the connector ran under the caller-supplied signal alone').not.toBe(
+      never,
+    );
+    expect(FakeConnector.lastSignal, 'the connector saw no signal at all').toBeDefined();
   });
 });

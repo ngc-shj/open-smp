@@ -118,5 +118,25 @@ export function decryptCredentials(
   decipher.setAAD(buildAad(ctx, keyVersion));
   decipher.setAuthTag(tag);
 
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  // The INTERMEDIATES are zeroed, not just the result.
+  //
+  // `Buffer.concat([update(...), final(...)])` allocates a third buffer and
+  // leaves the first two holding the complete plaintext — for AES-256-GCM
+  // `update` returns all of it and `final` returns nothing. Three call sites
+  // were fixed one at a time across three review rounds to zero the buffer this
+  // function returns, and every one of them was defeated here: the sweep in
+  // rotate-credentials never stringifies a credential, so after its own fix the
+  // `update` output was the ONLY surviving plaintext for every tenant's every
+  // key.
+  //
+  // Fixed at the primitive rather than at a fourth call site. There is exactly
+  // one `createDecipheriv` in this repository, so this is the whole class —
+  // which is what R42 clause ①b prescribes once a member set has grown by
+  // accretion twice.
+  const head = decipher.update(ciphertext);
+  const tail = decipher.final();
+  const plaintext = Buffer.concat([head, tail]);
+  head.fill(0);
+  tail.fill(0);
+  return plaintext;
 }

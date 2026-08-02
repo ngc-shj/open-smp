@@ -9,11 +9,23 @@ import { ConnectorError, diagnose, waitUnlessAborted } from '../src/index.js';
 const TOKEN = 'xoxb-0000-secret-value';
 
 describe('diagnose', () => {
-  it('removes the secret from the message and the name', () => {
-    const out = diagnose(Object.assign(new Error(`Bearer ${TOKEN} rejected`), { name: TOKEN }), TOKEN);
+  it('removes the secret from every string it keeps', () => {
+    // All four, not only message and name: `platformError` and `code` are
+    // provider-controlled paths too, and each scrub shipped without a case that
+    // could see it removed.
+    const out = diagnose(
+      Object.assign(new Error(`Bearer ${TOKEN} rejected`), {
+        name: TOKEN,
+        code: `code_${TOKEN}`,
+        data: { error: `fail ${TOKEN}` },
+      }),
+      TOKEN,
+    );
 
     expect(JSON.stringify(out)).not.toContain(TOKEN);
-    expect(out.message).toContain('[redacted]');
+    for (const field of ['message', 'name', 'code', 'platformError'] as const) {
+      expect(String(out[field]), field).toContain('[redacted]');
+    }
   });
 
   it('leaves the message alone when there is no secret to remove', () => {
@@ -106,16 +118,16 @@ describe('waitUnlessAborted', () => {
     // Without this the listener and its closure stay on a signal that lives for
     // the whole run — up to 1000 accounts x 4 retries on one audit signal.
     const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
     const sleep = vi.fn(async () => {});
 
     for (let i = 0; i < 5; i += 1) {
       await waitUnlessAborted(1, controller.signal, sleep, stop);
     }
 
-    // Node exposes the count only through the internal listener list, so the
-    // observable is that aborting afterwards settles nothing that is pending.
-    expect(controller.signal.aborted).toBe(false);
-    controller.abort();
+    // Spied, because every assertion the first version made was true by
+    // construction — nothing aborted the controller, so it observed nothing.
+    expect(remove, 'the listener is not removed when a wait completes').toHaveBeenCalledTimes(5);
     expect(sleep).toHaveBeenCalledTimes(5);
   });
 

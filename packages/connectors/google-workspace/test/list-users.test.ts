@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ConnectorError,
-  diagnose,
   type ConnectorContext,
   type RawAccount,
 } from '@open-smp/connectors-core';
@@ -220,19 +219,29 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(usersList).toHaveBeenCalledTimes(1);
   });
 
-  it('carries the provider status into the diagnosis', () => {
-    // googleapis puts the status in a NUMERIC `code`, which the shared
-    // diagnose did not read — so every Google cause came out
-    // `{statusCode: undefined}`, the exact shape widening it was meant to fix.
-    // Asserted here because this is the only place that shape is produced.
-    const connector = new GoogleWorkspaceConnector({
-      serviceAccountJson: '{}',
-      impersonateAdminEmail: 'admin@corp.example',
+  it('carries the provider status into the diagnosis', async () => {
+    // Driven THROUGH the connector. The first version hand-built the error and
+    // called `diagnose` directly, discarding the connector it constructed — so
+    // it duplicated the core suite's fixture and could not see the path its own
+    // caption named. googleapis puts the status in a numeric `code`, which the
+    // shared projection did not read until review measured it.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Forbidden'), { code: 403 });
     });
-    void connector;
 
-    expect(diagnose(Object.assign(new Error('Forbidden'), { code: 403 }), 'x')).toMatchObject({
-      statusCode: 403,
-    });
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep: async () => {} },
+    );
+
+    let caught: unknown;
+    try {
+      await collect(connector.listUsers(makeContext()));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ kind: 'auth' });
+    expect((caught as Error).cause).toMatchObject({ statusCode: 403 });
   });
 });

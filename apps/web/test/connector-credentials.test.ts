@@ -159,11 +159,32 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     // connector whose rejector skipped one would store an unusable credential
     // whose failure reaches the operator as an audit row — so the property is
     // asserted here rather than duplicated as a UI check that never fires.
+    // Every non-target field carries a value ITS OWN rejector accepts. Filling
+    // them all with `'placeholder'` made this pass for the wrong reason:
+    // `'placeholder'` is unparseable JSON, so the service-account arm
+    // short-circuited and the email arm was never reached — measured, a
+    // rejector that stopped refusing a blank email left this green.
+    const ACCEPTABLE: Record<string, string> = {
+      serviceAccountJson: VALID_SA,
+      impersonateAdminEmail: 'admin@corp.example',
+      customerId: 'C0123',
+      botToken: 'xoxb-123-abc',
+    };
+
     for (const field of CREDENTIAL_FIELDS[key].filter((f) => f.required)) {
       const values = Object.fromEntries(
-        CREDENTIAL_FIELDS[key].map((f) => [f.name, f.name === field.name ? '' : 'placeholder']),
+        CREDENTIAL_FIELDS[key].map((f) => [
+          f.name,
+          f.name === field.name ? '' : (ACCEPTABLE[f.name] ?? ''),
+        ]),
       );
 
+      // Non-vacuity: with NOTHING blank the same values must be accepted, or
+      // the rejection below could be coming from any of them.
+      expect(
+        rejectCredentials(key, Object.fromEntries(CREDENTIAL_FIELDS[key].map((f) => [f.name, ACCEPTABLE[f.name] ?? '']))),
+        `${key}: the acceptable filler is not actually accepted`,
+      ).toBeNull();
       expect(rejectCredentials(key, values), `${key}.${field.name} blank`).not.toBeNull();
     }
   });

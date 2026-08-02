@@ -133,7 +133,9 @@ export function diagnose(error: unknown, secret: string): Record<string, unknown
   return {
     name: typeof source.name === 'string' ? scrub(source.name) : undefined,
     message: typeof source.message === 'string' ? scrub(source.message) : undefined,
-    code: typeof source.code === 'string' ? source.code : undefined,
+    // Scrubbed like every other string here: it is a provider-controlled path,
+    // which is the same reason `platformError` is.
+    code: typeof source.code === 'string' ? scrub(source.code) : undefined,
     statusCode: status,
     platformError,
     retryAfter: typeof source.retryAfter === 'number' ? source.retryAfter : undefined,
