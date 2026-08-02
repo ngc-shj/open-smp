@@ -7,7 +7,7 @@
 // ghost in the resulting accounts list) before exiting 0.
 import argon2 from 'argon2';
 import { createPool, withTenant } from '@open-smp/schema';
-import { encryptCredentials, parseEncryptionKeys } from '@open-smp/crypto';
+import { encryptCredentialRecord, parseEncryptionKeys } from '@open-smp/crypto';
 import { defaultRules, matchAccounts, type AccountView, type IdentityView } from '@open-smp/matcher';
 import { z } from 'zod';
 import { TOKEN_AUDIT_EVENT_SOURCE } from '@open-smp/api-types';
@@ -315,9 +315,8 @@ async function ensureSaasApp(
       throw new Error('seed: saas_apps insert returned no row');
     }
 
-    const plaintext = new TextEncoder().encode(JSON.stringify(FAKE_SERVICE_ACCOUNT_CREDENTIALS));
-    const { blob, keyVersion } = encryptCredentials(
-      plaintext,
+    const { blob, keyVersion } = encryptCredentialRecord(
+      FAKE_SERVICE_ACCOUNT_CREDENTIALS,
       { tenantId, saasAppId },
       encryptionKeys,
     );
@@ -372,8 +371,8 @@ async function ensureSlackApp(
     }
     const saasAppId = insertedId;
 
-    const { blob, keyVersion } = encryptCredentials(
-      new TextEncoder().encode(JSON.stringify({ botToken: 'xoxb-demo-not-a-real-token' })),
+    const { blob, keyVersion } = encryptCredentialRecord(
+      { botToken: 'xoxb-demo-not-a-real-token' },
       { tenantId, saasAppId },
       encryptionKeys,
     );

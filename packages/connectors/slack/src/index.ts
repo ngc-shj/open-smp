@@ -4,6 +4,7 @@ import {
   ConnectorError,
   REQUEST_TIMEOUT_MS,
   diagnose,
+  isTransportError,
   waitUnlessAborted,
   type ConnectorContext,
   type RawAccount,
@@ -30,16 +31,6 @@ const PAGE_SIZE = 200;
 const MAX_ATTEMPTS = 5;
 
 /**
- * One request's ceiling, in milliseconds.
- *
- * `@slack/web-api` defaults `timeout` to 0, which applies NO `AbortSignal` at
- * all — a single request can hang forever. That matters more here than in most
- * clients because `runSync` iterates this connector INSIDE an open `withTenant`
- * transaction, so a hung request holds a pooled Postgres connection and an
- * idle-in-transaction session for as long as it hangs.
- */
-
-/**
  * The longest a provider-mandated wait may hold this run.
  *
  * `Retry-After` comes off a response header with no upper bound, and honouring
@@ -50,28 +41,6 @@ const MAX_ATTEMPTS = 5;
  * which turns the same header into a hot loop — the clamp closes both.
  */
 const MAX_RETRY_AFTER_MS = 60_000;
-
-/**
- * Errors the SDK used to retry and the connector did not classify.
- *
- * Setting `retries: 0` moved that responsibility here, and the first version of
- * that fix left `WebAPIRequestError` — every socket failure, and every one of
- * the new 30-second timeouts — retried by NOTHING: not the SDK, not `withRetry`
- * (no `statusCode`, no `data.error`), and not BullMQ, whose sync job is
- * configured `attempts: 1`. A single slow response became a terminal sync
- * failure. Found in review.
- */
-const REQUEST_ERROR_CODES: ReadonlySet<string> = new Set(['slack_webapi_request_error']);
-
-function isTransportError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const code = (error as { code?: unknown }).code;
-  const name = (error as { name?: unknown }).name;
-  if (typeof code === 'string' && REQUEST_ERROR_CODES.has(code) && statusOf(error) === undefined) {
-    return platformErrorCode(error) === undefined;
-  }
-  return name === 'AbortError' || name === 'TimeoutError';
-}
 
 /**
  * Derived from the response type rather than imported: `@slack/web-api` exports

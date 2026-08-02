@@ -3,6 +3,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Pool } from 'pg';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -150,12 +151,28 @@ afterAll(async () => {
   await container?.stop();
 }, 60_000);
 
+// The real constructor, captured before any spy replaces it.
+const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+let timeoutSpy: MockInstance<(milliseconds: number) => AbortSignal>;
+
 beforeEach(async () => {
+  // In a hook, not in a test body. The sync sibling was refactored to this shape
+  // in the same commit that left this file's spy inline, and two cells sharing
+  // an inline spy is precisely what that refactor's comment warns about.
+  // Passthrough by default, so one cell can assert the deadline was composed and
+  // another can make it fire.
+  timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => realTimeout(ms));
+
   const { rows } = await pool.query<{ id: string }>(
     'INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id',
     [`tenant-${randomUUID()}`, 'Token Audit'],
   );
   tenantId = rows[0]!.id;
+});
+
+afterEach(() => {
+  timeoutSpy.mockRestore();
 });
 
 describe('SC3/C2: the audit reads what sync already inventoried', () => {
@@ -353,21 +370,45 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     // deadline entirely (R43) — stayed green here. This is the longer-running of
     // the two jobs (20 minutes against 10) and it holds the same open
     // transaction.
-    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
-    const timeoutSpy: MockInstance<(milliseconds: number) => AbortSignal> = vi
-      .spyOn(AbortSignal, 'timeout')
-      .mockImplementation((ms) => realTimeout(ms));
+    const saasAppId = await seedApp(tenantId, 1);
+    const never = new AbortController().signal;
+    let seen: AbortSignal | undefined;
+    const listTokens = vi.fn(async (ctx: unknown) => {
+      seen = (ctx as ConnectorContext).signal;
+      return [] as RawToken[];
+    });
 
-    try {
-      const saasAppId = await seedApp(tenantId, 1);
-      const never = new AbortController().signal;
-      let seen: AbortSignal | undefined;
-      const listTokens = vi.fn(async (ctx: unknown) => {
-        seen = (ctx as ConnectorContext).signal;
-        return [] as RawToken[];
-      });
+    await runTokenAudit(
+      {
+        pool,
+        connectorRegistry: registryFor(fakeConnector(listTokens)),
+        encryptionKeys,
+        logger,
+        signal: never,
+      },
+      { tenantId, saasAppId },
+    );
 
-      await runTokenAudit(
+    expect(listTokens).toHaveBeenCalled();
+    expect(never.aborted).toBe(false);
+    expect(seen, 'the connector ran under the caller-supplied signal alone').not.toBe(never);
+    expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
+      TOKEN_AUDIT_DEADLINE_MS,
+    );
+  });
+
+  it('bounds the run by its own deadline even when the caller never aborts', async () => {
+    // Presence is not power. Asserting only that the deadline was CONSTRUCTED
+    // left a mutation green that builds it — so the spy still records the
+    // constant — and then composes a different signal instead. The sync sibling
+    // has had this second direction since round 6; this path had only the first.
+    const saasAppId = await seedApp(tenantId, 1);
+    const never = new AbortController().signal;
+    const listTokens = vi.fn(async () => [] as RawToken[]);
+    timeoutSpy.mockReturnValue(AbortSignal.abort());
+
+    await expect(
+      runTokenAudit(
         {
           pool,
           connectorRegistry: registryFor(fakeConnector(listTokens)),
@@ -376,19 +417,14 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
           signal: never,
         },
         { tenantId, saasAppId },
-      );
+      ),
+    ).rejects.toThrow(/aborted/);
 
-      expect(listTokens).toHaveBeenCalled();
-      expect(never.aborted).toBe(false);
-      // Not the caller's signal, and the deadline really was composed in — the
-      // second assertion is what `AbortSignal.any([deps.signal])` fails.
-      expect(seen, 'the connector ran under the caller-supplied signal alone').not.toBe(never);
-      expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
-        TOKEN_AUDIT_DEADLINE_MS,
-      );
-    } finally {
-      timeoutSpy.mockRestore();
-    }
+    expect(
+      listTokens,
+      'the audit asked the provider after the run was over',
+    ).not.toHaveBeenCalled();
+    expect(never.aborted, "the run aborted the caller's signal instead of its own").toBe(false);
   });
 
   it('stops when the run deadline has passed', async () => {

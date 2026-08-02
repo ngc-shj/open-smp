@@ -3,6 +3,7 @@ import {
   ConnectorError,
   REQUEST_TIMEOUT_MS,
   diagnose,
+  isTransportError,
   waitUnlessAborted,
   type ConnectorContext,
   type RawAccount,
@@ -66,6 +67,29 @@ export interface GoogleWorkspaceConnectorConfig {
   serviceAccountJson: string;
   impersonateAdminEmail: string;
   customerId?: string;
+}
+
+/**
+ * The service-account document, or a fixed-string failure.
+ *
+ * `JSON.parse`'s own message embeds the first ten characters of its input
+ * ("Unexpected token 'M', \"MIIEvQIBAD\"... is not valid JSON"), and these two
+ * parses run OUTSIDE `withRetry` — so a `SyntaxError` never reaches `diagnose`
+ * and is never scrubbed. `runSync` writes `error.message` verbatim into
+ * `discovery_events`, whose UPDATE and DELETE are REVOKEd: unredactable, and the
+ * same sink `buildSlackConnector` refuses to echo input into. Round 6 guarded
+ * the third parse, inside `privateKey()`, and left these two (R3).
+ */
+function parseServiceAccount(raw: string): { client_email: string; private_key: string } {
+  try {
+    return JSON.parse(raw) as { client_email: string; private_key: string };
+  } catch {
+    throw new ConnectorError(
+      'fatal',
+      false,
+      'google-workspace serviceAccountJson is not valid JSON',
+    );
+  }
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -189,7 +213,24 @@ async function withRetry<T>(
         });
       }
 
-      const isRetryableStatus = status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
+      // The transport arm, which this connector did not have when review round 6
+      // turned the SDK's own retries off and added a request timeout. gaxios
+      // sets `status` only when there IS a response, and copies a string `code`
+      // from the cause (`ECONNRESET`) or the DOMException name (`TimeoutError`)
+      // when there is not — so `statusOf` returns undefined for every socket
+      // failure and for every one of the new 30-second timeouts, and the line
+      // below threw `failed after retries` on attempt 1 with zero retries taken.
+      // Nothing downstream recovers it: the sync job runs `attempts: 1`. This is
+      // verbatim the defect the Slack connector paid for in round 2, which is
+      // why the predicate now lives in connectors-core rather than here.
+      //
+      // An abort from `ctx.signal` reaches this arm too and is retried once —
+      // then `waitUnlessAborted` rejects immediately, so the run ends without
+      // issuing another request.
+      const isRetryableStatus =
+        status === 429 ||
+        (typeof status === 'number' && status >= 500 && status < 600) ||
+        isTransportError(error);
       if (!isRetryableStatus || attempt >= MAX_ATTEMPTS) {
         const kind = status === 429 ? 'rate_limit' : 'transient';
         throw new ConnectorError(kind, true, `Google Workspace ${operation} failed after retries`, {
@@ -279,16 +320,20 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
       return this.cachedUsersList;
     }
 
-    const serviceAccount = JSON.parse(this.cfg.serviceAccountJson) as {
-      client_email: string;
-      private_key: string;
-    };
+    const serviceAccount = parseServiceAccount(this.cfg.serviceAccountJson);
 
     const authClient = new google.auth.JWT({
       email: serviceAccount.client_email,
       key: serviceAccount.private_key,
       scopes: [SCOPE],
       subject: this.cfg.impersonateAdminEmail,
+      // The TOKEN EXCHANGE, which `requestOptions` below cannot reach: it is a
+      // separate request google-auth-library issues from its own transporter
+      // with no timeout, no signal and no retry, on the FIRST hop of every sync
+      // — inside `runSync`'s open `withTenant` transaction. Without this the
+      // per-request ceiling and SYNC_DEADLINE_MS both missed it, and there is no
+      // `statement_timeout` underneath.
+      transporterOptions: { timeout: REQUEST_TIMEOUT_MS },
     });
 
     const directory = google.admin({ version: 'directory_v1', auth: authClient });
@@ -318,16 +363,16 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
       return this.cachedTokensList;
     }
 
-    const serviceAccount = JSON.parse(this.cfg.serviceAccountJson) as {
-      client_email: string;
-      private_key: string;
-    };
+    const serviceAccount = parseServiceAccount(this.cfg.serviceAccountJson);
 
     const authClient = new google.auth.JWT({
       email: serviceAccount.client_email,
       key: serviceAccount.private_key,
       scopes: [TOKENS_SCOPE],
       subject: this.cfg.impersonateAdminEmail,
+      // See the users client: the token exchange is not covered by
+      // `requestOptions`.
+      transporterOptions: { timeout: REQUEST_TIMEOUT_MS },
     });
 
     const directory = google.admin({ version: 'directory_v1', auth: authClient });

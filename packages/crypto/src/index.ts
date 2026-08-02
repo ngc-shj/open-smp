@@ -173,6 +173,32 @@ export function decryptCredentials(
 }
 
 /**
+ * Encodes `value` as JSON, encrypts it, and zeroes the plaintext buffer.
+ *
+ * THE ENCRYPT HALF, at the same primitive as the decrypt half. Round 6 closed
+ * the decrypt side here and then opened two fresh `plaintext.fill(0)` call sites
+ * on the encrypt side in `apps/api/src/routes/saas-apps.ts`, in the same commit
+ * — appended rather than derived, which is exactly the accretion R42 clause ①b
+ * names and exactly what four rounds of this review already paid for.
+ *
+ * The residue is unchanged and is not claimed away: `JSON.stringify` produces an
+ * immutable JS string that cannot be zeroized at any level, so this bounds the
+ * clearable copy and nothing more. See C9's in-memory lifecycle note.
+ */
+export function encryptCredentialRecord(
+  value: unknown,
+  ctx: CredentialContext,
+  keys: Map<number, Buffer>,
+): { blob: Uint8Array; keyVersion: number } {
+  const plaintext = new TextEncoder().encode(JSON.stringify(value));
+  try {
+    return encryptCredentials(plaintext, ctx, keys);
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+/**
  * Decrypts, hands the plaintext to `use`, and zeroes it however `use` ends.
  *
  * THE CALLERS' HALF OF THE CLASS, AT ONE MEMBER. Three worker call sites were

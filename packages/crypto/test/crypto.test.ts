@@ -184,9 +184,10 @@ describe('parseEncryptionKeys', () => {
     // recovery from publishing this value is a full key rotation.
     const key = Buffer.alloc(32, 1).toString('base64');
 
+    const good = Buffer.alloc(32, 2).toString('base64');
     let caught: unknown;
     try {
-      parseEncryptionKeys(spell(key));
+      parseEncryptionKeys(`1:${good},${spell(key)}`);
     } catch (error) {
       caught = error;
     }
@@ -197,5 +198,10 @@ describe('parseEncryptionKeys', () => {
     expect((caught as Error).message).not.toContain(key);
     // Not merely the whole key: any run of it is enough to shorten a search.
     expect((caught as Error).message).not.toContain(key.slice(0, 8));
+    // The redaction without the position is not actionable: an operator with a
+    // multi-entry ENCRYPTION_KEYS would learn only that "some entry" is
+    // malformed. Both halves of the change are asserted, and the fixture puts
+    // the bad entry SECOND so a hard-coded 0 does not satisfy it.
+    expect((caught as Error).message).toMatch(/at index 1\b/);
   });
 });

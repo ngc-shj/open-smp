@@ -14,6 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { MAX_SAAS_APPS_PER_TENANT } from '../src/import-limits.js';
+import { MAX_CREDENTIAL_FIELDS, MAX_CREDENTIAL_VALUE_LENGTH } from '../src/routes/saas-apps.js';
 import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import { decryptCredentials } from '@open-smp/crypto';
 import {
@@ -2351,6 +2352,88 @@ describe('C22 acceptance: SaaS app management', () => {
       expect(after.keyVersion).toBe(before.keyVersion);
     },
   );
+
+  it.each([
+    ['an empty credential object', {}],
+    ['a credential set missing one required field', { serviceAccountJson: '{"a":1}' }],
+    [
+      'a required field present but blank',
+      { serviceAccountJson: '{"a":1}', impersonateAdminEmail: '   ' },
+    ],
+  ])('refuses to REGISTER with %s, and creates no row', async (label, credentials) => {
+    // The POST call site, which had no observer of its own. Round 6's mutation
+    // spec cut the shared helper body — which reds through the PATCH cell above
+    // and says nothing about whether this call site exists at all. `if (false)`
+    // here left 863 tests green.
+    const { tenantId, headers } = await setup(`c22-post-${label.replace(/\W+/g, '-')}`);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers,
+      payload: { key: 'google-workspace', displayName: 'GWS', credentials },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'invalid_credentials' });
+
+    // The MUTATION, not only the status (RT8). An app registered with `{}` is
+    // permanently unsyncable, which is the harm.
+    const rows = await withTenant(appPool, tenantId, (tx) =>
+      tx.query('SELECT 1 FROM saas_apps WHERE tenant_id = $1', [tenantId]),
+    );
+    expect(rows.rowCount, 'a row was created anyway').toBe(0);
+  });
+
+  it.each([
+    ['too many fields', Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`f${i}`, 'x']))],
+    ['an oversized value', { botToken: 'x'.repeat(16_385) }],
+    ['an oversized key', { ['k'.repeat(65)]: 'x' }],
+    ['an empty key', { '': 'x' }],
+  ])('refuses a credential record with %s', async (label, credentials) => {
+    // The bounds had no observer on either side. Whatever this accepts is
+    // stringified, encrypted, stored, and later decrypted into worker memory by
+    // the sync path and by the rotation sweep, which loads every tenant's stale
+    // rows in one process.
+    const { headers } = await setup(`c22-bound-${label.replace(/\W+/g, '-')}`);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers,
+      payload: { key: 'slack', displayName: 'Slack', credentials },
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('admits a credential record that lands exactly ON every bound', async () => {
+    // The allow side, boundary-adjacent (RT10) — without it a later accidental
+    // tightening reads as green. Sized from the exported constants rather than
+    // re-spelled, so a change to either moves both sides together (RT3).
+    const { headers } = await setup('c22-bound-allow');
+    const filler = Object.fromEntries(
+      // Two of the budget are spent below: the maximum-length key and botToken.
+      Array.from({ length: MAX_CREDENTIAL_FIELDS - 2 }, (_, i) => [`f${i}`, 'x']),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers,
+      payload: {
+        key: 'slack',
+        displayName: 'Slack',
+        credentials: {
+          ...filler,
+          ['k'.repeat(64)]: 'x',
+          botToken: 'x'.repeat(MAX_CREDENTIAL_VALUE_LENGTH),
+        },
+      },
+    });
+
+    expect(res.statusCode, 'a record on the bounds was refused').toBe(201);
+  });
 
   it('still accepts a rename in the same body as a rejected credential, only by rolling both back', async () => {
     // The allow side of the same guard is the cell above; this is the

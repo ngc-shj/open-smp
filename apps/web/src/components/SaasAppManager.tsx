@@ -63,7 +63,16 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   // replace them is HIDDEN rather than rendering an empty panel whose Save
   // reported "That does not look like a bot token" — review found that reachable
   // with the shipped seed.
-  const fields: readonly CredentialField[] = CREDENTIAL_FIELDS[app.key as ConnectorAppKey] ?? [];
+  // `Object.hasOwn`, not `?? []`. The fallback cannot fire for a prototype
+  // member: `CREDENTIAL_FIELDS['constructor']` is `Object`, a function, so the
+  // `??` is skipped and `Object.length === 1` makes `canReplaceCredentials`
+  // true — the panel renders and `fields.map` throws during a client render,
+  // taking down the page an operator opened to delete the offending row. Same
+  // shape, same commit, 80 lines away: review round 6 guarded the `REJECTORS`
+  // lookup in connector-credentials.ts and left this one (R3).
+  const fields: readonly CredentialField[] = Object.hasOwn(CREDENTIAL_FIELDS, app.key)
+    ? CREDENTIAL_FIELDS[app.key as ConnectorAppKey]
+    : [];
   const canReplaceCredentials = fields.length > 0;
 
   function close() {

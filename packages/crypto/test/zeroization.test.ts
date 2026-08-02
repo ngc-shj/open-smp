@@ -174,10 +174,9 @@ describe('the credential-plaintext class has one member', () => {
   // The list-based fixes did not hold. Three rounds appended one call site each
   // and each declared the class enumerated; R42 clause ①b says to stop
   // appending and derive the membership from the primitive. This is that
-  // derivation, run in CI rather than remembered: every production module that
-  // decrypts a credential must go through `withDecryptedCredentials`, whose
-  // `finally` cannot be forgotten. A fourth caller reaching for
-  // `decryptCredentials` directly reds this cell — measured, not assumed.
+  // derivation, run in CI rather than remembered — and the SCAN ITSELF is
+  // derived, because the first version of this cell hard-coded three roots and
+  // left every `packages/*/src` unscanned while claiming to enumerate the class.
   //
   // WHAT IT DOES NOT COVER, so it is not read as more than it is: a text scan
   // sees the spelling, not the binding. `const d = decryptCredentials; d(...)`
@@ -185,7 +184,22 @@ describe('the credential-plaintext class has one member', () => {
   // papered over; what it does close is the shape this class actually grew by,
   // which was three straightforward direct calls added one per round.
   const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-  const PRODUCTION_ROOTS = ['apps/api/src', 'apps/web/src', 'apps/worker/src'];
+
+  /** Every `src` directory a workspace package ships, discovered rather than listed. */
+  function productionRoots(): string[] {
+    const roots: string[] = [];
+    const walk = (relative: string, depth: number): void => {
+      for (const entry of readdirSync(path.join(REPO_ROOT, relative), { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name === 'node_modules') continue;
+        const child = `${relative}/${entry.name}`;
+        if (entry.name === 'src') roots.push(child);
+        else if (depth > 0) walk(child, depth - 1);
+      }
+    };
+    walk('apps', 2);
+    walk('packages', 2);
+    return roots.sort();
+  }
 
   function sourceFiles(dir: string): string[] {
     const absolute = path.join(REPO_ROOT, dir);
@@ -194,22 +208,80 @@ describe('the credential-plaintext class has one member', () => {
       .map((entry) => path.relative(REPO_ROOT, path.join(entry.parentPath, entry.name)));
   }
 
-  it('no production module calls decryptCredentials directly', () => {
-    const scanned = PRODUCTION_ROOTS.flatMap(sourceFiles);
+  it.each([
+    ['decryptCredentials', /\bdecryptCredentials\s*\(/],
+    // BOTH HALVES. The encrypt side was closed one round later than the decrypt
+    // side, and in between it had two `plaintext.fill(0)` call sites in the API
+    // routes with nothing asserting either — the class re-opening at the very
+    // moment the other half was declared derived.
+    ['encryptCredentials', /\bencryptCredentials\s*\(/],
+  ])('no production module calls %s directly', (_label, pattern) => {
+    const roots = productionRoots();
 
-    // Non-vacuity: a rename of any root would otherwise leave this cell
-    // asserting over nothing, which is the tautology shape review found in the
-    // orphan-key detector two rounds running.
-    expect(scanned.length, 'no production sources scanned').toBeGreaterThan(20);
-    expect(
-      scanned.some((file) => file.includes('rotate-credentials')),
-      'the rotation sweep is not in the scanned set',
-    ).toBe(true);
+    // Per ROOT, not over the union. A `> 20` floor across three roots was
+    // satisfied with a whole root removed — the shape R50 names, and the reason
+    // the first version of this cell could have lost `apps/api/src` silently.
+    for (const root of roots) {
+      expect(sourceFiles(root).length, `${root} scanned nothing`).toBeGreaterThan(0);
+    }
+    // Named representatives, one per area this class has actually reached or
+    // could reach next: the worker sweep it grew in, the API routes that hold
+    // the encrypt half, and a connector package — the tree the first version
+    // never looked at.
+    const scanned = roots.flatMap(sourceFiles);
+    for (const representative of [
+      'apps/worker/src/rotate-credentials.ts',
+      'apps/api/src/routes/saas-apps.ts',
+      'packages/connectors/core/src/index.ts',
+    ]) {
+      expect(scanned, `${representative} is not in the scanned set`).toContain(representative);
+    }
 
-    const direct = scanned.filter((file) =>
-      /\bdecryptCredentials\s*\(/.test(readFileSync(path.join(REPO_ROOT, file), 'utf8')),
+    const direct = scanned
+      // The definer, which necessarily calls both — the helpers live here.
+      .filter((file) => file !== 'packages/crypto/src/index.ts')
+      .filter((file) => {
+        const source = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+        if (!pattern.test(source)) return false;
+        // Exempt by STRUCTURE rather than by name: a module INSIDE a
+        // `withDecryptedCredentials` callback is re-encrypting a plaintext the
+        // helper already owns and clears — the rotation sweep's shape. A module
+        // that builds its own plaintext buffer does not call the decrypt helper
+        // and is not exempted, which is the case this cell exists for.
+        return !/\bwithDecryptedCredentials\s*\(/.test(source);
+      });
+
+    expect(direct, 'production modules bypassing the crypto package helpers').toEqual([]);
+  });
+
+  it('the decrypt primitive itself has exactly one call site', () => {
+    // The sentence the primitive-level fix rests on — "there is exactly one
+    // `createDecipheriv` in this repository" — was load-bearing prose that
+    // nothing asserted. A fourth site reaching for `node:crypto` directly never
+    // touches `decryptCredentials` and would not trip the cell above.
+    const definers = productionRoots()
+      .flatMap(sourceFiles)
+      .filter((file) =>
+        /\bcreateDecipheriv\s*\(/.test(readFileSync(path.join(REPO_ROOT, file), 'utf8')),
+      );
+
+    expect(definers, 'the decrypt primitive is called outside packages/crypto').toEqual([
+      'packages/crypto/src/index.ts',
+    ]);
+  });
+
+  it('hands the caller zeros if it returns the lent buffer itself', () => {
+    // The helper's contract is a convention: `use` receives a live buffer and
+    // nothing in the type system stops it being returned. Pinned rather than
+    // assumed, so the behaviour is at least known — a caller that does this gets
+    // zeros, not a plaintext that escaped the finally.
+    const keys = makeKeys();
+    const { blob, keyVersion } = seal(keys);
+
+    return withDecryptedCredentials(blob, keyVersion, ctx, keys, (plaintext) => plaintext).then(
+      (escaped) => {
+        expectAllZero([escaped], 'a plaintext returned out of the helper');
+      },
     );
-
-    expect(direct, 'production modules bypassing withDecryptedCredentials').toEqual([]);
   });
 });

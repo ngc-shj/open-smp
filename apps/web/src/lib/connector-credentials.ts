@@ -184,18 +184,36 @@ function rejectBotToken(raw: string): CredentialRejection | null {
 }
 
 /**
- * The loosest check that catches a paste error without adjudicating an address.
+ * The WHATWG email production, which is what the register form was already
+ * applying.
  *
- * Deliberately not an RFC 5322 attempt: enumerating what an address may look
- * like is the surface-form problem `rejectBotToken` refuses for tokens, and a
- * rejected VALID address is the worse direction. One `@`, something either
- * side, and no whitespace.
+ * NOT an RFC 5322 attempt, and not an invention of this repository: this is the
+ * exact predicate `<input type="email">` runs, quoted from the HTML standard's
+ * "valid e-mail address" ABNF. It is used because of the direction the previous
+ * fix took. Two adjudicators disagreed — the browser's on the register form
+ * (inside a real `<form>`), this function's on the manager (outside one) — and
+ * round 6 unified them by deleting the stricter one, so `admin@corp_internal`
+ * went from rejected-on-one-surface to accepted on both, with no server-side
+ * format check to compensate. That is R43 widening: a boundary was loosened as
+ * a side effect of removing a duplicate. R48's remedy is one adjudicator that is
+ * the most AUTHORITATIVE available, not the most permissive.
+ *
+ * The R47 objection `rejectBotToken` raises does not transfer. A bot token's
+ * format is a vendor's private convention that has changed before; an email
+ * address's is a published grammar the platform itself implements, and this is
+ * the platform's own copy of it rather than a guess at one.
+ *
+ * It stays a paste-catch, not defence: the API refuses a blank required field
+ * and the worker validates again.
  */
+const WHATWG_EMAIL =
+  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
 function rejectAdminEmail(raw: string): CredentialRejection | null {
   // The RAW value, not `raw.trim()`. Both forms post what the field holds, so
   // validating a trimmed copy accepted ' admin@corp.example ' and stored it —
   // and it is then the JWT subject, failing at Google as the audit row this
   // check exists to prevent. Its sibling `rejectBotToken` already refuses any
   // whitespace; the two now agree on which string is judged.
-  return /^[^\s@]+@[^\s@]+$/.test(raw) ? null : 'invalidEmail';
+  return WHATWG_EMAIL.test(raw) ? null : 'invalidEmail';
 }

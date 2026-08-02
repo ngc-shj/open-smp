@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { encryptCredentials } from '@open-smp/crypto';
+import { encryptCredentialRecord } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import { CONNECTOR_APP_KEYS } from '@open-smp/api-types';
 import type { ConnectorAppKey, SaasAppListItem, SaasAppCreateResponse } from '@open-smp/api-types';
@@ -25,8 +25,8 @@ class InvalidCredentialsError extends Error {}
 // rotation sweep — which loads every tenant's stale rows in one process. The
 // ceiling is sized against the largest legitimate credential this product takes:
 // a Google service-account document.
-const MAX_CREDENTIAL_FIELDS = 16;
-const MAX_CREDENTIAL_VALUE_LENGTH = 16_384;
+export const MAX_CREDENTIAL_FIELDS = 16;
+export const MAX_CREDENTIAL_VALUE_LENGTH = 16_384;
 const credentialsSchema = z
   .record(z.string().min(1).max(64), z.string().max(MAX_CREDENTIAL_VALUE_LENGTH))
   .refine((value) => Object.keys(value).length <= MAX_CREDENTIAL_FIELDS, {
@@ -107,14 +107,6 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
     }
     const { tenantId } = req.sessionContext;
 
-    // Zeroed in the `finally` below. The encrypt-side counterpart of the
-    // decrypt class closed in packages/crypto: the credential enters the
-    // process here at full plaintext, in a clearable form, and lived for the
-    // whole handler. The surrounding `JSON.stringify` result and the parsed
-    // request body are JS strings and are not clearable at all, so this is
-    // defence in depth rather than closure — stated rather than claimed away.
-    const plaintext = new TextEncoder().encode(JSON.stringify(credentials));
-
     let created: SaasAppCreateResponse;
     try {
       created = await withTenant(deps.pool, tenantId, async (tx) => {
@@ -168,8 +160,12 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
           throw new Error('saas-apps insert returned no row');
         }
 
-        const { blob, keyVersion } = encryptCredentials(
-          plaintext,
+        // The zeroization is `encryptCredentialRecord`'s, not this route's.
+        // This site owned a `plaintext.fill(0)` for exactly one round — a fresh
+        // member of the class packages/crypto had just closed on the other
+        // side, appended here with nothing asserting it (R42 ①b).
+        const { blob, keyVersion } = encryptCredentialRecord(
+          credentials,
           { tenantId, saasAppId },
           deps.encryptionKeys,
         );
@@ -202,8 +198,6 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
         return reply.code(409).send({ error: 'duplicate_key' });
       }
       throw err;
-    } finally {
-      plaintext.fill(0);
     }
 
     return reply.code(201).send(created);
@@ -275,28 +269,22 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
             if (missingRequiredCredentials(row.key, credentials)) {
               throw new InvalidCredentialsError();
             }
-            // Zeroed in the `finally`; see the POST handler for why this is
-            // defence in depth rather than closure.
-            const plaintext = new TextEncoder().encode(JSON.stringify(credentials));
-            try {
-              const { blob, keyVersion } = encryptCredentials(
-                plaintext,
-                { tenantId, saasAppId },
-                deps.encryptionKeys,
-              );
-              // The version column travels with the ciphertext in one statement.
-              // encryptCredentials always picks the max key version, so a
-              // replacement performed after a key rollout lands on the new one —
-              // writing credentials_enc alone would pair new-version ciphertext
-              // with a stale version, and the AAD (which binds keyVersion) would
-              // then fail the GCM tag check on every later read.
-              await tx.query(
-                'UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1',
-                [saasAppId, Buffer.from(blob), keyVersion],
-              );
-            } finally {
-              plaintext.fill(0);
-            }
+            // The zeroization is the primitive's; see the POST handler.
+            const { blob, keyVersion } = encryptCredentialRecord(
+              credentials,
+              { tenantId, saasAppId },
+              deps.encryptionKeys,
+            );
+            // The version column travels with the ciphertext in one statement.
+            // The primitive always picks the max key version, so a replacement
+            // performed after a key rollout lands on the new one — writing
+            // credentials_enc alone would pair new-version ciphertext with a
+            // stale version, and the AAD (which binds keyVersion) would then
+            // fail the GCM tag check on every later read.
+            await tx.query(
+              'UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1',
+              [saasAppId, Buffer.from(blob), keyVersion],
+            );
           }
 
           return {
@@ -376,7 +364,9 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
         return reply.code(404).send({ error: 'not_found' });
       }
       if (outcome !== 'deleted') {
-        return reply.code(409).send({ error: 'app_has_accounts', accountCount: outcome.accountCount });
+        return reply
+          .code(409)
+          .send({ error: 'app_has_accounts', accountCount: outcome.accountCount });
       }
 
       return reply.code(204).send();

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConnectorError, diagnose, waitUnlessAborted } from '../src/index.js';
+import { ConnectorError, diagnose, isTransportError, waitUnlessAborted } from '../src/index.js';
 
 // SC2, review round 3. `diagnose` and `waitUnlessAborted` live here because the
 // class each closes has one member per connector — and both were hoisted with
@@ -60,7 +60,13 @@ describe('diagnose', () => {
     // classic Admin SDK body that directory_v1 still returns.
     [
       'the AIP-193 body',
-      { code: 429, response: { status: 429, data: { error: { code: 429, message: 'Rate limit', status: 'RESOURCE_EXHAUSTED' } } } },
+      {
+        code: 429,
+        response: {
+          status: 429,
+          data: { error: { code: 429, message: 'Rate limit', status: 'RESOURCE_EXHAUSTED' } },
+        },
+      },
       'RESOURCE_EXHAUSTED',
     ],
     [
@@ -73,7 +79,9 @@ describe('diagnose', () => {
             error: {
               code: 429,
               message: 'Rate limit',
-              errors: [{ domain: 'usageLimits', reason: 'rateLimitExceeded', message: 'Rate limit' }],
+              errors: [
+                { domain: 'usageLimits', reason: 'rateLimitExceeded', message: 'Rate limit' },
+              ],
             },
           },
         },
@@ -109,6 +117,42 @@ describe('diagnose', () => {
       'retryAfter',
       'statusCode',
     ]);
+  });
+});
+
+describe('isTransportError', () => {
+  // The predicate two connectors now share. Slack learned it in round 2; round 6
+  // propagated `retry: false` and a request timeout to Google WITHOUT it and
+  // reproduced the identical defect against gaxios' spellings, which is why it
+  // lives here rather than once per connector.
+  it.each([
+    ['a Slack request error', { code: 'slack_webapi_request_error' }],
+    ['a Node socket code (gaxios)', { code: 'ECONNRESET' }],
+    ['a request deadline (gaxios copies the DOMException name)', { code: 'TimeoutError' }],
+    ['an abort by name', { name: 'AbortError' }],
+  ])('classifies %s as transport', (_label, shape) => {
+    expect(isTransportError(Object.assign(new Error('x'), shape))).toBe(true);
+  });
+
+  it.each([
+    ['an HTTP status (Slack)', { code: 'slack_webapi_http_error', statusCode: 503 }],
+    ['an HTTP status (gaxios nested)', { code: 'ECONNRESET', response: { status: 500 } }],
+    [
+      'a platform error (Slack)',
+      { code: 'slack_webapi_platform_error', data: { error: 'ratelimited' } },
+    ],
+    ['a googleapis numeric code', { code: 429 }],
+    ['nothing that identifies it', {}],
+  ])('does not classify %s as transport', (_label, shape) => {
+    // The deny side matters as much: misreading a rate limit or a 5xx as
+    // transport would take the KIND a caller reports away from its own
+    // rate-limit predicate.
+    expect(isTransportError(Object.assign(new Error('x'), shape))).toBe(false);
+  });
+
+  it('is not fooled by a non-object', () => {
+    expect(isTransportError(null)).toBe(false);
+    expect(isTransportError('ECONNRESET')).toBe(false);
   });
 });
 
@@ -206,8 +250,8 @@ describe('waitUnlessAborted', () => {
       throw new Error('timer broke');
     });
 
-    await expect(
-      waitUnlessAborted(1, new AbortController().signal, sleep, stop),
-    ).rejects.toThrow('timer broke');
+    await expect(waitUnlessAborted(1, new AbortController().signal, sleep, stop)).rejects.toThrow(
+      'timer broke',
+    );
   });
 });

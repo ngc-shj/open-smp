@@ -192,7 +192,7 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect((caught as Error).cause).toMatchObject({ statusCode: 403 });
   });
 
-  it('parses the service account once, not once per request', async () => {
+  it('does not re-parse the service account on every retry', async () => {
     // A JS string cannot be zeroized at any level, so each parse mints a
     // permanently-unclearable copy of the PEM. `privateKey()` was called per
     // `withRetry` invocation — once per page here, and once per account in the
@@ -301,6 +301,38 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     // And the diagnosis survived, or the assertions above would be satisfied by
     // discarding it.
     expect(serialized).toContain('[redacted]');
+  });
+
+  it.each([
+    ['a socket reset', { code: 'ECONNRESET' }],
+    ['a request timeout', { code: 'TimeoutError' }],
+    ['an abort with no status', { name: 'AbortError' }],
+  ])('retries %s rather than reporting it as a terminal failure', async (_label, shape) => {
+    // THE ARM THIS CONNECTOR DID NOT HAVE. Review round 6 set `retry: false` and
+    // added a 30-second timeout, moving retry responsibility onto `withRetry` —
+    // and `statusOf` returns undefined for every one of these shapes, because
+    // gaxios sets `status` only when there IS a response. So a single socket
+    // reset threw `failed after retries` on attempt 1, and nothing downstream
+    // recovers it: the sync job runs `attempts: 1`. Verbatim the defect the
+    // Slack connector paid for in round 2.
+    let call = 0;
+    const usersList = vi.fn(async () => {
+      call += 1;
+      if (call === 1) throw Object.assign(new Error('transport'), shape);
+      return { data: page3 as UsersListResponseData };
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep },
+    );
+
+    const accounts = await collect(connector.listUsers(makeContext()));
+
+    expect(usersList, 'the transport failure was not retried').toHaveBeenCalledTimes(2);
+    expect(accounts).toHaveLength(1);
+    expect(sleep).toHaveBeenCalledTimes(1);
   });
 
   it('does not wait out a retry after the run is over', async () => {

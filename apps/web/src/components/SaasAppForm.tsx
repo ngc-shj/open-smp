@@ -73,7 +73,12 @@ function CredentialInput({
   // lets three E2E specs stand unchanged as the proof that nothing moved.
   const common = {
     id: field.name,
-    required: field.required,
+    // `aria-required`, matching the manager. `required` inside this real
+    // `<form>` made the browser adjudicate blankness before `handleSubmit` ran,
+    // while the manager's identical field was adjudicated by
+    // `rejectCredentials` — the same split the `type` attribute had, on the same
+    // element, left behind by the fix that claimed to have removed it.
+    'aria-required': field.required,
     autoComplete: 'off' as const,
     value,
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>

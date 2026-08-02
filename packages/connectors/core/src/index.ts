@@ -201,11 +201,60 @@ export function waitUnlessAborted(
 }
 
 /**
+ * Errors an SDK used to retry and a connector that turned SDK retries off does
+ * not classify.
+ *
+ * HERE, not once per connector, and the reason is the review history rather
+ * than tidiness. Slack learned this in round 2: setting `retries: 0` moved the
+ * responsibility to the connector, and the first version of that fix left every
+ * socket failure and every one of the new request timeouts retried by NOTHING —
+ * not the SDK, not `withRetry` (no status, no platform error), and not BullMQ,
+ * whose sync job runs `attempts: 1`. A single slow response became a terminal
+ * sync failure. Round 6 then propagated `retry: false` and a request timeout to
+ * the Google connector WITHOUT this predicate, reproducing the identical defect
+ * against gaxios' spellings — the sites were enumerated, the reason the change
+ * was safe at the seed was not (R3).
+ *
+ * The evidence is provider-neutral because `diagnose` already normalises both
+ * providers' status and platform-error spellings:
+ *
+ *   - a DOMException name — `AbortError` from a signal, `TimeoutError` from a
+ *     request deadline. gaxios copies it into `code` (common.js: "The
+ *     DOMException's equivalent to code is its name"); `@slack/web-api` leaves
+ *     it on `name`.
+ *   - a STRING `code` with no HTTP status and no platform-error payload:
+ *     `slack_webapi_request_error`, or the Node socket code gaxios copies from
+ *     the cause (`ECONNRESET`, `ETIMEDOUT`). A numeric `code` is googleapis'
+ *     HTTP status and is NOT this class.
+ *
+ * A rate limit is not transport, and callers must decide that first: it carries
+ * a status or a platform error, so it does not reach the last line, but the KIND
+ * a caller reports still has to come from its own rate-limit predicate.
+ */
+export function isTransportError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const source = error as { code?: unknown; name?: unknown };
+  if (source.name === 'AbortError' || source.name === 'TimeoutError') return true;
+  if (source.code === 'AbortError' || source.code === 'TimeoutError') return true;
+  if (typeof source.code !== 'string') return false;
+
+  // The empty secret is "nothing to scrub", not a scrub of everything — see the
+  // guard in `diagnose`. Reused rather than re-spelled so this predicate reads
+  // the same four status spellings and both platform-error grammars the
+  // projection does.
+  const { statusCode, platformError } = diagnose(error, '');
+  return statusCode === undefined && platformError === undefined;
+}
+
+/**
  * The per-request ceiling every connector applies.
  *
  * HERE, not once per connector: the Slack client was given one in review round
  * 1 and the Google client was still on the SDK default (none) in round 6 — the
- * one-member-per-connector class this module exists for. `runSync` iterates a
+ * one-member-per-connector class this module exists for. Neither SDK applies one
+ * unasked: `@slack/web-api` defaults `timeout` to 0, which installs no
+ * `AbortSignal` at all, and gaxios applies one only when the request supplies
+ * it. `runSync` iterates a
  * connector INSIDE an open `withTenant` transaction, so a hung request holds a
  * pooled Postgres connection and an idle-in-transaction session for as long as
  * it hangs, and the sync worker's `concurrency: 1` stalls every other tenant.

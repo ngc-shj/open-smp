@@ -359,5 +359,12 @@ describe('C5 runSync acceptance', () => {
       ),
     ).rejects.toThrow(/aborted/);
     expect(never.aborted, "the run aborted the caller's signal instead of its own").toBe(false);
+    // `/aborted/` alone is a loose regex over a message any abort in the call
+    // graph produces, so it cannot tell "the deadline stopped the run" from "the
+    // run failed for another reason under a mocked global". What distinguishes
+    // them is that the signal the connector was handed is itself aborted —
+    // i.e. the deadline reached the composite, rather than the run dying of
+    // something else.
+    expect(FakeConnector.lastSignal?.aborted, 'the run did not end on its deadline').toBe(true);
   });
 });

@@ -149,6 +149,43 @@ describe('every connector declares the credentials its factory reads', () => {
     },
   );
 
+  it.each([
+    ['an underscore in the domain', 'admin@corp_internal'],
+    ['a trailing dot', 'admin@corp.example.'],
+    ['a hyphen-terminated label', 'admin@corp-.example'],
+    ['no domain at all', 'admin@'],
+    ['surrounding whitespace', ' admin@corp.example '],
+  ])('rejects an admin email with %s', (_label, value) => {
+    // THE STRICTER ADJUDICATOR, restored. The register form used to run
+    // `input[type=email]`'s WHATWG check as well as this function, and the
+    // manager ran only this one; round 6 unified them by deleting the stricter
+    // side, so every address here went from rejected-on-one-surface to accepted
+    // on both, with no server-side format check to compensate (R43). This
+    // function now IS the WHATWG production, so the two surfaces agree at the
+    // stricter reading rather than the looser one.
+    expect(
+      rejectCredentials('google-workspace', {
+        serviceAccountJson: JSON.stringify({ client_email: 'a@b.example', private_key: 'k' }),
+        impersonateAdminEmail: value,
+      }),
+    ).toBe('invalidEmail');
+  });
+
+  it.each(['admin@corp.example', 'a.b+c@sub.corp.example', "o'brien@x.co"])(
+    'accepts the valid address %s',
+    (value) => {
+      // The allow side (RT10). Without it the tightening above is satisfiable by
+      // a predicate that rejects everything, which is the worse direction this
+      // check's own header warns about.
+      expect(
+        rejectCredentials('google-workspace', {
+          serviceAccountJson: JSON.stringify({ client_email: 'a@b.example', private_key: 'k' }),
+          impersonateAdminEmail: value,
+        }),
+      ).toBeNull();
+    },
+  );
+
   it('resolves every label through a message the dictionary carries', () => {
     // A mistyped key renders as the marker rather than throwing, so without this
     // a credential field ships labelled ⟨saasapp.botToken⟩ and only a human
