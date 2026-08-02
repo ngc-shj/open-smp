@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -171,8 +172,6 @@ describe('every connector declares the credentials its factory reads', () => {
     ['an underscore in the domain', 'admin@corp_internal'],
     ['a trailing dot', 'admin@corp.example.'],
     ['a hyphen-terminated label', 'admin@corp-.example'],
-    ['no domain at all', 'admin@'],
-    ['surrounding whitespace', ' admin@corp.example '],
   ])('rejects an admin email with %s', (_label, value) => {
     // THE STRICTER ADJUDICATOR, restored. The register form used to run
     // `input[type=email]`'s WHATWG check as well as this function, and the
@@ -189,9 +188,36 @@ describe('every connector declares the credentials its factory reads', () => {
     ).toBe('invalidEmail');
   });
 
-  it.each(['admin@corp.example', 'a.b+c@sub.corp.example', "o'brien@x.co"])(
-    'accepts the valid address %s',
-    (value) => {
+  it.each([
+    ['no domain at all', 'admin@'],
+    ['surrounding whitespace', ' admin@corp.example '],
+  ])('rejects an admin email with %s, as it did before the tightening', (_label, value) => {
+    // SEPARATED, because these two rows do not discriminate. The predicate this
+    // round replaced — `/^[^\s@]+@[^\s@]+$/` — already rejected both, so under
+    // the mutation that restores it they stay green while reporting coverage of
+    // the tightening. They pin real behaviour; they just pin the OLD behaviour.
+    expect(
+      rejectCredentials('google-workspace', {
+        serviceAccountJson: JSON.stringify({ client_email: 'a@b.example', private_key: 'k' }),
+        impersonateAdminEmail: value,
+      }),
+    ).toBe('invalidEmail');
+  });
+
+  it.each([
+    // Each row pins ONE class of the production, because three distant
+    // obviously-fine addresses did not: review measured that narrowing the
+    // local-part class and requiring a dot in the domain BOTH left this table
+    // green. A false deny here is an operator who cannot register at all, and
+    // this predicate is now the only adjudicator on either surface.
+    'admin@corp.example',
+    'first_last@corp.example', // underscore, and the rest of the local-part class
+    "o'brien!#$%&*+/=?^`{|}~-@x.co", // the full punctuation set the standard allows
+    'a.b+c@sub.corp.example', // dotted local part, plus-addressing, multi-label domain
+    'admin@corp', // single-label domain: the standard's TLD group is `*`, not `+`
+    'a-b@x-y.co', // interior hyphens, which the label bounds must still admit
+  ])('accepts the valid address %s', (value) => {
+    {
       // The allow side (RT10). Without it the tightening above is satisfiable by
       // a predicate that rejects everything, which is the worse direction this
       // check's own header warns about.
@@ -201,8 +227,45 @@ describe('every connector declares the credentials its factory reads', () => {
           impersonateAdminEmail: value,
         }),
       ).toBeNull();
-    },
-  );
+    }
+  });
+
+  it('no component indexes a tenant-keyed credential record directly', () => {
+    // THE CALL SITE, not the helper. The defect was a bare
+    // `CREDENTIAL_FIELDS[app.key as ConnectorAppKey] ?? []` in SaasAppManager,
+    // and the fix moved the guard into `credentialFieldsFor` — but the cells
+    // above test the HELPER, and nothing observed that the component calls it.
+    // Reverting the component alone left all 910 tests green: the same
+    // sampled-the-helper-not-the-site trap the previous round found for
+    // `missingRequiredCredentials` and reintroduced here in the same commit.
+    //
+    // A source scan rather than a component render, because it also covers the
+    // NEXT component to grow the same sibling — this is the third lookup in this
+    // class and the first two were found one round apart.
+    const componentsDir = path.join(import.meta.dirname, '..', 'src', 'components');
+    const files = readdirSync(componentsDir, { withFileTypes: true, recursive: true })
+      .filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name))
+      .map((entry) => path.join(entry.parentPath, entry.name));
+
+    // Non-vacuity: the directory really was read, and the component that owns
+    // the defect is really in the set.
+    expect(files.length, 'no component sources scanned').toBeGreaterThan(0);
+    expect(
+      files.some((file) => file.endsWith('SaasAppManager.tsx')),
+      'the component this guard exists for is not in the scanned set',
+    ).toBe(true);
+
+    const offenders = files.filter((file) =>
+      /\b(CREDENTIAL_FIELDS|REJECTORS|REQUIRED_CREDENTIAL_FIELDS)\s*\[/.test(
+        readFileSync(file, 'utf8'),
+      ),
+    );
+
+    expect(
+      offenders.map((file) => path.basename(file)),
+      'a component indexes a tenant-keyed record instead of using its guarded accessor',
+    ).toEqual([]);
+  });
 
   it('resolves every label through a message the dictionary carries', () => {
     // A mistyped key renders as the marker rather than throwing, so without this

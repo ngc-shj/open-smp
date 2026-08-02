@@ -1,7 +1,7 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   decryptCredentials,
   encryptCredentialRecord,
@@ -86,6 +86,14 @@ function expectAllZero(buffers: readonly Uint8Array[], what: string): void {
 // Per-cell, not per-body. A cell added without its own reset used to inherit the
 // previous cell's entries, and the non-vacuity guard below would then be
 // satisfied by residue rather than by this cell's own decrypt.
+// The spies in the cells below are on GLOBAL prototypes. A `finally` in each
+// body restores them today, but an early return or an `await` moved outside the
+// `try` reintroduces the leak — and a leaked spy on `TextEncoder#encode` or
+// `JSON.parse` is the kind that makes an unrelated later cell pass for the wrong
+// reason. Structural, not per-body.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 beforeEach(() => {
   captured.length = 0;
 });
@@ -198,7 +206,11 @@ describe('encryptCredentialRecord owns the encrypt half', () => {
       ).toBe(true);
       expect(blob.length).toBeGreaterThan(0);
 
-      expectAllZero(captured, 'the encrypt-side plaintext');
+      // The FIRST encode, which is the helper's own plaintext. Asserting over
+      // every capture would go red for a buffer the helper never promised to
+      // clear the moment production adds an internal encode (an AAD, a version
+      // header), and the failure message would name the wrong thing.
+      expectAllZero([captured[0] as Uint8Array], 'the encrypt-side plaintext');
     } finally {
       spy.mockRestore();
     }
@@ -223,6 +235,18 @@ describe('the credential-plaintext class has one member', () => {
   // which was three straightforward direct calls added one per round.
   const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
+  /** The top-level directories `pnpm-workspace.yaml` declares members under. */
+  function workspaceTops(): string[] {
+    const manifest = readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8');
+    const globs = [...manifest.matchAll(/^\s*-\s*['"]?([^'"\n]+?)['"]?\s*$/gm)].map((m) => m[1]!);
+    const tops = new Set(
+      globs.map((glob) => glob.split('/')[0]!).filter((top) => top !== '' && !top.startsWith('!')),
+    );
+    // Non-vacuity: a manifest this parser cannot read must be loud, not empty.
+    expect(tops.size, 'no workspace roots parsed from pnpm-workspace.yaml').toBeGreaterThan(0);
+    return [...tops].filter((top) => existsSync(path.join(REPO_ROOT, top)));
+  }
+
   /** Every `src` directory a workspace package ships, discovered rather than listed. */
   function productionRoots(): string[] {
     const roots: string[] = [];
@@ -234,8 +258,12 @@ describe('the credential-plaintext class has one member', () => {
         else if (depth > 0) walk(child, depth - 1);
       }
     };
-    walk('apps', 2);
-    walk('packages', 2);
+    // SEEDED FROM THE WORKSPACE FILE, not from two literals. The literals were
+    // the same shape as the three hard-coded roots this cell was rewritten to
+    // escape, one level up: a workspace glob added tomorrow (`services/*`) would
+    // silently drop out of the class's only mechanical control while every
+    // per-root check and every named representative still passed.
+    for (const top of workspaceTops()) walk(top, 2);
     return roots.sort();
   }
 
@@ -247,13 +275,20 @@ describe('the credential-plaintext class has one member', () => {
   }
 
   it.each([
-    ['decryptCredentials', /\bdecryptCredentials\s*\(/],
+    // The decrypt half takes NO exemption. Nothing legitimate calls
+    // `decryptCredentials` outside the crypto package — `withDecryptedCredentials`
+    // is the only caller and it lives there.
+    ['decryptCredentials', /\bdecryptCredentials\s*\(/, false],
     // BOTH HALVES. The encrypt side was closed one round later than the decrypt
     // side, and in between it had two `plaintext.fill(0)` call sites in the API
     // routes with nothing asserting either — the class re-opening at the very
     // moment the other half was declared derived.
-    ['encryptCredentials', /\bencryptCredentials\s*\(/],
-  ])('no production module calls %s directly', (_label, pattern) => {
+    //
+    // This half DOES take an exemption: `rotate-credentials.ts` re-encrypts the
+    // plaintext `withDecryptedCredentials` lent it, which the helper already
+    // clears.
+    ['encryptCredentials', /\bencryptCredentials\s*\(/, true],
+  ])('no production module calls %s directly', (_label, pattern, exemptLenders) => {
     const roots = productionRoots();
 
     // Per ROOT, not over the union. A `> 20` floor across three roots was
@@ -281,29 +316,45 @@ describe('the credential-plaintext class has one member', () => {
       .filter((file) => {
         const source = readFileSync(path.join(REPO_ROOT, file), 'utf8');
         if (!pattern.test(source)) return false;
-        // Exempt by STRUCTURE rather than by name: a module INSIDE a
-        // `withDecryptedCredentials` callback is re-encrypting a plaintext the
-        // helper already owns and clears — the rotation sweep's shape. A module
-        // that builds its own plaintext buffer does not call the decrypt helper
-        // and is not exempted, which is the case this cell exists for.
+        if (!exemptLenders) return true;
+        // PER-HALF, and this is the correction. The first version applied one
+        // whole-file exemption to BOTH patterns, so every module containing the
+        // spelling `withDecryptedCredentials(` — sync.ts, token-audit.ts and
+        // rotate-credentials.ts, which are exactly the three sites this class
+        // grew by, one per round — was excused from the DECRYPT check too.
+        // Review measured it: a direct `decryptCredentials(...)` added to
+        // sync.ts left this cell green, and the same edit in a non-exempt file
+        // reddened it. Round 6 deleted those three files' own `.fill(0)` lines
+        // in reliance on this guard.
+        //
+        // Still coarser than lexical scoping: a second, unrelated
+        // `encryptCredentials(` in a lending module is covered by the same
+        // exemption. Stated rather than claimed away — the shape the class has
+        // actually grown by is a direct decrypt, and that half now has no
+        // exemption at all.
         return !/\bwithDecryptedCredentials\s*\(/.test(source);
       });
 
     expect(direct, 'production modules bypassing the crypto package helpers').toEqual([]);
   });
 
-  it('the decrypt primitive itself has exactly one call site', () => {
+  it.each([
+    ['createDecipheriv', /\bcreateDecipheriv\s*\(/],
+    // BOTH primitives, for the reason the decrypt one was added: a module that
+    // reaches for `node:crypto` directly builds its own plaintext buffer, never
+    // spells either helper's name, and trips neither cell above. The encrypt
+    // half moved into this package in the same round that asserted only the
+    // decrypt cardinality (R3, inside one commit).
+    ['createCipheriv', /\bcreateCipheriv\s*\(/],
+  ])('the %s primitive has exactly one call site', (_label, pattern) => {
     // The sentence the primitive-level fix rests on — "there is exactly one
     // `createDecipheriv` in this repository" — was load-bearing prose that
-    // nothing asserted. A fourth site reaching for `node:crypto` directly never
-    // touches `decryptCredentials` and would not trip the cell above.
+    // nothing asserted.
     const definers = productionRoots()
       .flatMap(sourceFiles)
-      .filter((file) =>
-        /\bcreateDecipheriv\s*\(/.test(readFileSync(path.join(REPO_ROOT, file), 'utf8')),
-      );
+      .filter((file) => pattern.test(readFileSync(path.join(REPO_ROOT, file), 'utf8')));
 
-    expect(definers, 'the decrypt primitive is called outside packages/crypto').toEqual([
+    expect(definers, 'a cipher primitive is called outside packages/crypto').toEqual([
       'packages/crypto/src/index.ts',
     ]);
   });

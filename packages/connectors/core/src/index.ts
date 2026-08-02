@@ -201,6 +201,26 @@ export function waitUnlessAborted(
 }
 
 /**
+ * The decrypted credential record, or a fixed-string failure.
+ *
+ * The input here is the PLAINTEXT CREDENTIAL, not operator-pasted config, and
+ * V8's `SyntaxError` message quotes a window of its input. Both worker jobs
+ * write `error.message` verbatim into `discovery_events`, whose UPDATE and
+ * DELETE are REVOKEd — unredactable. No producer writes a non-JSON credential
+ * today (every writer goes through `encryptCredentialRecord`, and GCM
+ * authenticates), so this is completeness rather than a live path: review
+ * enumerated this class, guarded three of five sites, and left exactly the two
+ * whose input is the secret.
+ */
+export function parseCredentialRecord(plaintext: Uint8Array): Record<string, string> {
+  try {
+    return JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, string>;
+  } catch {
+    throw new ConnectorError('fatal', false, 'stored credentials are not valid JSON');
+  }
+}
+
+/**
  * Errors an SDK used to retry and a connector that turned SDK retries off does
  * not classify.
  *
@@ -227,21 +247,41 @@ export function waitUnlessAborted(
  *     the cause (`ECONNRESET`, `ETIMEDOUT`). A numeric `code` is googleapis'
  *     HTTP status and is NOT this class.
  *
- * A rate limit is not transport, and callers must decide that first: it carries
- * a status or a platform error, so it does not reach the last line, but the KIND
- * a caller reports still has to come from its own rate-limit predicate.
+ * CALLERS MUST DECIDE RATE-LIMIT FIRST. The first version of this docstring
+ * argued that a rate limit "carries a status or a platform error, so it does not
+ * reach the last line" — false for the one shape this repository's Slack client
+ * actually produces. With `rejectRateLimitedCalls: true`, `@slack/web-api`
+ * throws `WebAPIRateLimitedError`, which carries `code` and `retryAfter` and NO
+ * `statusCode` and NO `data`, so this predicate returns true for it. Both
+ * connectors evaluate their own rate-limit predicate before this one and take
+ * the KIND from that, which is why nothing is broken — but a connector author
+ * who relied on the old sentence instead of writing their own predicate would
+ * retry a rate limit on exponential backoff and ignore `Retry-After`.
+ *
+ * THE CODE CLASS IS ENUMERATED, not "any string". A bare `typeof code ===
+ * 'string'` admitted Node's own error codes: a truncated PEM makes
+ * `createSign().sign()` throw `ERR_OSSL_UNSUPPORTED`, a permanent credential
+ * fault, which was then retried five times with cumulative backoff inside
+ * `runSync`'s open transaction and reported as `transient`. The class here is
+ * small and stable — libuv/DNS codes and the two SDK spellings — unlike a
+ * vendor's token format, so enumerating it does not carry the R47 objection
+ * `rejectBotToken` raises.
  */
+const TRANSPORT_CODE = /^(E[A-Z0-9]+|EAI_[A-Z]+|slack_webapi_request_error)$/;
+
 export function isTransportError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const source = error as { code?: unknown; name?: unknown };
   if (source.name === 'AbortError' || source.name === 'TimeoutError') return true;
   if (source.code === 'AbortError' || source.code === 'TimeoutError') return true;
-  if (typeof source.code !== 'string') return false;
+  if (typeof source.code !== 'string' || !TRANSPORT_CODE.test(source.code)) return false;
 
   // The empty secret is "nothing to scrub", not a scrub of everything — see the
   // guard in `diagnose`. Reused rather than re-spelled so this predicate reads
   // the same four status spellings and both platform-error grammars the
-  // projection does.
+  // projection does. The projection is destructured and discarded: it is never
+  // logged, attached to a `cause`, or returned, and it must stay that way —
+  // with an empty secret its strings are UNSCRUBBED.
   const { statusCode, platformError } = diagnose(error, '');
   return statusCode === undefined && platformError === undefined;
 }

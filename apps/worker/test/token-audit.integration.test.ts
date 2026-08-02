@@ -425,6 +425,14 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
       'the audit asked the provider after the run was over',
     ).not.toHaveBeenCalled();
     expect(never.aborted, "the run aborted the caller's signal instead of its own").toBe(false);
+    // The discriminator the sync twin gained in the same commit and this one
+    // did not: `mockReturnValue(AbortSignal.abort())` replaces the constructor
+    // process-wide, so ANY consumer handed an already-aborted signal produces a
+    // rejection matching /aborted/ with listTokens uncalled. Only this asserts
+    // the deadline was composed into the RUN's signal.
+    expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
+      TOKEN_AUDIT_DEADLINE_MS,
+    );
   });
 
   it('stops when the run deadline has passed', async () => {

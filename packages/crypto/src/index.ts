@@ -56,6 +56,13 @@ export function parseEncryptionKeys(env: string): Map<number, Buffer> {
       );
     }
 
+    // A REPEATED version is a configuration error, not a last-one-wins merge.
+    // `Map.set` silently overwrote, so `ENCRYPTION_KEYS=1:<a>,1:<b>` booted
+    // cleanly under <b> while every credential sealed under <a> failed its GCM
+    // tag on the next read and the rotation sweep counted them all as failures.
+    if (keys.has(version)) {
+      throw new Error(`Invalid ENCRYPTION_KEYS: version ${version} appears more than once`);
+    }
     keys.set(version, key);
   }
 
@@ -186,7 +193,11 @@ export function decryptCredentials(
  * clearable copy and nothing more. See C9's in-memory lifecycle note.
  */
 export function encryptCredentialRecord(
-  value: unknown,
+  // `Record<string, string>`, not `unknown`. `JSON.stringify(undefined)` returns
+  // undefined and `TextEncoder#encode()` defaults to `''`, so the wider type
+  // would encrypt and persist a zero-length plaintext with a valid tag — failing
+  // much later as a `JSON.parse('')` in the worker, with no pointer to the write.
+  value: Record<string, string>,
   ctx: CredentialContext,
   keys: Map<number, Buffer>,
 ): { blob: Uint8Array; keyVersion: number } {

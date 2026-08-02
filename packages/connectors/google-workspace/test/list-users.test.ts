@@ -335,6 +335,63 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['unauthorized_client', 'invalid_grant', 'invalid_client'])(
+    'reports a 400 %s as a non-retryable auth failure, not a transient one',
+    async (oauthError) => {
+      // Domain-wide delegation that was never granted comes back as HTTP 400 —
+      // RFC 6749 §5.2 reserves 401 for `invalid_client` — so it missed the
+      // 401/403 arm, was not 429 or 5xx, and came out `transient, retryable`.
+      // The token audit only short-circuits on `auth` or `fatal`, so it repeated
+      // the same doomed exchange for every account and then wrote
+      // `token_audit_completed` with zero grants: an operator whose delegation
+      // was never granted read that as "no third-party applications".
+      const usersList = vi.fn(async () => {
+        throw Object.assign(new Error('Bad Request'), {
+          code: 400,
+          response: { status: 400, data: { error: oauthError } },
+        });
+      });
+      const sleep = vi.fn(async (_ms: number) => {});
+
+      const connector = new GoogleWorkspaceConnector(
+        { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+        { usersList, sleep },
+      );
+
+      const caught = await collect(connector.listUsers(makeContext())).catch(
+        (error: unknown) => error,
+      );
+
+      expect(caught).toMatchObject({ kind: 'auth', retryable: false });
+      // The mutation, not only the classification: a retryable verdict costs
+      // MAX_ATTEMPTS signings per account against a state that cannot change.
+      expect(usersList, 'a permanent credential fault was retried').toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still treats a 400 that is not an OAuth auth error as transient', async () => {
+    // The allow side: widening the auth arm to every 400 would make an ordinary
+    // bad-request retryable=false and stop the run recovering from it.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Bad Request'), {
+        code: 400,
+        response: { status: 400, data: { error: 'invalid_argument' } },
+      });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep: async () => {} },
+    );
+
+    const caught = await collect(connector.listUsers(makeContext())).catch(
+      (error: unknown) => error,
+    );
+
+    expect(caught).toMatchObject({ kind: 'transient', retryable: true });
+  });
+
   it('does not wait out a retry after the run is over', async () => {
     // The wait this connector gained had no test — reverting it to a bare
     // `await sleep(...)` left the package 14/14 green, which is the same

@@ -6,7 +6,7 @@ import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
 import { CONNECTOR_APP_KEYS, type ConnectorAppKey } from '@/lib/api-types';
 import {
-  CREDENTIAL_FIELDS,
+  credentialFieldsFor,
   DEFAULT_CONNECTOR_APP_KEY,
   rejectCredentials,
   type CredentialField,
@@ -102,9 +102,12 @@ function CredentialInput({
           // only the regex applies there. Same field, same product, two verdicts
           // decided by which panel the operator opened: `admin@corp_internal`
           // was accepted when replacing credentials and rejected when
-          // registering. The regex is deliberately the looser of the two (see
-          // its own header: a rejected VALID address is the worse direction), so
-          // it is the one kept.
+          // registering. `rejectAdminEmail` is now the browser's own production
+          // applied on both surfaces, so `type="email"` would be a second engine
+          // deciding the same predicate (R48). The earlier version of this
+          // comment justified the choice by the regex being the LOOSER of the
+          // two — true when it was written, false since the predicate was
+          // tightened in the same commit that left this sentence behind.
           type={field.kind === 'secret' ? 'password' : 'text'}
           inputMode={field.kind === 'email' ? 'email' : undefined}
           className={FIELD_CLASS}
@@ -126,7 +129,12 @@ export function SaasAppForm() {
   const [error, setError] = useState<FieldError>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const fields = CREDENTIAL_FIELDS[appKey];
+  // Through the shared accessor, like the manager. `appKey` is a
+  // `ConnectorAppKey` from a bounded `<select>` here, so a bare index would be
+  // safe — but one accessor with no exceptions is what lets the source scan in
+  // connector-credentials.test.ts stay a flat rule, and this class has already
+  // produced two sibling lookups one round apart.
+  const fields = credentialFieldsFor(appKey);
 
   function resetForm() {
     setDisplayName('');

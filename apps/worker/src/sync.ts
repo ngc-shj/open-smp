@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { rawAccountSchema, type ConnectorContext, type Logger } from '@open-smp/connectors-core';
+import {
+  parseCredentialRecord,
+  rawAccountSchema,
+  type ConnectorContext,
+  type Logger,
+} from '@open-smp/connectors-core';
 import { withDecryptedCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import type { SyncJobData, SyncJobResult } from '@open-smp/queues';
@@ -129,10 +134,7 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
         { tenantId: job.tenantId, saasAppId: job.saasAppId },
         deps.encryptionKeys,
         async (decrypted) => {
-          const credentials = JSON.parse(new TextDecoder().decode(decrypted)) as Record<
-            string,
-            string
-          >;
+          const credentials = parseCredentialRecord(decrypted);
 
           const buildConnector = deps.connectorRegistry.get(app.key);
           if (!buildConnector) {

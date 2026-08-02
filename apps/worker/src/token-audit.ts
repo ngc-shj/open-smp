@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import {
   ConnectorError,
+  parseCredentialRecord,
   rawTokenSchema,
   type ConnectorContext,
   type Logger,
@@ -190,7 +191,7 @@ export async function runTokenAudit(
             // unzeroed copy at the same moment the helper's `finally` cleared the
             // original. sync.ts was changed in one round and this sibling in the
             // next; both go through one member now.
-            credentials: JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, string>,
+            credentials: parseCredentialRecord(decrypted),
             appKey: app.key,
             externalIds: rows.map((row) => row.external_id),
           };

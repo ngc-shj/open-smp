@@ -205,8 +205,10 @@ function rejectBotToken(raw: string): CredentialRejection | null {
  * applying.
  *
  * NOT an RFC 5322 attempt, and not an invention of this repository: this is the
- * exact predicate `<input type="email">` runs, quoted from the HTML standard's
- * "valid e-mail address" ABNF. It is used because of the direction the previous
+ * exact predicate `<input type="email">` runs — the HTML Living Standard's
+ * "valid e-mail address" REGULAR EXPRESSION, which the standard publishes as a
+ * regex and explicitly calls a willful violation of RFC 5322. Quoted rather than
+ * described, so a later reader does not "fix" it toward the RFC. It is used because of the direction the previous
  * fix took. Two adjudicators disagreed — the browser's on the register form
  * (inside a real `<form>`), this function's on the manager (outside one) — and
  * round 6 unified them by deleting the stricter one, so `admin@corp_internal`

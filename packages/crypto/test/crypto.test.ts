@@ -169,6 +169,19 @@ describe('parseEncryptionKeys', () => {
     expect(() => parseEncryptionKeys(`v1:${key}`)).toThrow();
   });
 
+  it('rejects a version that appears more than once', () => {
+    // `Map.set` silently overwrote, so this booted cleanly under the LAST key
+    // while every credential sealed under the first failed its GCM tag on the
+    // next read and the rotation sweep counted them all as failures. Raised by
+    // an external security review against a file this branch changed.
+    const a = Buffer.alloc(32, 1).toString('base64');
+    const b = Buffer.alloc(32, 2).toString('base64');
+
+    expect(() => parseEncryptionKeys(`1:${a},1:${b}`)).toThrow(/more than once/);
+    // The allow side: distinct versions are the supported rotation shape.
+    expect(parseEncryptionKeys(`1:${a},2:${b}`).size).toBe(2);
+  });
+
   it('rejects empty input', () => {
     expect(() => parseEncryptionKeys('')).toThrow();
   });

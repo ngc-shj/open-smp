@@ -128,6 +128,8 @@ describe('isTransportError', () => {
   it.each([
     ['a Slack request error', { code: 'slack_webapi_request_error' }],
     ['a Node socket code (gaxios)', { code: 'ECONNRESET' }],
+    ['another libuv code', { code: 'ETIMEDOUT' }],
+    ['a DNS resolution failure', { code: 'EAI_AGAIN' }],
     ['a request deadline (gaxios copies the DOMException name)', { code: 'TimeoutError' }],
     ['an abort by name', { name: 'AbortError' }],
   ])('classifies %s as transport', (_label, shape) => {
@@ -143,6 +145,14 @@ describe('isTransportError', () => {
     ],
     ['a googleapis numeric code', { code: 429 }],
     ['nothing that identifies it', {}],
+    // THE ENUMERATED CLASS. A bare `typeof code === 'string'` admitted Node's
+    // own error codes: a truncated PEM makes `createSign().sign()` throw
+    // ERR_OSSL_UNSUPPORTED, a permanent credential fault, which was then retried
+    // five times with cumulative backoff inside the open sync transaction and
+    // reported as `transient`.
+    ['a crypto fault', { code: 'ERR_OSSL_UNSUPPORTED' }],
+    ['another Node internal code', { code: 'ERR_INVALID_ARG_TYPE' }],
+    ['an unknown SDK code outside the class', { code: 'slack_webapi_response_error' }],
   ])('does not classify %s as transport', (_label, shape) => {
     // The deny side matters as much: misreading a rate limit or a 5xx as
     // transport would take the KIND a caller reports away from its own

@@ -186,6 +186,22 @@ function toRawToken(token: admin_directory_v1.Schema$Token, userKey: string): Ra
   };
 }
 
+/**
+ * OAuth token-endpoint errors that will repeat for every account in the run.
+ *
+ * From RFC 6749 §5.2's error registry, restricted to the codes a service-account
+ * assertion can actually produce. Retrying any of them spends attempts on a
+ * state that cannot change within a run, and reporting them as `transient` tells
+ * the operator to wait when what they must do is grant the delegation.
+ */
+const OAUTH_AUTH_ERRORS: ReadonlySet<string> = new Set([
+  'invalid_grant',
+  'unauthorized_client',
+  'invalid_client',
+  'invalid_scope',
+  'access_denied',
+]);
+
 async function withRetry<T>(
   fn: () => Promise<T>,
   ctx: ConnectorContext,
@@ -202,7 +218,23 @@ async function withRetry<T>(
     } catch (error) {
       const status = statusOf(error);
 
-      if (status === 401 || status === 403) {
+      // 400, TOO. Domain-wide delegation that was never granted, and an
+      // impersonated subject that does not exist, are returned by
+      // `oauth2.googleapis.com/token` as HTTP 400 with `unauthorized_client` /
+      // `invalid_grant` — RFC 6749 §5.2 reserves 401 for `invalid_client`. A 400
+      // missed this arm, was not 429 and not 5xx, and came out `transient`; the
+      // token audit only short-circuits on `auth` or `fatal`, so it repeated the
+      // same doomed exchange for up to TOKEN_AUDIT_MAX_ACCOUNTS accounts and
+      // then wrote `token_audit_completed` with zero grants. An operator whose
+      // delegation was never granted read that as "no third-party apps".
+      //
+      // Classified on the NORMALISED platform error, which `diagnose` already
+      // produces for both providers' grammars — the same shape Slack's
+      // AUTH_ERRORS set uses.
+      const platformError: unknown = diagnose(error, secret).platformError;
+      const isOauthAuthError =
+        typeof platformError === 'string' && OAUTH_AUTH_ERRORS.has(platformError);
+      if (status === 401 || status === 403 || isOauthAuthError) {
         // The other member of the class SC2 fixed on the Slack side and left
         // here — with the comment that had recorded the gap deleted by the same
         // change. gaxios redacts `Authorization` by default, but that is a
@@ -328,12 +360,23 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
       scopes: [SCOPE],
       subject: this.cfg.impersonateAdminEmail,
       // The TOKEN EXCHANGE, which `requestOptions` below cannot reach: it is a
-      // separate request google-auth-library issues from its own transporter
-      // with no timeout, no signal and no retry, on the FIRST hop of every sync
-      // — inside `runSync`'s open `withTenant` transaction. Without this the
-      // per-request ceiling and SYNC_DEADLINE_MS both missed it, and there is no
-      // `statement_timeout` underneath.
-      transporterOptions: { timeout: REQUEST_TIMEOUT_MS },
+      // separate request google-auth-library issues from its own transporter, on
+      // the FIRST hop of every sync — inside `runSync`'s open `withTenant`
+      // transaction, with no `statement_timeout` underneath.
+      //
+      // `retry` AS WELL AS `timeout`, and the first version of this fix said
+      // "no timeout, no signal and no retry" while supplying only the timeout.
+      // `gtoken` passes its own `retryConfig: { httpMethodsToRetry: ['POST'] }`,
+      // and gaxios arms its interceptor on the mere PRESENCE of that object —
+      // `retry` then defaults to 3 and `noResponseRetries` to 2, each attempt
+      // re-arming a fresh 30-second deadline. That is ~93 s per exchange, and
+      // the transport arm added in the same round multiplies it by
+      // MAX_ATTEMPTS. Instance defaults are merged deeply, so these win over
+      // gtoken's per-request object.
+      transporterOptions: {
+        timeout: REQUEST_TIMEOUT_MS,
+        retryConfig: { retry: 0, noResponseRetries: 0 },
+      },
     });
 
     const directory = google.admin({ version: 'directory_v1', auth: authClient });
@@ -371,8 +414,11 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
       scopes: [TOKENS_SCOPE],
       subject: this.cfg.impersonateAdminEmail,
       // See the users client: the token exchange is not covered by
-      // `requestOptions`.
-      transporterOptions: { timeout: REQUEST_TIMEOUT_MS },
+      // `requestOptions`, and gtoken arms gaxios' retry interceptor on its own.
+      transporterOptions: {
+        timeout: REQUEST_TIMEOUT_MS,
+        retryConfig: { retry: 0, noResponseRetries: 0 },
+      },
     });
 
     const directory = google.admin({ version: 'directory_v1', auth: authClient });

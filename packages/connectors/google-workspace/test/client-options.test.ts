@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorError } from '@open-smp/connectors-core';
 
 // SC2, review round 6. The Slack sibling of this file was written in round 2,
@@ -63,6 +63,14 @@ function makeContext(signal: AbortSignal) {
   };
 }
 
+// The spies in the cells below are on GLOBAL prototypes. A `finally` in each
+// body restores them today, but an early return or an `await` moved outside the
+// `try` reintroduces the leak — and a leaked spy on `TextEncoder#encode` or
+// `JSON.parse` is the kind that makes an unrelated later cell pass for the wrong
+// reason. Structural, not per-body.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 beforeEach(() => {
   usersList.mockClear();
   tokensList.mockClear();
@@ -151,24 +159,49 @@ describe('the Google clients this connector builds', () => {
     },
   );
 
-  it('bounds the token exchange, which the per-request options cannot reach', async () => {
-    // The JWT client issues its own request to obtain an access token, from its
-    // own transporter, on the first hop of every sync — inside runSync's open
-    // withTenant transaction. `requestOptions` is applied to `users.list`, not to
-    // that hop, and google-auth-library supplies no timeout of its own.
-    const connector = new GoogleWorkspaceConnector({
-      serviceAccountJson: SERVICE_ACCOUNT,
-      impersonateAdminEmail: 'admin@corp.example',
-    });
+  it.each([
+    [
+      'users.list',
+      async (c: InstanceType<typeof GoogleWorkspaceConnector>) => {
+        for await (const _ of c.listUsers(makeContext(new AbortController().signal))) {
+          // drained
+        }
+      },
+    ],
+    [
+      'tokens.list',
+      async (c: InstanceType<typeof GoogleWorkspaceConnector>) => {
+        await c.listTokens(makeContext(new AbortController().signal), 'user-1');
+      },
+    ],
+  ])(
+    'bounds the token exchange behind %s, which the per-request options cannot reach',
+    async (_label, drive) => {
+      // BOTH CLIENTS. SC3/C1 builds them separately, so an option applied to one
+      // is not applied to the other — and the first version of this cell drove
+      // `listUsers` only, so deleting the tokens client's `transporterOptions`
+      // left every gate green.
+      //
+      // The JWT client issues its own request to obtain an access token, from its
+      // own transporter, on the first hop of every run — inside runSync's open
+      // withTenant transaction. `requestOptions` is applied to `users.list`, not
+      // to that hop.
+      const connector = new GoogleWorkspaceConnector({
+        serviceAccountJson: SERVICE_ACCOUNT,
+        impersonateAdminEmail: 'admin@corp.example',
+      });
 
-    for await (const _ of connector.listUsers(makeContext(new AbortController().signal))) {
-      // drained
-    }
+      await drive(connector);
 
-    const options = jwt.mock.calls[0]?.[0] as
-      { transporterOptions?: { timeout?: number } } | undefined;
-    expect(options?.transporterOptions?.timeout).toBeGreaterThan(0);
-  });
+      const options = jwt.mock.calls[0]?.[0] as
+        { transporterOptions?: { timeout?: number; retryConfig?: { retry?: number } } } | undefined;
+      expect(options?.transporterOptions?.timeout).toBeGreaterThan(0);
+      // `retry` AS WELL. gtoken passes its own `retryConfig`, and gaxios arms the
+      // interceptor on that object's mere presence — three retries, each re-arming
+      // a fresh 30-second deadline, under this connector's own MAX_ATTEMPTS.
+      expect(options?.transporterOptions?.retryConfig?.retry).toBe(0);
+    },
+  );
 
   it('parses the service-account document once per client, not once per request', async () => {
     // The sibling cell in list-users.test.ts injects `usersList`, so it never
