@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  ConnectorError,
-  type ConnectorContext,
-  type RawAccount,
-} from '@open-smp/connectors-core';
+import { ConnectorError, type ConnectorContext, type RawAccount } from '@open-smp/connectors-core';
 import { GoogleWorkspaceConnector, type UsersListResponseData } from '../src/index.js';
 import page1 from '../fixtures/users-page1.json' with { type: 'json' };
 import page2 from '../fixtures/users-page2.json' with { type: 'json' };
@@ -194,6 +190,44 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(caught).toBeInstanceOf(ConnectorError);
     expect(caught).toMatchObject({ kind: 'auth' });
     expect((caught as Error).cause).toMatchObject({ statusCode: 403 });
+  });
+
+  it('parses the service account once, not once per request', async () => {
+    // A JS string cannot be zeroized at any level, so each parse mints a
+    // permanently-unclearable copy of the PEM. `privateKey()` was called per
+    // `withRetry` invocation — once per page here, and once per account in the
+    // token audit, bounded only by TOKEN_AUDIT_MAX_ACCOUNTS — which would undo
+    // five rounds of narrowing the credential-buffer class with one audit run.
+    const SERVICE_ACCOUNT = JSON.stringify({
+      client_email: 'a@b.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\nDEMO\n-----END PRIVATE KEY-----\n',
+    });
+    const pages: UsersListResponseData[] = [page1, page2, page3];
+    let call = 0;
+    const usersList = vi.fn(async () => {
+      const data = pages[call] ?? { users: [] };
+      call += 1;
+      return { data };
+    });
+
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      const connector = new GoogleWorkspaceConnector(
+        { serviceAccountJson: SERVICE_ACCOUNT, impersonateAdminEmail: 'admin@corp.example' },
+        { usersList },
+      );
+
+      await collect(connector.listUsers(makeContext()));
+
+      // Non-vacuity: the run really did make several requests.
+      expect(usersList).toHaveBeenCalledTimes(3);
+      const serviceAccountParses = parse.mock.calls.filter(
+        (args) => args[0] === SERVICE_ACCOUNT,
+      ).length;
+      expect(serviceAccountParses, 'the service account is parsed per request').toBe(1);
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it('forwards the run signal to the SDK so an abort cuts an in-flight request', async () => {

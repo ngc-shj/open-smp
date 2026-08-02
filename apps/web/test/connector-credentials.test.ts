@@ -137,6 +137,18 @@ describe('every connector declares the credentials its factory reads', () => {
     }
   });
 
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'])(
+    'returns no rejection for an app named %s',
+    (key) => {
+      // `app.key` is arbitrary tenant-supplied DB text — POST /contract-import
+      // writes it from a CSV cell — and `REJECTORS` is an object literal, so a
+      // bare index resolved these to inherited Object.prototype functions and
+      // CALLED them. The result was typed `CredentialRejection` and set as the
+      // panel's error, where its ERROR_KEYS lookup yields undefined.
+      expect(rejectCredentials(key, {})).toBeNull();
+    },
+  );
+
   it('resolves every label through a message the dictionary carries', () => {
     // A mistyped key renders as the marker rather than throwing, so without this
     // a credential field ships labelled ⟨saasapp.botToken⟩ and only a human

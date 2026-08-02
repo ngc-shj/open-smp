@@ -172,4 +172,30 @@ describe('parseEncryptionKeys', () => {
   it('rejects empty input', () => {
     expect(() => parseEncryptionKeys('')).toThrow();
   });
+
+  it.each([
+    ['the version prefix is missing', (key: string) => key],
+    ['the version and key are transposed', (key: string) => `${key}:1`],
+  ])('names the position and not the key material when %s', (_label, spell) => {
+    // Review round 6. These two spellings are the likeliest operator mistakes,
+    // and in BOTH the offending text is the master key itself — base64's
+    // alphabet contains no `:`, so nothing truncates it. The messages reach
+    // stderr on every boot path and stderr is what ships to the log aggregator;
+    // recovery from publishing this value is a full key rotation.
+    const key = Buffer.alloc(32, 1).toString('base64');
+
+    let caught: unknown;
+    try {
+      parseEncryptionKeys(spell(key));
+    } catch (error) {
+      caught = error;
+    }
+
+    // Non-vacuity: it really did reject, and it really did say something.
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message.length).toBeGreaterThan(0);
+    expect((caught as Error).message).not.toContain(key);
+    // Not merely the whole key: any run of it is enough to shorten a search.
+    expect((caught as Error).message).not.toContain(key.slice(0, 8));
+  });
 });
