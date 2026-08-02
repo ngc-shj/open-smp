@@ -29,6 +29,10 @@ function fakeConnector(
   return {
     id: 'google-workspace',
     authKind: 'oauth2',
+    // The declaration and the method are the same claim, so the fake keeps them
+    // agreeing: a fake that declared `per-user-grants` with no `listTokens`
+    // would exercise a state SC2/C4 asserts no real connector can be in.
+    tokenCapability: listTokens ? 'per-user-grants' : 'none',
     // Not reached: the audit reads saas_accounts, not the connector's user
     // stream. That is the property, so the fake makes a regression loud rather
     // than quietly re-fetching the domain on every audit.
@@ -209,8 +213,11 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
 
     expect(result).toMatchObject({ scanned: 0, applications: 0 });
     const events = await eventsFor(tenantId);
-    expect(events[0]!.kind).toBe('token_audit_failed');
-    expect(String(events[0]!.payload.error)).toMatch(/does not support token audit/);
+    // SC2/C4: a distinct KIND, not `token_audit_failed` with an error string.
+    // The old shape made "this connector cannot be audited" indistinguishable
+    // from "the audit broke" on the one surface that reads these events.
+    expect(events[0]!.kind).toBe('token_audit_unsupported');
+    expect(events[0]!.payload.capability).toBe('none');
   });
 
   it('counts a grant the connector should not have produced, and keeps going', async () => {

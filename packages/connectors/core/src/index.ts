@@ -1,3 +1,5 @@
+import type { TokenCapability } from '@open-smp/api-types';
+
 export interface Logger {
   info(msg: string, meta?: Record<string, unknown>): void;
   warn(msg: string, meta?: Record<string, unknown>): void;
@@ -40,6 +42,17 @@ export interface RawToken {
 export interface SaaSConnector {
   id: string; // e.g. 'google-workspace'
   authKind: 'oauth2' | 'apikey' | 'scim';
+  /**
+   * REQUIRED, unlike `listTokens`. That is the whole change: a connector had to
+   * be interrogated with `typeof connector.listTokens === 'function'`, which
+   * cannot distinguish "cannot" from "not implemented yet" and gives a caller
+   * nothing to render.
+   *
+   * `per-user-grants` and a present `listTokens` are the same claim made twice,
+   * and a test asserts they agree for every connector — the type system cannot,
+   * because an optional method's presence is not visible in the type.
+   */
+  tokenCapability: TokenCapability;
   listUsers(ctx: ConnectorContext): AsyncIterable<RawAccount>;
 
   /**

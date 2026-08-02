@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { latestRuns } from '../src/lib/discovery-runs';
+import { latestRuns, latestUnauditable } from '../src/lib/discovery-runs';
 import type { DiscoveryEventListItem } from '../src/lib/api-types';
 
 // SC3/C4. `GET /events` is a log and there is no per-application current state
@@ -70,5 +70,42 @@ describe('latestRuns picks what is true now', () => {
   it('returns nothing for a log with no completed audit', () => {
     expect(latestRuns([])).toEqual([]);
     expect(latestRuns([event({ kind: 'token_audit_failed' })])).toEqual([]);
+  });
+});
+
+describe('SC2/C4: applications whose connector cannot be audited', () => {
+  it('reports one per application, newest first', () => {
+    const found = latestUnauditable([
+      event({ id: 'new', kind: 'token_audit_unsupported', payload: { auditedAppKey: 'slack', capability: 'none' } }),
+      event({ id: 'old', kind: 'token_audit_unsupported', payload: { auditedAppKey: 'slack', capability: 'none' } }),
+    ]);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ auditedAppKey: 'slack', capability: 'none' });
+  });
+
+  it('does not treat a failed audit as an unauditable connector', () => {
+    // The distinction the new event kind exists for. A run that could not
+    // authenticate is something to go and fix; a connector with no grant
+    // concept is a permanent property of the integration, and reporting the
+    // first as the second tells an operator to stop looking.
+    expect(latestUnauditable([event({ kind: 'token_audit_failed', payload: { auditedAppKey: 'gws' } })])).toEqual([]);
+    expect(latestUnauditable([event({ kind: 'token_audit_completed', payload: { auditedAppKey: 'gws' } })])).toEqual([]);
+  });
+
+  it('is disjoint from the completed runs the page renders beside it', () => {
+    // Both readers walk the same list. An application in both would be one that
+    // reported grants and then declared it could not — and the page would show
+    // a table and a "cannot be audited" line for the same key.
+    const items = [
+      event({ id: 'a', kind: 'token_audit_completed', payload: { auditedAppKey: 'gws', applications: [] } }),
+      event({ id: 'b', kind: 'token_audit_unsupported', payload: { auditedAppKey: 'slack', capability: 'none' } }),
+    ];
+    const runKeys = latestRuns(items).map((r) => r.auditedAppKey);
+    const unauditableKeys = latestUnauditable(items).map((u) => u.auditedAppKey);
+
+    expect(runKeys).toEqual(['gws']);
+    expect(unauditableKeys).toEqual(['slack']);
+    expect(runKeys.filter((k) => unauditableKeys.includes(k))).toEqual([]);
   });
 });

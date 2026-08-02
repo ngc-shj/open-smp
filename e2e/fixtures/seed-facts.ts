@@ -2,12 +2,33 @@
 // apps/api/src/seed.ts (canonical source) — these values are cross-checked,
 // not re-derived, so a seed.ts edit must be mirrored here by hand.
 
+// SC2/C5: each entry now states its link status as a FIELD.
+//
+// The key used to be the status, which worked while the demo had one account
+// per status and stopped working the moment a second account-bearing
+// application arrived — two orphans cannot both be keyed `orphan`, and the
+// second would have silently overwritten the first in
+// seed-gate-agreement.test.ts's parser. The key is now a name and the status is
+// data, so the gate's parser reads the claim instead of inferring it.
 export const SEEDED_ACCOUNTS = {
-  matched: { email: 'alice.tanaka@demo.example', displayName: 'Alice Tanaka' },
-  ghost: { email: 'bob.suzuki@demo.example', displayName: 'Bob Suzuki' },
-  ambiguous: { email: 'shared.mailbox@demo.example', displayName: 'Shared Mailbox' },
-  orphan: { email: 'unknown.contractor@demo.example', displayName: 'Unknown Contractor' },
+  matched: { email: 'alice.tanaka@demo.example', displayName: 'Alice Tanaka', status: 'matched' },
+  ghost: { email: 'bob.suzuki@demo.example', displayName: 'Bob Suzuki', status: 'ghost' },
+  ambiguous: { email: 'shared.mailbox@demo.example', displayName: 'Shared Mailbox', status: 'ambiguous' },
+  orphan: { email: 'unknown.contractor@demo.example', displayName: 'Unknown Contractor', status: 'orphan' },
+  slackOrphan: { email: 'chris.wong@demo.example', displayName: 'Chris Wong', status: 'orphan' },
 } as const;
+
+/**
+ * Every seeded account the orphan filter must show, by name.
+ *
+ * `accounts.spec.ts` asserted `toHaveCount(1)`. A second orphan makes that a
+ * number to bump, and a bumped number asserts nothing — it says "as many rows
+ * as the seed happens to produce". Derived from the statuses above, so an
+ * account added to the seed joins this set rather than breaking a count.
+ */
+export const SEEDED_ORPHAN_EMAILS = Object.values(SEEDED_ACCOUNTS)
+  .filter((a) => a.status === 'orphan')
+  .map((a) => a.email);
 
 export const SAAS_APP_KEY = 'google-workspace';
 export const SAAS_APP_DISPLAY_NAME = 'Google Workspace';
@@ -35,6 +56,11 @@ export const SEEDED_DISCOVERED_UNSTATED_CLIENT_ID = 'unstated-client.example.com
 // The application the connectors do not sync: no credentials, no accounts, and
 // an ANNUAL cycle where the other is monthly, so the two rows are visibly not
 // comparable (SCL4).
+// SC2/C5. Accounts, a connector, and no contract — the third of SCL16's four
+// states, and the one the demo could not reach with a single synced app.
+export const SLACK_APP_KEY = 'slack';
+export const SLACK_APP_DISPLAY_NAME = 'Slack';
+
 export const CONTRACT_ONLY_APP_KEY = 'notion';
 export const CONTRACT_ONLY_APP_DISPLAY_NAME = 'Notion';
 export const CONTRACT_ONLY_SEATS = 25;

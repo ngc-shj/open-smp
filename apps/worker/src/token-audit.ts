@@ -185,14 +185,24 @@ export async function runTokenAudit(
   }
   const connector = buildConnector(credentials);
 
-  if (!connector.listTokens) {
-    // NF2: a connector that cannot read grants is in an ordinary state. The
-    // run records that it found nothing BECAUSE it could not look, which is a
+  if (connector.tokenCapability !== 'per-user-grants' || !connector.listTokens) {
+    // NF2: a connector that cannot read grants is in an ordinary state. The run
+    // records that it found nothing BECAUSE it could not look, which is a
     // different fact from finding nothing.
-    await recordEvent(deps, job.tenantId, 'token_audit_failed', {
+    //
+    // SC2/C4: the KIND now says so. This was `token_audit_failed`, which is
+    // also what an authentication failure writes — so `/discovery` dropped both
+    // and an operator could not tell a permanent property of the integration
+    // from something to go and fix.
+    //
+    // The condition reads the declaration AND the method, because the two are
+    // the same claim made twice and only their agreement is the invariant a
+    // test can assert. Auditing on `per-user-grants` with no `listTokens` would
+    // be a TypeError inside the loop below.
+    await recordEvent(deps, job.tenantId, 'token_audit_unsupported', {
       runId,
       auditedAppKey: appKey,
-      error: `connector ${appKey} does not support token audit`,
+      capability: connector.tokenCapability,
     });
     return { runId, scanned: 0, failed: 0, applications: 0 };
   }

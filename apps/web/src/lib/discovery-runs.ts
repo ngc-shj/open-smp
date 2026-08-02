@@ -42,3 +42,40 @@ export function latestRuns(items: DiscoveryEventListResponse['items']): LatestRu
 
   return [...byApp.values()];
 }
+
+export type UnauditableApp = {
+  auditedAppKey: string;
+  createdAt: string;
+  capability: string;
+};
+
+/**
+ * Applications whose connector cannot report third-party grants (SC2/C4).
+ *
+ * Separate from `latestRuns` rather than folded into it: these have no
+ * applications, no scanned count and no failure to investigate, so a caller
+ * that treated them as a run with zeroes would render "0 applications found"
+ * — which is the claim this exists to avoid making. The page states that the
+ * question was not asked.
+ *
+ * Same newest-first selection as `latestRuns`, and the two are disjoint by
+ * event kind, so an application appearing in both would mean a connector that
+ * reported grants and then declared it could not.
+ */
+export function latestUnauditable(items: DiscoveryEventListResponse['items']): UnauditableApp[] {
+  const byApp = new Map<string, UnauditableApp>();
+
+  for (const item of items) {
+    if (item.kind !== 'token_audit_unsupported') continue;
+    const auditedAppKey = item.payload.auditedAppKey;
+    if (typeof auditedAppKey !== 'string' || byApp.has(auditedAppKey)) continue;
+
+    byApp.set(auditedAppKey, {
+      auditedAppKey,
+      createdAt: item.createdAt,
+      capability: typeof item.payload.capability === 'string' ? item.payload.capability : 'none',
+    });
+  }
+
+  return [...byApp.values()];
+}

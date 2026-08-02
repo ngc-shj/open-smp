@@ -35,6 +35,7 @@ const FAKE_ACCOUNTS: RawAccount[] = [
 class FakeConnector implements SaaSConnector {
   id = 'fake-app';
   authKind: SaaSConnector['authKind'] = 'apikey';
+  tokenCapability: SaaSConnector['tokenCapability'] = 'none';
 
   async *listUsers(_ctx: ConnectorContext): AsyncIterable<RawAccount> {
     for (const account of FAKE_ACCOUNTS) {

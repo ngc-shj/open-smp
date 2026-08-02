@@ -28,6 +28,18 @@ const ADMIN_PASSWORD = 'demo-admin-password';
 const SAAS_APP_KEY = 'google-workspace';
 const SAAS_APP_DISPLAY_NAME = 'Google Workspace';
 
+// SC2/C5. The second account-bearing application, which is what SCL16 said the
+// demo was missing: it could show "accounts, and a contract" and "a contract,
+// no accounts", and not "accounts, and no contract" — the state an operator is
+// in the moment they connect a tool before anyone has entered what it costs.
+//
+// Deliberately WITHOUT a contract. `assert-seed-preserved.sh` asserts contract
+// figures for exactly the two apps that have them, and seed-gate-agreement's
+// licence check requires that set to match the fixture's two — so a third
+// contract would move a control for a reason unrelated to what this app is for.
+const SLACK_APP_KEY = 'slack';
+const SLACK_APP_DISPLAY_NAME = 'Slack';
+
 // Fake service-account JSON — demo credential only, never a real key (NFR4).
 const FAKE_SERVICE_ACCOUNT_CREDENTIALS = {
   type: 'service_account',
@@ -153,6 +165,7 @@ const CONTRACT_ONLY_CONTRACT: SeedContract = {
 // C4. One grant everybody made to a tool IT knows about, and one that nobody
 // registered — `anonymous: true` is the discovery signal, and the demo exists to
 // put those two side by side.
+const SEEDED_UNSUPPORTED_RUN_ID = '00000000-0000-4000-8000-0000000000a2';
 const SEEDED_AUDIT_RUN_ID = '00000000-0000-4000-8000-00000000a0d1';
 const SEEDED_DISCOVERED_APPLICATIONS = [
   {
@@ -215,6 +228,32 @@ const ACCOUNTS: SeedAccount[] = [
     lastActivityAt: '2026-06-15T09:00:00.000Z',
   },
 ];
+
+// SC2/C5. Slack's account, and it is deliberately ONE.
+//
+// The email and display name are disjoint from every seeded identity, so the
+// matcher produces `orphan` under all four of its rules — which is the point:
+// this is what a newly-connected tool looks like before anyone has reconciled
+// it, and it is the second member of the orphan set `accounts.spec.ts` now
+// asserts by NAME rather than by count.
+//
+// Not a bot, though C1 decided bots are synced. A seeded bot would be an orphan
+// too and would make the demo's orphan list read as noise on the one screen
+// that exists to make orphans actionable — the residue C1 recorded, kept out of
+// the demo rather than shipped into it.
+const SLACK_ACCOUNTS: SeedAccount[] = [
+  {
+    externalId: 'U0DEMO00001',
+    email: 'chris.wong@demo.example',
+    displayName: 'Chris Wong',
+    accountStatus: 'active',
+    isAdmin: false,
+    // Slack reports no activity timestamp at all (SC2/C1), so the demo says so
+    // rather than inventing one the connector could never produce.
+    lastActivityAt: null,
+  },
+];
+
 
 async function ensureTenant(pool: ReturnType<typeof createPool>): Promise<string> {
   await pool.query(
@@ -299,6 +338,50 @@ async function ensureSaasApp(
  * uploaded for a tool nobody has connected produces, and the one the licences
  * screen would otherwise never show.
  */
+/**
+ * The application with accounts and no contract (SC2/C5, SCL16).
+ *
+ * Credentials are seeded so `GET /licenses` reports `hasConnector: true` — the
+ * distinction from the contract-only app is the presence of a connector, not
+ * just of accounts. The token is fake, exactly as the Google service account
+ * is: nothing in this repository can reach a real workspace (NFR4).
+ */
+async function ensureSlackApp(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  encryptionKeys: ReturnType<typeof parseEncryptionKeys>,
+): Promise<string> {
+  return withTenant(pool, tenantId, async (tx) => {
+    const inserted = await tx.query<{ id: string }>(
+      `INSERT INTO saas_apps (tenant_id, key, display_name)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (tenant_id, key) DO NOTHING
+       RETURNING id`,
+      [tenantId, SLACK_APP_KEY, SLACK_APP_DISPLAY_NAME],
+    );
+    const { rows } = await tx.query<{ id: string }>(
+      'SELECT id FROM saas_apps WHERE tenant_id = $1 AND key = $2',
+      [tenantId, SLACK_APP_KEY],
+    );
+    const saasAppId = inserted.rows[0]?.id ?? rows[0]?.id;
+    if (!saasAppId) {
+      throw new Error('seed: slack app neither inserted nor found');
+    }
+
+    const { blob, keyVersion } = encryptCredentials(
+      new TextEncoder().encode(JSON.stringify({ botToken: 'xoxb-demo-not-a-real-token' })),
+      { tenantId, saasAppId },
+      encryptionKeys,
+    );
+    await tx.query(
+      'UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1',
+      [saasAppId, Buffer.from(blob), keyVersion],
+    );
+
+    return saasAppId;
+  });
+}
+
 async function ensureContractOnlyApp(
   pool: ReturnType<typeof createPool>,
   tenantId: string,
@@ -420,17 +503,42 @@ async function ensureTokenAudit(
        LIMIT 1`,
       [tenantId, TOKEN_AUDIT_EVENT_SOURCE, JSON.stringify(SEEDED_DISCOVERED_APPLICATIONS)],
     );
-    if (rows.length > 0) {
-      return;
+    if (rows.length === 0) {
+      await recordTokenAudit(tx, tenantId, 'token_audit_completed', {
+        runId: SEEDED_AUDIT_RUN_ID,
+        auditedAppKey: SAAS_APP_KEY,
+        scanned: ACCOUNTS.length,
+        failed: 0,
+        applications: SEEDED_DISCOVERED_APPLICATIONS,
+      });
     }
 
-    await recordTokenAudit(tx, tenantId, 'token_audit_completed', {
-      runId: SEEDED_AUDIT_RUN_ID,
-      auditedAppKey: SAAS_APP_KEY,
-      scanned: ACCOUNTS.length,
-      failed: 0,
-      applications: SEEDED_DISCOVERED_APPLICATIONS,
-    });
+    // SC2/C4. The other answer, so /discovery shows both in the demo: an
+    // application that reported grants, and one whose connector has no
+    // third-party grant concept at all. Without this the second state is
+    // reachable only by auditing a real Slack workspace, and the vocabulary
+    // would be a shape nothing renders.
+    //
+    // Guarded on its OWN content, and the early `return` above became an `if`
+    // for that reason. Sharing the completed run's guard is SCL17 exactly —
+    // measured here rather than reasoned about: the event never appeared on a
+    // stack whose volume already carried the completed run, CI would have
+    // passed on its fresh volume, and the seeder's own comment two lines up
+    // warns about this shape.
+    const unsupported = await tx.query(
+      `SELECT 1 FROM discovery_events
+       WHERE tenant_id = $1 AND source = $2 AND kind = 'token_audit_unsupported'
+         AND payload ->> 'auditedAppKey' = $3
+       LIMIT 1`,
+      [tenantId, TOKEN_AUDIT_EVENT_SOURCE, SLACK_APP_KEY],
+    );
+    if (unsupported.rows.length === 0) {
+      await recordTokenAudit(tx, tenantId, 'token_audit_unsupported', {
+        runId: SEEDED_UNSUPPORTED_RUN_ID,
+        auditedAppKey: SLACK_APP_KEY,
+        capability: 'none',
+      });
+    }
   });
 }
 
@@ -476,10 +584,11 @@ async function ensureAccounts(
   pool: ReturnType<typeof createPool>,
   tenantId: string,
   saasAppId: string,
+  accounts: readonly SeedAccount[],
 ): Promise<Map<string, string>> {
   return withTenant(pool, tenantId, async (tx) => {
     const idByExternalId = new Map<string, string>();
-    for (const account of ACCOUNTS) {
+    for (const account of accounts) {
       const { rows } = await tx.query<{ id: string }>(
         `INSERT INTO saas_accounts
            (tenant_id, saas_app_id, external_id, email, display_name, account_status, is_admin, last_activity_at, last_synced_at)
@@ -518,6 +627,7 @@ async function computeAndPersistLinks(
   tenantId: string,
   identityIdByEmployeeId: Map<string, string>,
   accountIdByExternalId: Map<string, string>,
+  accounts: readonly SeedAccount[],
 ): Promise<{ orphan: number; ghost: number; matched: number; ambiguous: number }> {
   const identityViews: IdentityView[] = IDENTITIES.map((identity) => {
     const id = identityIdByEmployeeId.get(identity.employeeId);
@@ -534,7 +644,7 @@ async function computeAndPersistLinks(
     };
   });
 
-  const accountViews: AccountView[] = ACCOUNTS.map((account) => {
+  const accountViews: AccountView[] = accounts.map((account) => {
     const id = accountIdByExternalId.get(account.externalId);
     if (!id) {
       throw new Error(`seed: missing account id for ${account.externalId}`);
@@ -606,13 +716,35 @@ async function main(): Promise<void> {
     await ensureContract(pool, tenantId, contractOnlyAppId, CONTRACT_ONLY_CONTRACT);
     await ensureTokenAudit(pool, tenantId);
     const identityIdByEmployeeId = await ensureIdentities(pool, tenantId);
-    const accountIdByExternalId = await ensureAccounts(pool, tenantId, saasAppId);
+    const accountIdByExternalId = await ensureAccounts(pool, tenantId, saasAppId, ACCOUNTS);
     const counts = await computeAndPersistLinks(
       pool,
       tenantId,
       identityIdByEmployeeId,
       accountIdByExternalId,
+      ACCOUNTS,
     );
+
+    // The second account-bearing application. Its accounts run through the same
+    // matcher against the same identities — they come out orphan because they
+    // match nothing, not because anything special was done to them.
+    const slackAppId = await ensureSlackApp(pool, tenantId, encryptionKeys);
+    const slackAccountIds = await ensureAccounts(pool, tenantId, slackAppId, SLACK_ACCOUNTS);
+    const slackCounts = await computeAndPersistLinks(
+      pool,
+      tenantId,
+      identityIdByEmployeeId,
+      slackAccountIds,
+      SLACK_ACCOUNTS,
+    );
+    if (slackCounts.orphan !== SLACK_ACCOUNTS.length) {
+      // Checked rather than assumed: the demo's claim is "a connected tool
+      // nobody has reconciled", and a Slack account that MATCHED would make the
+      // orphan set the specs assert by name silently smaller.
+      throw new Error(
+        `seed: expected every slack account to be an orphan, got ${JSON.stringify(slackCounts)}`,
+      );
+    }
 
     // C8 acceptance bar: the seeded demo must show >=1 orphan AND >=1 ghost.
     if (counts.orphan < 1 || counts.ghost < 1) {

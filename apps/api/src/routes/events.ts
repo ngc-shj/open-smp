@@ -8,6 +8,7 @@ import {
   type DiscoveredApplication,
   type DiscoveryEventListItem,
   type DiscoveryEventPayload,
+  TOKEN_CAPABILITIES,
 } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { LIST_RATE_LIMIT } from '../rate-limits.js';
@@ -234,6 +235,12 @@ export function projectTokenAuditPayload(record: Record<string, unknown>): Disco
     if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
       projected[field] = value;
     }
+  }
+  // SC2/C4. What the connector said it could do, on an unsupported run.
+  // Whitelisted against the vocabulary rather than passed through: the payload
+  // is connector-written, and this string reaches a rendered page.
+  if (typeof record.capability === 'string' && (TOKEN_CAPABILITIES as readonly string[]).includes(record.capability)) {
+    projected.capability = record.capability;
   }
   const applications = record.applications;
   if (Array.isArray(applications)) {

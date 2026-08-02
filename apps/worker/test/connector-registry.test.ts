@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONNECTOR_APP_KEYS } from '@open-smp/api-types';
+import { CONNECTOR_APP_KEYS, TOKEN_CAPABILITIES } from '@open-smp/api-types';
 import { createConnectorRegistry } from '../src/connectors.js';
 
 // SC2/C2. The two ends of `saas_apps.key`, asserted to agree.
@@ -46,5 +46,37 @@ describe('SC2/C2: the connector registry and the accepted key set agree', () => 
 
       expect(factory, `no factory for ${key}`).toBeTypeOf('function');
     }
+  });
+});
+
+describe('SC2/C4: the capability declaration and the method agree', () => {
+  it.each([...CONNECTOR_APP_KEYS])('%s declares what it can actually do', (key) => {
+    // Two statements of one claim, and the type system cannot relate them: an
+    // optional method's presence is not visible in the type, so a connector
+    // declaring `per-user-grants` with no `listTokens` compiles and throws a
+    // TypeError inside the audit loop. The audit checks both for that reason;
+    // this is what stops the second check from being permanently dead code.
+    const connector = createConnectorRegistry().get(key)!({
+      serviceAccountJson: '{}',
+      impersonateAdminEmail: 'a@b.example',
+      botToken: 'xoxb-not-real',
+    });
+
+    expect(TOKEN_CAPABILITIES as readonly string[]).toContain(connector.tokenCapability);
+    expect(
+      typeof connector.listTokens === 'function',
+      `${key} declares ${connector.tokenCapability}`,
+    ).toBe(connector.tokenCapability === 'per-user-grants');
+  });
+
+  it('has at least one connector on each side of that question', () => {
+    // Non-vacuity, and the reason Slack was chosen over Microsoft 365: a
+    // vocabulary every implementation answers the same way is a rename of the
+    // optional method it replaced.
+    const declared = [...CONNECTOR_APP_KEYS].map(
+      (key) => createConnectorRegistry().get(key)!({ serviceAccountJson: '{}', impersonateAdminEmail: 'a@b.example', botToken: 'xoxb-not-real' }).tokenCapability,
+    );
+
+    expect(new Set(declared).size).toBeGreaterThan(1);
   });
 });

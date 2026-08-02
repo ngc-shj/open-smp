@@ -8,6 +8,7 @@ import {
   SEEDED_CONTRACT_CURRENCY,
   SEEDED_CONTRACT_SEATS,
   SEEDED_CONTRACT_UNIT_PRICE,
+  SLACK_APP_KEY,
 } from '../fixtures/seed-facts.js';
 
 // C4 / C5 acceptance against the compose stack.
@@ -184,5 +185,23 @@ test.describe('licences', () => {
     expect(csv).toContain(`"${SAAS_APP_KEY}"`);
     // The money column carries the file's own digits through the export too.
     expect(csv).toContain('"9.99"');
+  });
+
+  // SC2/C5, SCL16's missing state: accounts and a connector, and no contract.
+  // The demo could show "accounts + contract" and "contract, no accounts"; this
+  // is the one an operator is actually in the moment they connect a tool.
+  test('shows an application with accounts and no contract', async ({ page }) => {
+    await page.goto('/licenses');
+
+    const row = page.getByTestId(`license-row-${SLACK_APP_KEY}`);
+    await expect(row).toBeVisible();
+    // Nothing purchased, because nobody has said what it costs — but the seats
+    // in use are known, which is exactly the gap the page exists to surface.
+    await expect(row.getByTestId('purchased')).toHaveText('—');
+    await expect(row.getByTestId('assigned')).toHaveText('1');
+    // Not "(no connector)": that suffix distinguishes this row from the
+    // contract-only application, and conflating the two would make the screen
+    // say nobody has connected a tool that is connected.
+    await expect(row.getByTestId('match-state')).not.toContainText('no connector');
   });
 });

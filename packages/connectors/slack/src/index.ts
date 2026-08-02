@@ -214,6 +214,11 @@ async function withRetry<T>(
 export class SlackConnector implements SaaSConnector {
   id = 'slack';
   authKind: SaaSConnector['authKind'] = 'apikey';
+  // Not `workspace-apps`, though Slack has that shape: reaching it needs
+  // `admin.apps:read` on an org-level Enterprise Grid token, and this connector
+  // holds neither. Declaring a capability the credentials cannot exercise is
+  // the overstated-control failure one level up from the one C4 replaces.
+  tokenCapability: SaaSConnector['tokenCapability'] = 'none';
 
   private readonly cfg: SlackConnectorConfig;
   private readonly deps: SlackConnectorDeps;

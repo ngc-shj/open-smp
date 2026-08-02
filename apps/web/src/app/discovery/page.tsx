@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { apiFetch } from '@/lib/api-server';
 import type { DiscoveryEventListResponse } from '@/lib/api-types';
 import { NavBar } from '@/components/NavBar';
-import { latestRuns } from '@/lib/discovery-runs';
+import { latestRuns, latestUnauditable } from '@/lib/discovery-runs';
 import { getTranslator } from '@/lib/i18n/server';
 
 // SC3/C4. The reader the shape needed — and building it is what found that the
@@ -24,6 +24,7 @@ async function fetchAudits(): Promise<DiscoveryEventListResponse> {
 export default async function DiscoveryPage() {
   const { items } = await fetchAudits();
   const runs = latestRuns(items);
+  const unauditable = latestUnauditable(items);
   const t = await getTranslator();
 
   return (
@@ -33,7 +34,21 @@ export default async function DiscoveryPage() {
         <h1 className="mb-1 text-lg font-semibold text-neutral-900">{t('discovery.title')}</h1>
         <p className="mb-6 text-sm text-neutral-500">{t('discovery.intro')}</p>
 
-        {runs.length === 0 && (
+        {/* SC2/C4. Stated, not omitted. A connector that reports no grants used
+            to write `token_audit_failed`, which this page dropped — so the
+            application simply did not appear and an operator could not tell
+            "cannot be audited" from "was never audited". */}
+        {unauditable.map((app) => (
+          <p
+            key={app.auditedAppKey}
+            data-testid={`unauditable-${app.auditedAppKey}`}
+            className="mb-3 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-500"
+          >
+            {t('discovery.unauditable', { app: app.auditedAppKey })}
+          </p>
+        ))}
+
+        {runs.length === 0 && unauditable.length === 0 && (
           <p className="rounded-lg border border-neutral-200 bg-white px-3 py-6 text-center text-sm text-neutral-400">
             {t('discovery.noAudit')}
           </p>
