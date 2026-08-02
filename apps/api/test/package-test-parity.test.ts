@@ -632,6 +632,10 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // against the worker's registry. Nothing in the type system connects the
       // two, and both drift directions are silent.
       'apps/worker/test/connector-registry.test.ts',
+      // SC2/C3 family (b): the form's credential field names against the worker
+      // factory that reads them. A disagreement is a registration the operator
+      // completes and a sync that fails in an audit row.
+      'apps/web/test/connector-credentials.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

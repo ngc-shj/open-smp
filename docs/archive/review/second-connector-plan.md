@@ -4,6 +4,10 @@ Cycle 9. `docs/roadmap.md` puts SC2 next and records that it was blocked on one
 input this repository cannot supply — *which* provider. That input is now given:
 **Slack**, chosen on what it teaches rather than on market share.
 
+Revision 5 — **C3 built.** The registration form asks each connector for what it
+needs, so C1 is a capability the product can reach rather than one only the API
+could. Two behaviours changed beyond the new connector, both recorded below.
+
 Revision 4 — **C1 built.** `packages/connectors/slack` exists, `slack` joins the
 key set and the registry in the same change, and the branch that handles a
 connector without `listTokens` has a real instance for the first time. C4 can
@@ -395,6 +399,58 @@ and `docker build --target deps` green.
 - New copy goes through the dictionary; the ratchet enforces it mechanically. A
   per-connector key `<option>` adds a second operator-typed identifier to
   `untranslated-literals.ts`'s allowlist, which the ratchet does **not** enforce.
+
+### What C3's execution added
+
+**The field set is a `Record<ConnectorAppKey, …>`, so the compile error comes
+first.** A key in the set with no credential shape would otherwise be a form
+that posts `credentials: {}` and fails at the worker with
+`<key> credentials require …` — a message the operator meets as an audit row,
+about a credential they cannot see to re-check. Nothing in the type system
+connects the field NAMES to the factory reading them, so a unit test compares
+the two directions and is listed in `CONTROL_FILES` by hand (family (b) again).
+
+**The bot token is checked for whitespace and NOT for its prefix.** `xoxb-`
+would catch the common mistake of pasting a user or app-level token, and
+enumerating a vendor's token spellings is the surface-form adjudication this
+repository keeps paying for (`SC60`): Slack has changed formats before, and
+telling an operator their valid credential is wrong is the worse direction. A
+paste that carried a newline is decidable without knowing the format, and it is
+the error that actually happens.
+
+**Two behaviours changed that Slack did not require:**
+
+- Replacing credentials now sends every declared field. It sent two of Google's
+  three, so a `customerId` was silently dropped by a replace that never
+  rendered it.
+- The 409 from `POST /saas-apps` is discriminated. C2 gave that status a second
+  meaning (`catalog_full`), and reporting a full catalog as "already
+  registered" sends the operator to delete an application they do not have.
+
+**The default stays `google-workspace`, as the FIRST member of the key set**
+rather than a separate constant. Three E2E specs fill the Google fields on first
+render, so a reorder reds them instead of moving the default quietly.
+
+### C3's mutations
+
+Seven run, seven red. Two were re-authored after the first run: one anchor
+matched nothing, and one was DECLARED a survivor on the reasoning that the
+mutation would not compile — it redded, because vitest does not typecheck and
+the test caught it at runtime. The prediction was wrong in the safe direction,
+and the declaration was removed rather than kept as decoration.
+
+| mutation | result |
+|---|---|
+| the classifier dispatches on the values instead of the key | reds |
+| a token with inner whitespace is accepted | reds |
+| the classifier rejects everything | reds (RT10's allow side) |
+| a connector loses its credential declaration | reds |
+| the worker reads a credential name no form offers | reds |
+| the form defaults to a connector that is not the first key | reds |
+| a credential label points at a key the dictionary lacks | reds |
+
+Suite state after C3: unit 533 green (42 files), integration 227 green, E2E 58
+green, lint / typecheck / build clean, CI-only typecheck-program gate clean.
 
 ### C4 — the capability vocabulary (`SCT1`), reduced to what is implementable
 

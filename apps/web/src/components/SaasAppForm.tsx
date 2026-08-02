@@ -4,12 +4,21 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
+import { CONNECTOR_APP_KEYS, type ConnectorAppKey } from '@/lib/api-types';
+import {
+  CREDENTIAL_FIELDS,
+  DEFAULT_CONNECTOR_APP_KEY,
+  rejectCredentials,
+  type CredentialField,
+} from '@/lib/connector-credentials';
 
 type FieldError =
   | 'invalidJson'
   | 'missingFields'
+  | 'invalidToken'
   | 'invalidBody'
   | 'duplicate'
+  | 'catalogFull'
   | 'network'
   | 'unknown'
   | null;
@@ -23,74 +32,119 @@ type FieldError =
 // a pasted service-account private key must never reach a React error
 // overlay, console, or support screenshot. Do not "fix" this back to the
 // codebase idiom.
+//
+// SC2/C3 extends this to a second credential shape rather than relaxing it. A
+// Slack bot token is a directly replayable bearer credential, so the rule it
+// was written for applies more sharply, not less — the classification itself
+// now lives in lib/connector-credentials.ts, which returns symbols and reads no
+// caught value either.
 const ERROR_KEYS: Record<FieldError & string, MessageKey> = {
   invalidJson: 'saasapp.invalidJson',
   missingFields: 'saasapp.missingFields',
+  invalidToken: 'saasapp.invalidToken',
   invalidBody: 'saasapp.invalidBodyRegister',
   duplicate: 'saasapp.duplicate',
+  catalogFull: 'saasapp.registerFailed',
   network: 'error.network',
   unknown: 'saasapp.registerFailed',
 };
 
-function validateServiceAccountJson(raw: string): FieldError {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return 'invalidJson';
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    return 'invalidJson';
-  }
-  const record = parsed as Record<string, unknown>;
-  if (typeof record.client_email !== 'string' || typeof record.private_key !== 'string') {
-    return 'missingFields';
-  }
-  return null;
+const FIELD_CLASS =
+  'w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none';
+
+function CredentialInput({
+  field,
+  value,
+  onChange,
+  label,
+}: {
+  field: CredentialField;
+  value: string;
+  onChange: (next: string) => void;
+  label: string;
+}) {
+  // The DOM id is the credential's own name, so `getByLabel('Service account
+  // JSON')` keeps resolving to the same element it always did — which is what
+  // lets three E2E specs stand unchanged as the proof that nothing moved.
+  const common = {
+    id: field.name,
+    required: field.required,
+    autoComplete: 'off' as const,
+    value,
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      onChange(e.target.value),
+  };
+
+  return (
+    <div>
+      <label htmlFor={field.name} className="mb-1 block text-sm font-medium text-neutral-700">
+        {label}
+      </label>
+      {field.kind === 'multiline' ? (
+        <textarea {...common} rows={8} className={`${FIELD_CLASS} font-mono text-xs`} />
+      ) : (
+        <input
+          {...common}
+          type={field.kind === 'email' ? 'email' : field.kind === 'secret' ? 'password' : 'text'}
+          className={FIELD_CLASS}
+        />
+      )}
+    </div>
+  );
 }
 
 export function SaasAppForm() {
   const t = useTranslator();
   const router = useRouter();
+  const [appKey, setAppKey] = useState<ConnectorAppKey>(DEFAULT_CONNECTOR_APP_KEY);
   const [displayName, setDisplayName] = useState('');
-  const [serviceAccountJson, setServiceAccountJson] = useState('');
-  const [impersonateAdminEmail, setImpersonateAdminEmail] = useState('');
-  const [customerId, setCustomerId] = useState('');
+  // Keyed by credential name rather than one state hook per field, because the
+  // field set is now per connector and a fixed set of hooks would have to know
+  // the union of every connector's fields.
+  const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<FieldError>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const fields = CREDENTIAL_FIELDS[appKey];
+
   function resetForm() {
     setDisplayName('');
-    setServiceAccountJson('');
-    setImpersonateAdminEmail('');
-    setCustomerId('');
+    setValues({});
+  }
+
+  function selectConnector(next: ConnectorAppKey) {
+    setAppKey(next);
+    // Credentials do not survive the switch. Carrying them would post one
+    // connector's secret under another's key, and the operator cannot see the
+    // fields that are no longer rendered.
+    setValues({});
+    setError(null);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
-    const jsonError = validateServiceAccountJson(serviceAccountJson);
-    if (jsonError) {
-      setError(jsonError);
+    const rejection = rejectCredentials(appKey, values);
+    if (rejection) {
+      setError(rejection);
       return;
     }
 
     setSubmitting(true);
 
     try {
+      // Only the fields this connector declares, and only the non-empty ones —
+      // an optional field left blank is absent rather than an empty string the
+      // worker would have to treat as a value.
+      const credentials = Object.fromEntries(
+        fields.map((field) => [field.name, values[field.name] ?? '']).filter(([, v]) => v !== ''),
+      );
+
       const res = await fetch('/api/saas-apps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key: 'google-workspace',
-          displayName,
-          credentials: {
-            serviceAccountJson,
-            impersonateAdminEmail,
-            ...(customerId ? { customerId } : {}),
-          },
-        }),
+        body: JSON.stringify({ key: appKey, displayName, credentials }),
       });
 
       if (res.status === 201) {
@@ -103,7 +157,12 @@ export function SaasAppForm() {
         return;
       }
       if (res.status === 409) {
-        setError('duplicate');
+        // Two conflicts share this status now: the key is taken, or the catalog
+        // is full (SC2/C2). Read the discriminant rather than reporting the
+        // first as the second — "already registered" against a full catalog
+        // sends the operator to delete an app they do not have.
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error === 'catalog_full' ? 'catalogFull' : 'duplicate');
         return;
       }
       if (res.status === 400) {
@@ -129,12 +188,19 @@ export function SaasAppForm() {
           </label>
           <select
             id="appKey"
-            disabled
-            value="google-workspace"
+            value={appKey}
             autoComplete="off"
-            className="w-full rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-sm text-neutral-500"
+            onChange={(e) => selectConnector(e.target.value as ConnectorAppKey)}
+            className={FIELD_CLASS}
           >
-            <option value="google-workspace">google-workspace</option>
+            {CONNECTOR_APP_KEYS.map((key) => (
+              // The key itself, not translated copy: it is the value the
+              // operator sees in the apps table and types into the sync
+              // control, so a translated label would name a different thing.
+              <option key={key} value={key}>
+                {key}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -149,53 +215,19 @@ export function SaasAppForm() {
             autoComplete="off"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"
+            className={FIELD_CLASS}
           />
         </div>
 
-        <div>
-          <label htmlFor="serviceAccountJson" className="mb-1 block text-sm font-medium text-neutral-700">
-            {t('field.serviceAccountJson')}
-          </label>
-          <textarea
-            id="serviceAccountJson"
-            required
-            rows={8}
-            autoComplete="off"
-            value={serviceAccountJson}
-            onChange={(e) => setServiceAccountJson(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-xs focus:border-neutral-500 focus:outline-none"
+        {fields.map((field) => (
+          <CredentialInput
+            key={field.name}
+            field={field}
+            label={t(field.labelKey)}
+            value={values[field.name] ?? ''}
+            onChange={(next) => setValues((prev) => ({ ...prev, [field.name]: next }))}
           />
-        </div>
-
-        <div>
-          <label htmlFor="impersonateAdminEmail" className="mb-1 block text-sm font-medium text-neutral-700">
-            {t('field.adminEmail')}
-          </label>
-          <input
-            id="impersonateAdminEmail"
-            type="email"
-            required
-            autoComplete="off"
-            value={impersonateAdminEmail}
-            onChange={(e) => setImpersonateAdminEmail(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="customerId" className="mb-1 block text-sm font-medium text-neutral-700">
-            {t('saasapp.customerId')}
-          </label>
-          <input
-            id="customerId"
-            type="text"
-            autoComplete="off"
-            value={customerId}
-            onChange={(e) => setCustomerId(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"
-          />
-        </div>
+        ))}
 
         {error && (
           <p role="alert" className="text-sm text-red-700">

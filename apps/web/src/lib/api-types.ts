@@ -22,6 +22,7 @@
 // importing @open-smp/api-types directly.
 export {
   ACCOUNT_LABEL_KINDS,
+  CONNECTOR_APP_KEYS,
   CONTRACT_IMPORT_MAX_ROWS,
   HR_IMPORT_MAX_ROWS,
   LINK_STATUSES,
@@ -30,6 +31,7 @@ export {
 } from '@open-smp/api-types';
 
 export type {
+  ConnectorAppKey,
   LinkStatus,
   DiscoveredApplication,
   BillingCycle,
