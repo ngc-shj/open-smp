@@ -1,0 +1,38 @@
+{
+  "ok": true,
+  "members": [
+    {
+      "id": "U0000000001",
+      "team_id": "T0001",
+      "name": "taro",
+      "real_name": "Taro Yamada",
+      "deleted": false,
+      "is_admin": true,
+      "is_owner": false,
+      "is_primary_owner": false,
+      "is_bot": false,
+      "updated": 1750000001,
+      "tz": "Asia/Tokyo",
+      "profile": {
+        "email": "taro.yamada@corp.example",
+        "display_name": "taro",
+        "real_name": "Taro Yamada",
+        "phone": "+81-90-0000-0000",
+        "title": "Engineer"
+      }
+    },
+    {
+      "id": "U0000000002",
+      "team_id": "T0001",
+      "name": "deploybot",
+      "real_name": "Deploy Bot",
+      "deleted": false,
+      "is_admin": false,
+      "is_bot": true,
+      "is_app_user": false,
+      "updated": 1750000002,
+      "profile": { "display_name": "deploybot", "bot_id": "B0001", "api_app_id": "A0001" }
+    }
+  ],
+  "response_metadata": { "next_cursor": "cursor-page2" }
+}

@@ -189,7 +189,7 @@ export const RESERVED_EVENT_SOURCES = Object.freeze([
 //
 // So the arrow points from here TO the registry, and the registry is asserted
 // to hold exactly these keys — not the other way round.
-export const CONNECTOR_APP_KEYS = Object.freeze(['google-workspace'] as const);
+export const CONNECTOR_APP_KEYS = Object.freeze(['google-workspace', 'slack'] as const);
 
 export type ConnectorAppKey = (typeof CONNECTOR_APP_KEYS)[number];
 

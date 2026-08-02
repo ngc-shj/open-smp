@@ -35,6 +35,7 @@ COPY packages/queues/package.json packages/queues/package.json
 COPY packages/crypto/package.json packages/crypto/package.json
 COPY packages/connectors/core/package.json packages/connectors/core/package.json
 COPY packages/connectors/google-workspace/package.json packages/connectors/google-workspace/package.json
+COPY packages/connectors/slack/package.json packages/connectors/slack/package.json
 COPY e2e/package.json e2e/package.json
 RUN pnpm install --frozen-lockfile
 

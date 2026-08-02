@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "members": [
+    {
+      "id": "U0000000005",
+      "team_id": "T0001",
+      "name": "owner",
+      "real_name": "Aya Owner",
+      "deleted": false,
+      "is_admin": false,
+      "is_owner": true,
+      "is_primary_owner": true,
+      "is_bot": false,
+      "updated": 1750000005,
+      "profile": { "email": "aya.owner@corp.example", "display_name": "owner" }
+    }
+  ],
+  "response_metadata": { "next_cursor": "" }
+}

@@ -4,6 +4,12 @@ Cycle 9. `docs/roadmap.md` puts SC2 next and records that it was blocked on one
 input this repository cannot supply — *which* provider. That input is now given:
 **Slack**, chosen on what it teaches rather than on market share.
 
+Revision 4 — **C1 built.** `packages/connectors/slack` exists, `slack` joins the
+key set and the registry in the same change, and the branch that handles a
+connector without `listTokens` has a real instance for the first time. C4 can
+now be designed against two implementations, which is the condition SC3
+declined to design without.
+
 Revision 3 — **C2 built.** `CONNECTOR_APP_KEYS` has one member; Slack joins it
 with the connector, because a key an operator can register and no job can sync
 is worse than one they cannot register. Two of C2's own instructions were wrong
@@ -309,6 +315,57 @@ about Slack.
 | the registry loses the key the route accepts | reds |
 | the registry gains a key the route refuses | reds |
 | the ceiling is read outside the lock | SURVIVED (declared — no unit-tier assertion can observe a lock ordering; the contract import's acceptance test is the only thing driving two real transactions through these primitives, and it is scoped to that route) |
+
+### What C1's execution added
+
+**A control caught the new package before CI did.** `package-test-parity.test.ts`
+asserts the Dockerfile's dependency stage copies every workspace manifest —
+`pnpm install --frozen-lockfile` is *silent* when a lockfile importer has no
+manifest on disk, so an omitted `COPY` installs none of that member's registry
+dependencies and the image builds green. The plan listed four wiring
+obligations for a new package; this was a fifth it did not have. The
+image-level companion (`docker build --target deps`) was run too.
+
+**`resolveUsersList` is public, and that is a trade rather than an oversight.**
+Hoisting the client cache to module scope is a one-line edit with no local
+symptom — types satisfied, every test green, and the damage appearing as one
+tenant's accounts under another. Without a network there is no behavioural
+handle on it, so one method is exposed and the test asks two instances for
+their resolver. The mutation that shares the cache reds.
+
+**Bots and guests are synced, not excluded, and not auto-labelled.** An
+inventory that silently drops accounts is incomplete with nothing recording it,
+and `service_account` / `external_collaborator` are already this product's
+vocabulary for what they are — but auto-labelling would write an audit row
+attributed to a user who did nothing. The classification flags are kept in
+`raw` so a later cycle can reinterpret a run it did not plan for.
+
+**Residue**: every Slack bot arrives as an orphan by construction, so
+`/accounts?status=orphan` will carry them once a workspace is connected. That
+is correct and not actionable, and it also sets the size of C5's orphan set.
+Trigger: the first operator report that the orphan screen is unreadable, or C5
+seeding a workspace with bots in it.
+
+### C1's mutations
+
+Ten run, ten red.
+
+| mutation | result |
+|---|---|
+| the profile timestamp is read as activity | reds — the `SCL7` detector, and the reason every fixture member carries a non-zero `updated` |
+| a deleted member is reported as active | reds |
+| only `is_admin` counts as admin | reds |
+| the whole provider payload is retained | reds |
+| the provider error message is carried into the `ConnectorError` | reds |
+| **the client is shared across connector instances** | reds |
+| the cursor is never followed | reds |
+| a revoked token is treated as retryable | reds |
+| the key set gains `slack` but the registry does not | reds (the C2 control) |
+| the connector stops declaring `apikey` auth | reds |
+
+Suite state after C1: unit 519 green (41 files), integration 227 green, E2E 56
+green, lint / typecheck / build clean, the CI-only typecheck-program gate clean,
+and `docker build --target deps` green.
 
 ### C3 — credentials become per-connector
 
