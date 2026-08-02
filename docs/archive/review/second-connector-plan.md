@@ -4,6 +4,10 @@ Cycle 9. `docs/roadmap.md` puts SC2 next and records that it was blocked on one
 input this repository cannot supply — *which* provider. That input is now given:
 **Slack**, chosen on what it teaches rather than on market share.
 
+Revision 6 — **C4, C5 and C6 built. SC2 is closed.** Three contracts landed
+together because they are one change seen from three places: the second
+connector becoming real in the product.
+
 Revision 5 — **C3 built.** The registration form asks each connector for what it
 needs, so C1 is a capability the product can reach rather than one only the API
 could. Two behaviours changed beyond the new connector, both recorded below.
@@ -549,3 +553,93 @@ own comment says `C20` added the filter to prevent. The filter derives from
   closes the difference.
 - **Nothing here writes to Slack.** `users:read` is a read scope, and SC4
   remains the only item that writes to a customer's system.
+
+## What closing C4, C5 and C6 added
+
+**C4's vocabulary is REQUIRED on the interface, and that is what made it
+land.** Every fake in the test tree failed to compile until it declared one —
+which is the property `typeof connector.listTokens === 'function'` never had.
+`workspace-apps` is declared and not implemented, and stays a member rather than
+a synonym for `none` because they are different answers to "can this be shown at
+all".
+
+The vocabulary moved to `@open-smp/api-types` mid-implementation, for the reason
+`CONNECTOR_APP_KEYS` did and which the plan should have said: `apps/api` projects
+the value onto a rendered page and `apps/web` displays it, and neither depends on
+a connector package. Declaring it in `connectors-core` compiled and then had
+nowhere to be read from.
+
+**⚠12 — C4's consumer was buildable after all.** Revision 2 reduced C4 on the
+finding that `/discovery` renders *nothing* for an unauditable connector. That
+was true of the page and not of the cause: the page dropped the event because a
+connector without grants wrote `token_audit_failed`, the same KIND an
+authentication failure writes. A distinct kind — `token_audit_unsupported` —
+makes the page able to say so, beside the completed run rather than instead of
+it, and the seed carries one so the demo shows both answers at once.
+
+**C5 broke an assumption three specs shared.** `seed-facts.ts` keyed each account
+BY its link status, which held while the demo had one account per status and
+stopped holding the moment a second account-bearing application produced a second
+orphan — the two would have collapsed into one entry in
+`seed-gate-agreement.test.ts`'s parser, the derived count would have matched a
+gate asserting only one of them, and the other account would have lost both its
+assertions with every gate green. The status is a field now; the parser reads the
+claim instead of inferring it.
+
+`accounts.spec.ts`'s `toHaveCount(1)` became a named set, as revision 2 required.
+A bumped number says "as many rows as the seed happens to produce", which is true
+of any seed.
+
+**⚠13 — the unsupported audit event was invisible on an existing volume.** It sat
+behind the completed run's content guard, so it never appeared on a stack whose
+volume already carried that run, and CI would have passed on its fresh volume.
+That is `SCL17`'s shape, warned about in a comment two lines above the code that
+reproduced it. The guards are independent now. Found by running the E2E, not by
+reading.
+
+### C4/C5/C6's mutations
+
+Nine run, eight red, one declared survivor.
+
+| mutation | result |
+|---|---|
+| Slack claims a capability it cannot exercise | reds |
+| both connectors answer the capability question the same way | reds (the non-vacuity that makes the vocabulary more than a rename) |
+| an unauditable connector is read as a failed run | reds |
+| the completed-run reader also claims the unsupported events | reds |
+| the API passes a connector-written capability string through unchecked | reds |
+| a seeded account loses its status field | reds |
+| the second orphan is dropped from the shell gate | reds |
+| two seeded accounts share an email | reds |
+| the capability vocabulary loses its unimplemented member | SURVIVED (declared — no implementation returns `workspace-apps`, so its removal is unobservable. It is a recorded distinction, not a guarded one, which is what "declared and not implemented" means) |
+
+One mutation was **first reported red against an already-red file**: the new
+projection test referenced a `const` scoped to another `describe` and threw
+rather than asserting. A red file makes every mutation over it read as caught,
+which is the same class as a survivor being read as safe — it was fixed and the
+set re-run.
+
+Suite state: unit 546 green (42 files), integration 227 green, E2E 60 green,
+lint / typecheck / build clean, CI-only typecheck-program gate clean, and
+`e2e/scripts/assert-seed-preserved.sh` green against the live stack.
+
+## SC2 is closed
+
+C1 through C6 are built. What the cycle set out to learn, it learned: `RawAccount`
+did not survive a non-IdP provider, and the losses are recorded at the sites that
+suffer them rather than in this document alone.
+
+Residue carried forward, each with a trigger:
+
+- **`'suspended'` is unreachable from Slack.** A UI filter on that state means
+  "Google accounts only". Trigger: a third connector with a suspend concept, or
+  the first operator confusion about the filter.
+- **`lastActivityAt` is null for every Slack account**, so `/licenses` gets
+  nothing new from Slack for the reclaimable derivation. Trigger: `SCL6`/`SCL7`,
+  whenever per-application activity becomes derivable.
+- **Bots arrive as orphans by construction.** The demo deliberately seeds none.
+  Trigger: the first operator report that the orphan screen is unreadable.
+- **`workspace-apps` has no implementation.** Trigger: an operator with
+  Enterprise Grid asking why `/discovery` is empty for Slack.
+- **The i18n `en-US` number formatting** and the identity page's hand-synced
+  `50` are unchanged from the i18n cycle.
