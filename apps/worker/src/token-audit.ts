@@ -188,7 +188,10 @@ export async function runTokenAudit(
         );
 
         return {
-          credentials: JSON.parse(Buffer.from(decrypted).toString('utf8')) as Record<string, string>,
+          // `TextDecoder`, not `Buffer.from(...)`: the latter allocated an unzeroed
+          // copy at the same moment the `finally` below cleared the original.
+          // sync.ts was changed in one round and this sibling in the next.
+          credentials: JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, string>,
           appKey: app.key,
           externalIds: rows.map((row) => row.external_id),
         };

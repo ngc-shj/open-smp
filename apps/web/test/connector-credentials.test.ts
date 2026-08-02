@@ -112,6 +112,7 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     ['an address with no @', 'nonsense'],
     ['an address with whitespace', 'a b@x.example'],
     ['an empty address', ''],
+    ['a padded address', ' admin@corp.example '],
   ])('rejects %s for the admin email', (_label, impersonateAdminEmail) => {
     // The manager's inputs sit outside a <form> behind a type="button", so
     // their `type="email"` never triggers constraint validation — the register
@@ -150,6 +151,21 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     // token an operator holds is the worse direction. The API and the worker
     // are where a wrong token is found out.
     expect(rejectCredentials('slack', { botToken: 'xoxp-123-abc' })).toBeNull();
+  });
+
+  it.each([...CONNECTOR_APP_KEYS])('%s refuses every one of its required fields when blank', (key) => {
+    // The invariant that lets SaasAppManager carry no separate required-blank
+    // guard: the classifier already answers every blank required field. A new
+    // connector whose rejector skipped one would store an unusable credential
+    // whose failure reaches the operator as an audit row — so the property is
+    // asserted here rather than duplicated as a UI check that never fires.
+    for (const field of CREDENTIAL_FIELDS[key].filter((f) => f.required)) {
+      const values = Object.fromEntries(
+        CREDENTIAL_FIELDS[key].map((f) => [f.name, f.name === field.name ? '' : 'placeholder']),
+      );
+
+      expect(rejectCredentials(key, values), `${key}.${field.name} blank`).not.toBeNull();
+    }
   });
 
   it('returns null for an application no connector handles', () => {

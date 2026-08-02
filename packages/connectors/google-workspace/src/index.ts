@@ -187,12 +187,17 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
   /**
    * The secret handed to `diagnose`.
    *
-   * The PEM, not the document containing it. Passing `serviceAccountJson` made
-   * the scrub a guaranteed no-op — an exact-substring replace whose needle is a
-   * whole JSON blob matches nothing an error message ever carries, while the
-   * material that could appear is the key inside it. Found in review, and it is
-   * the reason the field allowlist rather than the scrub was doing the work on
-   * this path.
+   * The PEM, not the document containing it — passing `serviceAccountJson` made
+   * the scrub a guaranteed no-op, since an exact-substring needle that is a
+   * whole JSON blob matches nothing an error message carries.
+   *
+   * CALIBRATED, because the first correction overstated it too: the material a
+   * googleapis error realistically carries is the derived `ya29.` access token
+   * in `config.headers.Authorization` and the signed assertion in `config.data`,
+   * and this needle matches neither. **The projection is the control** — it is a
+   * whitelist, and neither `config` nor `response` is on it. The scrub covers
+   * the one case the whitelist cannot: a credential echoed verbatim into `name`
+   * or `message`.
    */
   private privateKey(): string {
     try {

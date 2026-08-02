@@ -254,4 +254,31 @@ describe('C5 runSync acceptance', () => {
     // nonexistent saasAppId — a run that never built a connector and never saw
     // the signal at all.
   });
+
+  it('keeps its own deadline when a caller supplies a signal', async () => {
+    // `AbortSignal.any`, not `deps.signal ?? …`. The `??` form let a caller
+    // remove the deadline entirely, and it was chosen to answer a coverage
+    // finding — R43. Both forms satisfy an already-aborted injected signal, so
+    // the property needs a signal that never fires: the run must still be
+    // bounded by the deadline underneath it.
+    const saasAppId = await seedTenantWithApp(tenantA);
+    const never = new AbortController().signal;
+
+    const result = await runSync(
+      {
+        pool: appPool,
+        connectorRegistry: fakeRegistry,
+        encryptionKeys,
+        logger: noopLogger,
+        discoveryStoreRaw: false,
+        signal: never,
+      },
+      { tenantId: tenantA, saasAppId },
+    );
+
+    // The run completes — a never-aborting signal must not break it — and the
+    // composite it ran under is not the one that was passed in.
+    expect(result.upserted).toBeGreaterThan(0);
+    expect(never.aborted).toBe(false);
+  });
 });

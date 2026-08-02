@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConnectorError, type ConnectorContext, type RawAccount } from '@open-smp/connectors-core';
+import {
+  ConnectorError,
+  diagnose,
+  type ConnectorContext,
+  type RawAccount,
+} from '@open-smp/connectors-core';
 import { GoogleWorkspaceConnector, type UsersListResponseData } from '../src/index.js';
 import page1 from '../fixtures/users-page1.json' with { type: 'json' };
 import page2 from '../fixtures/users-page2.json' with { type: 'json' };
@@ -190,5 +195,44 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     // And the diagnosis survived, or the assertions above would be satisfied by
     // discarding it.
     expect(serialized).toContain('[redacted]');
+  });
+
+  it('does not wait out a retry after the run is over', async () => {
+    // The wait this connector gained had no test — reverting it to a bare
+    // `await sleep(...)` left the package 14/14 green, which is the same
+    // class-with-two-members shape the change was made to close.
+    const controller = new AbortController();
+    const usersList = vi.fn(async () => {
+      const error = Object.assign(new Error('Internal Error'), { code: 500 });
+      throw error;
+    });
+    const sleep = vi.fn(async () => {
+      controller.abort();
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep },
+    );
+    const ctx = { ...makeContext(), signal: controller.signal };
+
+    await expect(collect(connector.listUsers(ctx))).rejects.toMatchObject({ kind: 'fatal' });
+    expect(usersList).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the provider status into the diagnosis', () => {
+    // googleapis puts the status in a NUMERIC `code`, which the shared
+    // diagnose did not read — so every Google cause came out
+    // `{statusCode: undefined}`, the exact shape widening it was meant to fix.
+    // Asserted here because this is the only place that shape is produced.
+    const connector = new GoogleWorkspaceConnector({
+      serviceAccountJson: '{}',
+      impersonateAdminEmail: 'admin@corp.example',
+    });
+    void connector;
+
+    expect(diagnose(Object.assign(new Error('Forbidden'), { code: 403 }), 'x')).toMatchObject({
+      statusCode: 403,
+    });
   });
 });

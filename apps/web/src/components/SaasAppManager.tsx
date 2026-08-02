@@ -122,24 +122,16 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   }
 
   async function handleReplaceCredentials() {
-    // `required` is declared per field and was applied only by the registration
-    // form. A replace SENDS every declared field including blanks, so a required
-    // one left empty stored an unusable credential whose failure reached the
-    // operator as an audit row.
-    //
-    // Ordered AFTER the classifier deliberately. Review measured that with the
-    // guard first, its e2e spec was satisfied by `rejectCredentials` returning
-    // `invalidJson` for an empty service account — so the spec could not fail
-    // for the reason it named. Classifier first means the guard now answers only
-    // the case the classifier does not: a required field it does not inspect.
+    // No separate required-blank guard. It was added, then reordered after the
+    // classifier, and review then measured what the reorder left: nothing.
+    // `REJECTORS` is total over the connector keys and every required field is
+    // already inspected — a blank service account is `invalidJson`, a blank
+    // admin email `invalidEmail`, a blank bot token `invalidToken` — so the
+    // guard had no reachable case. `connector-credentials.test.ts` asserts that
+    // property directly, which is what keeps it true for the next connector.
     const rejection = rejectCredentials(app.key, values);
     if (rejection) {
       setError(rejection);
-      return;
-    }
-
-    if (fields.some((field) => field.required && (values[field.name] ?? '').trim() === '')) {
-      setError('invalidBody');
       return;
     }
     // Every field the connector declares, including the ones left blank: a

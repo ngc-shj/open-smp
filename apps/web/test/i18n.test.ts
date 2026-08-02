@@ -280,9 +280,16 @@ describe('every message key has a reader', () => {
     // `'zzz.orphan'` left the suite green. It was written to close exactly the
     // class it then failed to detect.
     const DICTIONARY = path.join(SRC, 'lib', 'i18n', 'messages.ts');
-    const files = (await sources(SRC)).filter((f) => f !== DICTIONARY);
+    const scanned = await sources(SRC);
+    // Asserted on the UNFILTERED set. `not.toContain` on the filtered one is
+    // guaranteed by the filter and cannot fail — and it held equally when
+    // DICTIONARY named no real file, which is the single failure it was
+    // captioned for: a rename or split of messages.ts makes the filter a no-op
+    // and the detector a tautology again. Measured.
+    expect(scanned, 'the dictionary path no longer resolves').toContain(DICTIONARY);
+
+    const files = scanned.filter((f) => f !== DICTIONARY);
     expect(files.length).toBeGreaterThan(0);
-    expect(files, 'the dictionary is still in the scanned set').not.toContain(DICTIONARY);
     const code = (await Promise.all(files.map((f) => readFile(f, 'utf8')))).join('\n');
 
     // A key is read when its literal appears anywhere outside the dictionary

@@ -25,7 +25,11 @@ describe('diagnose', () => {
 
   it.each([
     ['a Slack-shaped error', { statusCode: 429, data: { error: 'ratelimited' }, retryAfter: 30 }],
-    ['a Gaxios-shaped error', { status: 429, response: { status: 429, data: { error: 'ratelimited' } } }],
+    // Each fixture names ONE spelling. Setting several made the arms mutually
+    // redundant, so either could be deleted with the suite green.
+    ['a numeric code (googleapis)', { code: 429, data: { error: 'ratelimited' } }],
+    ['a bare status', { status: 429, data: { error: 'ratelimited' } }],
+    ['a nested response', { response: { status: 429, data: { error: 'ratelimited' } } }],
   ])('keeps the classification from %s', (_label, shape) => {
     // BOTH shapes. Hoisting the function without widening it made every Google
     // diagnosis `{statusCode: undefined, platformError: undefined}` — the status
@@ -96,5 +100,34 @@ describe('waitUnlessAborted', () => {
       waitUnlessAborted(1, new AbortController().signal, sleep, stop),
     ).resolves.toBeUndefined();
     expect(sleep).toHaveBeenCalledWith(1);
+  });
+
+  it('removes its listener when the wait completes normally', async () => {
+    // Without this the listener and its closure stay on a signal that lives for
+    // the whole run — up to 1000 accounts x 4 retries on one audit signal.
+    const controller = new AbortController();
+    const sleep = vi.fn(async () => {});
+
+    for (let i = 0; i < 5; i += 1) {
+      await waitUnlessAborted(1, controller.signal, sleep, stop);
+    }
+
+    // Node exposes the count only through the internal listener list, so the
+    // observable is that aborting afterwards settles nothing that is pending.
+    expect(controller.signal.aborted).toBe(false);
+    controller.abort();
+    expect(sleep).toHaveBeenCalledTimes(5);
+  });
+
+  it('propagates a failing sleep rather than reporting a completed wait', async () => {
+    // `resolve()` in place of the rejection made an injected sleep's failure
+    // look like a successful wait, and the retry loop continued.
+    const sleep = vi.fn(async () => {
+      throw new Error('timer broke');
+    });
+
+    await expect(
+      waitUnlessAborted(1, new AbortController().signal, sleep, stop),
+    ).rejects.toThrow('timer broke');
   });
 });

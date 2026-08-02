@@ -112,21 +112,23 @@ export function diagnose(error: unknown, secret: string): Record<string, unknown
   // `response.data.error`, so hoisting the function without widening it made
   // every Google diagnosis `{statusCode: undefined, platformError: undefined}`.
   // Propagating a helper is not copying it (R3).
-  const status =
-    typeof source.statusCode === 'number'
-      ? source.statusCode
-      : typeof source.status === 'number'
-        ? source.status
-        : typeof response?.status === 'number'
-          ? response.status
-          : undefined;
+  // Four spellings, and the numeric `code` is the one googleapis actually uses
+  // — `statusOf` in the Google connector reads it FIRST. Widening this function
+  // without it left the canonical Google error diagnosing as
+  // `{statusCode: undefined}`, which is the defect the widening was for.
+  const status = [source.statusCode, source.code, source.status, response?.status].find(
+    (value): value is number => typeof value === 'number',
+  );
   const data = source.data as { error?: unknown } | undefined;
-  const platformError =
+  // Scrubbed like the other strings. Both providers put an enum here today, but
+  // it is a provider-controlled path and this round added a second one.
+  const rawPlatformError =
     typeof data?.error === 'string'
       ? data.error
       : typeof response?.data?.error === 'string'
         ? response.data.error
         : undefined;
+  const platformError = rawPlatformError === undefined ? undefined : scrub(rawPlatformError);
 
   return {
     name: typeof source.name === 'string' ? scrub(source.name) : undefined,
@@ -166,9 +168,11 @@ export function waitUnlessAborted(
     signal.addEventListener('abort', abort, { once: true });
     void sleep(ms).then(
       () => {
+        // No re-check here: after the pre-check there is no await before the
+        // listener is attached, so any later abort has already rejected. A
+        // re-check would be unreachable code wearing a guard's clothes.
         signal.removeEventListener('abort', abort);
-        if (signal.aborted) reject(onAborted());
-        else resolve();
+        resolve();
       },
       (error: unknown) => {
         signal.removeEventListener('abort', abort);
