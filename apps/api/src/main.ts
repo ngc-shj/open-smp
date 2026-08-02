@@ -51,7 +51,12 @@ async function main(): Promise<void> {
         return null;
       }
       const state = await job.getState();
-      return { state, result: job.returnvalue ?? null };
+      // The job's OWN tenant travels with its state so the route can authorize.
+      // Every job this API enqueues carries `data.tenantId` (S7: it comes from
+      // SessionContext and never from a request field), and discarding it here
+      // is what left `GET /jobs/:jobId` with no ownership check at all.
+      const data = job.data as { tenantId?: unknown } | undefined;
+      return { state, result: job.returnvalue ?? null, tenantId: data?.tenantId };
     },
   };
 

@@ -13,5 +13,7 @@ export interface AppDeps {
   tokenAuditQueue: Queue<TokenAuditJobData>;
   // BullMQ getJob is queue-agnostic by jobId; a single connection lets
   // /api/jobs/:jobId look up either queue without guessing which one.
-  getJob: (jobId: string) => Promise<{ state: string; result: unknown } | null>;
+  getJob: (
+    jobId: string,
+  ) => Promise<{ state: string; result: unknown; tenantId: unknown } | null>;
 }

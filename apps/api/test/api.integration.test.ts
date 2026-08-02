@@ -138,16 +138,91 @@ beforeEach(async () => {
     syncQueue,
     matchQueue,
     tokenAuditQueue,
+    // A TWIN of the production reader in apps/api/src/main.ts, and it drifts
+    // silently (RT9) — it omitted `tenantId` until the route gained an ownership
+    // check and the compiler caught it. What it must keep mirroring is the
+    // FIELD SET; the queue list differs deliberately (the token-audit queue is
+    // exercised by its own suite).
     getJob: async (jobId) => {
       const job = (await syncQueue.getJob(jobId)) ?? (await matchQueue.getJob(jobId));
       if (!job) return null;
       const state = await job.getState();
-      return { state, result: job.returnvalue ?? null };
+      const data = job.data as { tenantId?: unknown } | undefined;
+      return { state, result: job.returnvalue ?? null, tenantId: data?.tenantId };
     },
   };
 
   app = buildApp(deps);
   await app.ready();
+});
+
+describe('job status is readable only by the tenant that owns the job', () => {
+  it('returns the job to its owner and 404s the same id for another tenant', async () => {
+    // CWE-639. The route required a session and never checked ownership, and the
+    // reader discarded `data.tenantId` — so any authenticated user holding
+    // another tenant's job id read that tenant's sync counts and failure state.
+    // The ids are `${queue}:${tenantId}:${saasAppId}`, so knowing the target's
+    // UUID is enough to construct one; "hard to guess" is not an authorization
+    // control.
+    const tenantFor = async (prefix: string) => {
+      const slug = `tenant-${prefix}-${randomUUID()}`;
+      const tenantId = await seedTenant(slug, 'Jobs Tenant');
+      await seedUser(tenantId, 'admin@example.com', 'correct-password');
+      const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+      if (!cookie) throw new Error('login failed in test setup');
+      return { tenantId, headers: { origin: APP_ORIGIN, cookie } };
+    };
+
+    const owner = await tenantFor('jobs-owner');
+    const other = await tenantFor('jobs-other');
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: owner.headers,
+      payload: {
+        key: 'google-workspace',
+        displayName: 'GWS',
+        credentials: {
+          serviceAccountJson: '{"client_email":"a@b.c"}',
+          impersonateAdminEmail: 'a@b.c',
+        },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const saasAppId = (created.json() as { id: string }).id;
+
+    const enqueued = await app.inject({
+      method: 'POST',
+      url: `/api/sync/${saasAppId}`,
+      headers: owner.headers,
+    });
+    expect(enqueued.statusCode).toBe(202);
+    const { jobId } = enqueued.json() as { jobId: string };
+
+    // Non-vacuity: the owner really can read it, so the 404 below is a denial
+    // and not simply a missing job.
+    const mine = await app.inject({
+      method: 'GET',
+      url: `/api/jobs/${jobId}`,
+      headers: owner.headers,
+    });
+    expect(mine.statusCode, 'the owner cannot read its own job').toBe(200);
+    expect(mine.json()).toMatchObject({ state: expect.any(String) });
+
+    const theirs = await app.inject({
+      method: 'GET',
+      url: `/api/jobs/${jobId}`,
+      headers: other.headers,
+    });
+
+    expect(theirs.statusCode, "another tenant read this tenant's job").toBe(404);
+    // 404, not 403: a distinguishable response confirms the job exists, which is
+    // the fact being protected.
+    expect(theirs.json()).toEqual({ error: 'not_found' });
+    // And the response body carries nothing about the job either way.
+    expect(JSON.stringify(theirs.json())).not.toContain(saasAppId);
+  });
 });
 
 describe('error-shape acceptance: framework-generated responses stay flat and opaque', () => {
