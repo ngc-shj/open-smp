@@ -1,12 +1,31 @@
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { encryptCredentials } from '@open-smp/crypto';
-import { ConnectorError, type RawToken, type SaaSConnector } from '@open-smp/connectors-core';
+import {
+  ConnectorError,
+  type RawToken,
+  type SaaSConnector,
+  type ConnectorContext,
+} from '@open-smp/connectors-core';
 import { TOKEN_AUDIT_EVENT_SOURCE } from '@open-smp/api-types';
-import { runTokenAudit, TOKEN_AUDIT_MAX_ACCOUNTS } from '../src/token-audit.js';
+import {
+  runTokenAudit,
+  TOKEN_AUDIT_DEADLINE_MS,
+  TOKEN_AUDIT_MAX_ACCOUNTS,
+} from '../src/token-audit.js';
 import type { ConnectorRegistry } from '../src/connectors.js';
 
 // SC3/C2 acceptance, against real Postgres 16.
@@ -43,7 +62,19 @@ function fakeConnector(
     listUsers: () => {
       throw new Error('listUsers must not be called by the token audit');
     },
-    ...(listTokens ? { listTokens } : {}),
+    ...(listTokens
+      ? {
+          // The signal IS observed, as both real connectors observe it. A fake
+          // that ignored it made the audit deadline unobservable at this tier —
+          // the same RT1 gap the sync fake had.
+          listTokens: async (ctx: ConnectorContext, userKey: string) => {
+            if (ctx.signal.aborted) {
+              throw new ConnectorError('fatal', false, 'fake connector: run aborted');
+            }
+            return listTokens(ctx, userKey);
+          },
+        }
+      : {}),
   };
 }
 
@@ -67,7 +98,9 @@ async function seedApp(tenantId: string, accountCount: number): Promise<string> 
   return withTenant(pool, tenantId, async (tx) => {
     const saasAppId = randomUUID();
     const { blob, keyVersion } = encryptCredentials(
-      new TextEncoder().encode(JSON.stringify({ serviceAccountJson: '{}', impersonateAdminEmail: 'a@b.c' })),
+      new TextEncoder().encode(
+        JSON.stringify({ serviceAccountJson: '{}', impersonateAdminEmail: 'a@b.c' }),
+      ),
       { tenantId, saasAppId },
       encryptionKeys,
     );
@@ -90,7 +123,11 @@ async function seedApp(tenantId: string, accountCount: number): Promise<string> 
 
 async function eventsFor(tenantId: string) {
   return withTenant(pool, tenantId, async (tx) => {
-    const { rows } = await tx.query<{ kind: string; payload: Record<string, unknown>; source: string }>(
+    const { rows } = await tx.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+      source: string;
+    }>(
       'SELECT source, kind, payload FROM discovery_events WHERE tenant_id = $1 ORDER BY created_at',
       [tenantId],
     );
@@ -114,7 +151,19 @@ afterAll(async () => {
   await container?.stop();
 }, 60_000);
 
+// The real constructor, captured before any spy replaces it.
+const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+let timeoutSpy: MockInstance<(milliseconds: number) => AbortSignal>;
+
 beforeEach(async () => {
+  // In a hook, not in a test body. The sync sibling was refactored to this shape
+  // in the same commit that left this file's spy inline, and two cells sharing
+  // an inline spy is precisely what that refactor's comment warns about.
+  // Passthrough by default, so one cell can assert the deadline was composed and
+  // another can make it fire.
+  timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => realTimeout(ms));
+
   const { rows } = await pool.query<{ id: string }>(
     'INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id',
     [`tenant-${randomUUID()}`, 'Token Audit'],
@@ -122,11 +171,17 @@ beforeEach(async () => {
   tenantId = rows[0]!.id;
 });
 
+afterEach(() => {
+  timeoutSpy.mockRestore();
+});
+
 describe('SC3/C2: the audit reads what sync already inventoried', () => {
   it('asks the connector once per account and aggregates grants into applications', async () => {
     const saasAppId = await seedApp(tenantId, 3);
     const listTokens = vi.fn(async (_ctx: unknown, userKey: string) =>
-      userKey === 'user-000003' ? [grant('shared-app', userKey)] : [grant('shared-app', userKey), grant('solo-app', userKey)],
+      userKey === 'user-000003'
+        ? [grant('shared-app', userKey)]
+        : [grant('shared-app', userKey), grant('solo-app', userKey)],
     );
 
     const result = await runTokenAudit(
@@ -139,8 +194,14 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
 
     const events = await eventsFor(tenantId);
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ source: TOKEN_AUDIT_EVENT_SOURCE, kind: 'token_audit_completed' });
-    const applications = events[0]!.payload.applications as { clientId: string; userCount: number }[];
+    expect(events[0]).toMatchObject({
+      source: TOKEN_AUDIT_EVENT_SOURCE,
+      kind: 'token_audit_completed',
+    });
+    const applications = events[0]!.payload.applications as {
+      clientId: string;
+      userCount: number;
+    }[];
     // FR1's figure, and most-granted first so a truncated list keeps the row an
     // operator most needs to see.
     expect(applications.map((a) => [a.clientId, a.userCount])).toEqual([
@@ -249,7 +310,9 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     expect(result).toMatchObject({ scanned: 1, failed: 1 });
     // The healthy account's grants still landed — a malformed neighbour must
     // not take them with it.
-    const applications = (await eventsFor(tenantId))[0]!.payload.applications as { clientId: string }[];
+    const applications = (await eventsFor(tenantId))[0]!.payload.applications as {
+      clientId: string;
+    }[];
     expect(applications.map((a) => a.clientId)).toEqual(['good-app']);
   });
 
@@ -270,16 +333,8 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
   });
 
   it.each([
-    [
-      'declares per-user-grants and has no listTokens',
-      undefined,
-      'per-user-grants' as const,
-    ],
-    [
-      'declares none while carrying listTokens',
-      vi.fn(async () => []),
-      'none' as const,
-    ],
+    ['declares per-user-grants and has no listTokens', undefined, 'per-user-grants' as const],
+    ['declares none while carrying listTokens', vi.fn(async () => []), 'none' as const],
   ])('records unsupported when a connector %s', async (_label, listTokens, capability) => {
     // Neither state can arise from a real connector — connector-registry
     // asserts that — which is exactly why only a fake can reach these arms.
@@ -306,5 +361,103 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     const events = await eventsFor(tenantId);
     expect(events[0]!.kind).toBe('token_audit_unsupported');
     expect(events[0]!.payload.capability).toBe(capability);
+  });
+
+  it('keeps its own deadline when a caller supplies a signal', async () => {
+    // The sync sibling gained this cell in review round 5 and this path had no
+    // counterpart at all, so collapsing `AbortSignal.any([deps.signal,
+    // deadline])` back to the `??` form — which lets a caller remove the
+    // deadline entirely (R43) — stayed green here. This is the longer-running of
+    // the two jobs (20 minutes against 10) and it holds the same open
+    // transaction.
+    const saasAppId = await seedApp(tenantId, 1);
+    const never = new AbortController().signal;
+    let seen: AbortSignal | undefined;
+    const listTokens = vi.fn(async (ctx: unknown) => {
+      seen = (ctx as ConnectorContext).signal;
+      return [] as RawToken[];
+    });
+
+    await runTokenAudit(
+      {
+        pool,
+        connectorRegistry: registryFor(fakeConnector(listTokens)),
+        encryptionKeys,
+        logger,
+        signal: never,
+      },
+      { tenantId, saasAppId },
+    );
+
+    expect(listTokens).toHaveBeenCalled();
+    expect(never.aborted).toBe(false);
+    expect(seen, 'the connector ran under the caller-supplied signal alone').not.toBe(never);
+    expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
+      TOKEN_AUDIT_DEADLINE_MS,
+    );
+  });
+
+  it('bounds the run by its own deadline even when the caller never aborts', async () => {
+    // Presence is not power. Asserting only that the deadline was CONSTRUCTED
+    // left a mutation green that builds it — so the spy still records the
+    // constant — and then composes a different signal instead. The sync sibling
+    // has had this second direction since round 6; this path had only the first.
+    const saasAppId = await seedApp(tenantId, 1);
+    const never = new AbortController().signal;
+    const listTokens = vi.fn(async () => [] as RawToken[]);
+    timeoutSpy.mockReturnValue(AbortSignal.abort());
+
+    await expect(
+      runTokenAudit(
+        {
+          pool,
+          connectorRegistry: registryFor(fakeConnector(listTokens)),
+          encryptionKeys,
+          logger,
+          signal: never,
+        },
+        { tenantId, saasAppId },
+      ),
+    ).rejects.toThrow(/aborted/);
+
+    expect(
+      listTokens,
+      'the audit asked the provider after the run was over',
+    ).not.toHaveBeenCalled();
+    expect(never.aborted, "the run aborted the caller's signal instead of its own").toBe(false);
+    // The discriminator the sync twin gained in the same commit and this one
+    // did not: `mockReturnValue(AbortSignal.abort())` replaces the constructor
+    // process-wide, so ANY consumer handed an already-aborted signal produces a
+    // rejection matching /aborted/ with listTokens uncalled. Only this asserts
+    // the deadline was composed into the RUN's signal.
+    expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
+      TOKEN_AUDIT_DEADLINE_MS,
+    );
+  });
+
+  it('stops when the run deadline has passed', async () => {
+    // The sibling got this one round earlier; this path did not, so reverting
+    // its signal to a never-aborting controller stayed green — the exact
+    // asymmetry review kept finding.
+    const saasAppId = await seedApp(tenantId, 2);
+    const listTokens = vi.fn(async () => []);
+
+    await expect(
+      runTokenAudit(
+        {
+          pool,
+          connectorRegistry: registryFor(fakeConnector(listTokens)),
+          encryptionKeys,
+          logger,
+          signal: AbortSignal.abort(),
+        },
+        { tenantId, saasAppId },
+      ),
+    ).rejects.toThrow(/aborted/);
+
+    expect(
+      listTokens,
+      'the audit asked the provider after the run was over',
+    ).not.toHaveBeenCalled();
   });
 });

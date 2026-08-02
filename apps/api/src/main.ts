@@ -1,5 +1,5 @@
 import argon2 from 'argon2';
-import { Queue, Job } from 'bullmq';
+import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { createPool, runMigrations } from '@open-smp/schema';
 import { parseEncryptionKeys } from '@open-smp/crypto';
@@ -13,6 +13,7 @@ import {
 } from '@open-smp/queues';
 import { parseEnv } from './env.js';
 import { buildApp } from './app.js';
+import { readJob } from './jobs.js';
 import { ARGON2ID_OPTIONS, type Hasher } from './auth.js';
 import type { AppDeps } from './deps.js';
 
@@ -42,17 +43,7 @@ async function main(): Promise<void> {
     syncQueue,
     matchQueue,
     tokenAuditQueue,
-    getJob: async (jobId) => {
-      const job: Job | undefined =
-        (await syncQueue.getJob(jobId)) ??
-        (await matchQueue.getJob(jobId)) ??
-        (await tokenAuditQueue.getJob(jobId));
-      if (!job) {
-        return null;
-      }
-      const state = await job.getState();
-      return { state, result: job.returnvalue ?? null };
-    },
+    getJob: (jobId) => readJob([syncQueue, matchQueue, tokenAuditQueue], jobId),
   };
 
   const app = buildApp(deps);

@@ -42,8 +42,18 @@ export const CREDENTIAL_FIELDS: Record<ConnectorAppKey, readonly CredentialField
       kind: 'multiline',
       required: true,
     },
-    { name: 'impersonateAdminEmail', labelKey: 'field.adminEmail', kind: 'email', required: true },
-    { name: 'customerId', labelKey: 'saasapp.customerId', kind: 'text', required: false },
+    {
+      name: 'impersonateAdminEmail',
+      labelKey: 'field.adminEmail',
+      kind: 'email',
+      required: true,
+    },
+    {
+      name: 'customerId',
+      labelKey: 'saasapp.customerId',
+      kind: 'text',
+      required: false,
+    },
   ],
   slack: [
     // `secret`, so it renders as a password input. The service-account JSON is a
@@ -71,15 +81,66 @@ export const CREDENTIAL_FIELDS: Record<ConnectorAppKey, readonly CredentialField
  */
 export const DEFAULT_CONNECTOR_APP_KEY: ConnectorAppKey = CONNECTOR_APP_KEYS[0];
 
-export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToken';
+/**
+ * The fields a connector asks for, for a key that may not be one.
+ *
+ * `Object.hasOwn`, and HERE rather than at each consumer. `SaasAppManager`
+ * indexed `CREDENTIAL_FIELDS` directly with `?? []`, which cannot fire for a
+ * prototype member: `CREDENTIAL_FIELDS['constructor']` is `Object`, a function,
+ * so `Object.length === 1` made the replace-credentials control render and
+ * `fields.map` threw during the render — taking down the page an operator opened
+ * to delete the offending row. `app.key` is arbitrary tenant text: POST
+ * /contract-import writes it from a CSV cell. Review round 6 guarded the
+ * `REJECTORS` lookup below and left this sibling, which is why both now go
+ * through a function rather than through two spellings of the same index.
+ */
+export function credentialFieldsFor(key: string): readonly CredentialField[] {
+  return Object.hasOwn(CREDENTIAL_FIELDS, key) ? CREDENTIAL_FIELDS[key as ConnectorAppKey] : [];
+}
+
+export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToken' | 'invalidEmail';
+
+const REJECTORS: Record<
+  ConnectorAppKey,
+  (values: Readonly<Record<string, string>>) => CredentialRejection | null
+> = {
+  'google-workspace': (values) =>
+    rejectServiceAccountJson(values.serviceAccountJson ?? '') ??
+    // The manager's inputs sit outside a `<form>` behind a `type="button"`, so
+    // their `type="email"` and `required` attributes never trigger constraint
+    // validation — review found the register form's browser-side check had no
+    // counterpart there, and a malformed address reached storage and failed as
+    // an audit row. Checked here, where both surfaces reach it.
+    rejectAdminEmail(values.impersonateAdminEmail ?? ''),
+  slack: (values) => rejectBotToken(values.botToken ?? ''),
+};
 
 /**
  * Rejects credentials the browser can already tell are wrong.
  *
- * This is not defence — the API validates and the worker validates again. It is
- * what keeps a wrong paste from being SENT: three E2E specs assert zero requests
- * to `/api/saas-apps` on a malformed input, because credential material that
- * never leaves the page cannot be logged by anything in between.
+ * This is not defence — `POST`/`PATCH /saas-apps` reject a blank required field
+ * and the worker validates again. It is what keeps a wrong paste from being
+ * SENT: four E2E specs assert zero requests to `/api/saas-apps` on a malformed
+ * input, because credential material that never leaves the page cannot be logged
+ * by anything in between.
+ *
+ * The API half of that sentence was untrue until review round 6 — `credentials`
+ * was an unbounded string record with no field check, so this function was the
+ * only enforcement anywhere and a direct call bypassed it (R49). The
+ * server-side declaration is `REQUIRED_CREDENTIAL_FIELDS` in
+ * apps/api/src/routes/saas-apps.ts, and the unit test below pins the two to
+ * each other.
+ *
+ * A `Record<ConnectorAppKey, …>` like `CREDENTIAL_FIELDS`, and for the same
+ * reason the header gives. This was an `if (key === 'google-workspace') … else`
+ * — so a third connector silently inherited Slack's whitespace check, and every
+ * app key that is NOT a connector key (`POST /contract-import` creates those
+ * from CSV, and the seed ships `notion`) reached the same branch and was told
+ * its credentials did not look like a bot token. Found in review.
+ *
+ * `null` for a key with no rejector: an application whose connector this
+ * product does not have declares no credential fields either, so there is
+ * nothing to reject and the caller renders no form.
  *
  * Every branch classifies and returns a symbol. Caught values are never read
  * for their text — `JSON.parse` echoes input snippets in its message, and a
@@ -87,13 +148,18 @@ export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToke
  * screenshot. See the header of SaasAppForm.tsx.
  */
 export function rejectCredentials(
-  key: ConnectorAppKey,
+  key: string,
   values: Readonly<Record<string, string>>,
 ): CredentialRejection | null {
-  if (key === 'google-workspace') {
-    return rejectServiceAccountJson(values.serviceAccountJson ?? '');
-  }
-  return rejectBotToken(values.botToken ?? '');
+  // `Object.hasOwn`, not a bare index. `key` widened from `ConnectorAppKey` to
+  // `string` when non-connector apps started reaching here, and an object
+  // literal's members include `Object.prototype`'s — so `constructor`,
+  // `toString` and `valueOf` all resolved to truthy inherited functions and were
+  // CALLED. `app.key` is arbitrary tenant-supplied DB text (POST
+  // /contract-import writes it from a CSV cell), so an application named
+  // `constructor` was enough to reach it.
+  const reject = Object.hasOwn(REJECTORS, key) ? REJECTORS[key as ConnectorAppKey] : undefined;
+  return reject ? reject(values) : null;
 }
 
 function rejectServiceAccountJson(raw: string): CredentialRejection | null {
@@ -132,4 +198,41 @@ function rejectBotToken(raw: string): CredentialRejection | null {
     return 'invalidToken';
   }
   return null;
+}
+
+/**
+ * The WHATWG email production, which is what the register form was already
+ * applying.
+ *
+ * NOT an RFC 5322 attempt, and not an invention of this repository: this is the
+ * exact predicate `<input type="email">` runs — the HTML Living Standard's
+ * "valid e-mail address" REGULAR EXPRESSION, which the standard publishes as a
+ * regex and explicitly calls a willful violation of RFC 5322. Quoted rather than
+ * described, so a later reader does not "fix" it toward the RFC. It is used because of the direction the previous
+ * fix took. Two adjudicators disagreed — the browser's on the register form
+ * (inside a real `<form>`), this function's on the manager (outside one) — and
+ * round 6 unified them by deleting the stricter one, so `admin@corp_internal`
+ * went from rejected-on-one-surface to accepted on both, with no server-side
+ * format check to compensate. That is R43 widening: a boundary was loosened as
+ * a side effect of removing a duplicate. R48's remedy is one adjudicator that is
+ * the most AUTHORITATIVE available, not the most permissive.
+ *
+ * The R47 objection `rejectBotToken` raises does not transfer. A bot token's
+ * format is a vendor's private convention that has changed before; an email
+ * address's is a published grammar the platform itself implements, and this is
+ * the platform's own copy of it rather than a guess at one.
+ *
+ * It stays a paste-catch, not defence: the API refuses a blank required field
+ * and the worker validates again.
+ */
+const WHATWG_EMAIL =
+  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+function rejectAdminEmail(raw: string): CredentialRejection | null {
+  // The RAW value, not `raw.trim()`. Both forms post what the field holds, so
+  // validating a trimmed copy accepted ' admin@corp.example ' and stored it —
+  // and it is then the JWT subject, failing at Google as the audit row this
+  // check exists to prevent. Its sibling `rejectBotToken` already refuses any
+  // whitespace; the two now agree on which string is judged.
+  return WHATWG_EMAIL.test(raw) ? null : 'invalidEmail';
 }

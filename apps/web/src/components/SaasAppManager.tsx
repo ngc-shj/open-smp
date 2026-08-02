@@ -2,15 +2,20 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { ConnectorAppKey, SaasAppListItem } from '@/lib/api-types';
+import type { SaasAppListItem } from '@/lib/api-types';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
-import { CREDENTIAL_FIELDS, rejectCredentials } from '@/lib/connector-credentials';
+import {
+  credentialFieldsFor,
+  rejectCredentials,
+  type CredentialField,
+} from '@/lib/connector-credentials';
 
 type ManagerError =
   | 'invalidJson'
   | 'missingFields'
   | 'invalidToken'
+  | 'invalidEmail'
   | 'invalidBody'
   | 'hasAccounts'
   | 'notFound'
@@ -27,6 +32,7 @@ const ERROR_KEYS: Record<ManagerError & string, MessageKey> = {
   invalidJson: 'saasapp.invalidJson',
   missingFields: 'saasapp.missingFields',
   invalidToken: 'saasapp.invalidToken',
+  invalidEmail: 'saasapp.invalidEmail',
   invalidBody: 'saasapp.invalidBodyUpdate',
   hasAccounts: 'saasapp.hasAccounts',
   notFound: 'saasapp.notFound',
@@ -51,8 +57,18 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   // the set would land here with no field list — the fallback is an empty one,
   // which renders no inputs rather than throwing on a page an operator opened
   // to fix exactly that.
-  const appKey = app.key as ConnectorAppKey;
-  const fields = CREDENTIAL_FIELDS[appKey] ?? [];
+  // `app.key` is arbitrary DB text: POST /contract-import writes it from a CSV
+  // cell, and the seed ships `notion`. An application this product has no
+  // connector for declares no credential fields, and the control that offers to
+  // replace them is HIDDEN rather than rendering an empty panel whose Save
+  // reported "That does not look like a bot token" — review found that reachable
+  // with the shipped seed.
+  // Through the shared accessor, which is where the prototype guard lives — a
+  // bare index here was the sibling of the one review round 6 fixed 80 lines
+  // away in connector-credentials.ts, and this component has no unit test to
+  // catch it (R3).
+  const fields: readonly CredentialField[] = credentialFieldsFor(app.key);
+  const canReplaceCredentials = fields.length > 0;
 
   function close() {
     setMode('idle');
@@ -114,7 +130,14 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   }
 
   async function handleReplaceCredentials() {
-    const rejection = rejectCredentials(appKey, values);
+    // No separate required-blank guard. It was added, then reordered after the
+    // classifier, and review then measured what the reorder left: nothing.
+    // `REJECTORS` is total over the connector keys and every required field is
+    // already inspected — a blank service account is `invalidJson`, a blank
+    // admin email `invalidEmail`, a blank bot token `invalidToken` — so the
+    // guard had no reachable case. `connector-credentials.test.ts` asserts that
+    // property directly, which is what keeps it true for the next connector.
+    const rejection = rejectCredentials(app.key, values);
     if (rejection) {
       setError(rejection);
       return;
@@ -131,7 +154,9 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/saas-apps/${encodeURIComponent(app.id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/saas-apps/${encodeURIComponent(app.id)}`, {
+        method: 'DELETE',
+      });
       if (!res.ok) {
         setError(await classifyFailure(res));
         return;
@@ -156,14 +181,16 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
         >
           {t('saasapp.rename')}
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => setMode(mode === 'credentials' ? 'idle' : 'credentials')}
-          className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
-        >
-          {t('saasapp.replaceCredentials')}
-        </button>
+        {canReplaceCredentials && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setMode(mode === 'credentials' ? 'idle' : 'credentials')}
+            className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+          >
+            {t('saasapp.replaceCredentials')}
+          </button>
+        )}
         <button
           type="button"
           disabled={busy}
@@ -183,7 +210,9 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
           {/* The name loses its bold: an interpolated value cannot carry markup,
               and splitting the sentence to keep it is the fragment-concatenation
               shape the dictionary exists to avoid. */}
-          <p className="text-neutral-700">{t('saasapp.confirmDelete', { name: app.displayName })}</p>
+          <p className="text-neutral-700">
+            {t('saasapp.confirmDelete', { name: app.displayName })}
+          </p>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -244,27 +273,55 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
         <div className="flex flex-col gap-1.5 rounded-md border border-neutral-200 bg-white p-2 text-xs">
           {fields.map((field) => (
             <div key={field.name} className="flex flex-col gap-1.5">
-              <label htmlFor={`cred-${field.name}-${app.id}`} className="font-medium text-neutral-700">
+              <label
+                htmlFor={`cred-${field.name}-${app.id}`}
+                className="font-medium text-neutral-700"
+              >
                 {t(field.replaceLabelKey ?? field.labelKey)}
               </label>
+              {/*
+                `aria-required`, not `required`. These inputs sit outside any
+                `<form>` behind a `type="button"`, so constraint validation never
+                fires — a fact this file's own header states — and a `required`
+                attribute that validates nothing is a guard with no failing
+                state, the pattern review named one round earlier. The
+                enforcement is `rejectCredentials`, which both surfaces reach,
+                plus the server-side check the API gained in round 6. What is
+                kept is the affordance a screen reader announces.
+              */}
               {field.kind === 'multiline' ? (
                 <textarea
                   id={`cred-${field.name}-${app.id}`}
+                  aria-required={field.required}
                   rows={6}
                   autoComplete="off"
                   disabled={busy}
                   value={values[field.name] ?? ''}
-                  onChange={(e) => setValues((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                  onChange={(e) =>
+                    setValues((prev) => ({
+                      ...prev,
+                      [field.name]: e.target.value,
+                    }))
+                  }
                   className="rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
                 />
               ) : (
                 <input
                   id={`cred-${field.name}-${app.id}`}
-                  type={field.kind === 'email' ? 'email' : field.kind === 'secret' ? 'password' : 'text'}
+                  aria-required={field.required}
+                  // Same single adjudicator as the register form: the address is
+                  // judged by `rejectAdminEmail`, not by two different engines.
+                  type={field.kind === 'secret' ? 'password' : 'text'}
+                  inputMode={field.kind === 'email' ? 'email' : undefined}
                   autoComplete="off"
                   disabled={busy}
                   value={values[field.name] ?? ''}
-                  onChange={(e) => setValues((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                  onChange={(e) =>
+                    setValues((prev) => ({
+                      ...prev,
+                      [field.name]: e.target.value,
+                    }))
+                  }
                   className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
                 />
               )}

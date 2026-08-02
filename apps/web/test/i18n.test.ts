@@ -250,3 +250,59 @@ describe('i18n/C3: what the switch offers', () => {
     expect(new Set(Object.values(LOCALE_LABELS)).size).toBe(LOCALES.length);
   });
 });
+
+describe('every message key has a reader', () => {
+  it('finds no orphan', async () => {
+    // Review found `saasapp.connector` shipped in both locales with no
+    // consumer, and the fix was by hand — so the CLASS stayed open and
+    // `saasapp.catalogFull` was added in the same round. This is the detector
+    // the ratchet's opposite direction never had: untranslated-literals.ts
+    // measures copy absent from the dictionary; nothing measured a dictionary
+    // entry absent from the code.
+    const { readdir, readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const SRC = path.join(import.meta.dirname, '..', 'src');
+
+    async function sources(dir: string): Promise<string[]> {
+      const out: string[] = [];
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...(await sources(full)));
+        else if (/\.tsx?$/.test(entry.name)) out.push(full);
+      }
+      return out;
+    }
+
+    // The DICTIONARY IS EXCLUDED, and forgetting that is what made the first
+    // version of this detector a tautology: every key appears in messages.ts as
+    // a quoted literal, so `code.includes("'key'")` was true by construction and
+    // `orphans` was always empty. Measured by all three reviewers — an injected
+    // `'zzz.orphan'` left the suite green. It was written to close exactly the
+    // class it then failed to detect.
+    const DICTIONARY = path.join(SRC, 'lib', 'i18n', 'messages.ts');
+    const scanned = await sources(SRC);
+    // Asserted on the UNFILTERED set. `not.toContain` on the filtered one is
+    // guaranteed by the filter and cannot fail — and it held equally when
+    // DICTIONARY named no real file, which is the single failure it was
+    // captioned for: a rename or split of messages.ts makes the filter a no-op
+    // and the detector a tautology again. Measured.
+    expect(scanned, 'the dictionary path no longer resolves').toContain(DICTIONARY);
+
+    const files = scanned.filter((f) => f !== DICTIONARY);
+    expect(files.length).toBeGreaterThan(0);
+    const code = (await Promise.all(files.map((f) => readFile(f, 'utf8')))).join('\n');
+
+    // A key is read when its literal appears anywhere outside the dictionary
+    // itself — `t('x.y')`, a Record value, a labelKey. Deliberately a substring
+    // scan: the alternative is enumerating the shapes a key can be referenced
+    // through, which is the surface-form problem this repository keeps paying
+    // for. The failure direction is safe — a key referenced by a computed
+    // expression would red here and be added to the exemption below with a
+    // reason.
+    const orphans = (Object.keys(MESSAGES.en) as MessageKey[]).filter(
+      (key) => !code.includes(`'${key}'`),
+    );
+
+    expect(orphans, 'message keys no source file names').toEqual([]);
+  });
+});

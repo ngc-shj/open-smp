@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { encryptCredentials } from '@open-smp/crypto';
+import { encryptCredentialRecord } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import { CONNECTOR_APP_KEYS } from '@open-smp/api-types';
-import type { SaasAppListItem, SaasAppCreateResponse } from '@open-smp/api-types';
+import type { ConnectorAppKey, SaasAppListItem, SaasAppCreateResponse } from '@open-smp/api-types';
 import type { AppDeps } from '../deps.js';
 import { countTenantApps, lockTenantAppCatalog } from '../app-catalog.js';
 import { MAX_SAAS_APPS_PER_TENANT } from '../import-limits.js';
@@ -11,6 +11,62 @@ import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 
 /** The catalog is full. Thrown inside the transaction so the ceiling is read under the lock. */
 class CatalogFullError extends Error {}
+
+/** The tenant already registered this key. Decided before the ceiling — see the call site. */
+class DuplicateKeyError extends Error {}
+
+// Raised inside the PATCH transaction so a rejected replacement rolls back the
+// display-name update in the same body rather than committing half of it.
+class InvalidCredentialsError extends Error {}
+
+// BOUNDED. `z.record(z.string(), z.string())` accepted any key set of any size
+// that fits the body limit, and whatever it accepted was stringified, encrypted,
+// stored, and later decrypted into worker memory by the sync path and by the
+// rotation sweep — which loads every tenant's stale rows in one process. The
+// ceiling is sized against the largest legitimate credential this product takes:
+// a Google service-account document.
+export const MAX_CREDENTIAL_FIELDS = 16;
+export const MAX_CREDENTIAL_VALUE_LENGTH = 16_384;
+const credentialsSchema = z
+  .record(z.string().min(1).max(64), z.string().max(MAX_CREDENTIAL_VALUE_LENGTH))
+  .refine((value) => Object.keys(value).length <= MAX_CREDENTIAL_FIELDS, {
+    message: `at most ${MAX_CREDENTIAL_FIELDS} credential fields`,
+  });
+
+/**
+ * The credential fields a connector cannot work without.
+ *
+ * SERVER-SIDE, because there was no server-side check at all. `credentials` was
+ * a bare string record, so `PATCH {"credentials":{}}` passed validation,
+ * encrypted the empty object over the working credential and returned 200 — with
+ * no prior copy, since the row is the only holder. `POST` had the mirror shape:
+ * an app registered with `{}` is permanently unsyncable. The browser's check was
+ * the only thing enforcing this, and `apps/web/src/lib/connector-credentials.ts`
+ * described itself as backed by one here ("the API validates") that did not
+ * exist (R49).
+ *
+ * A `Record<ConnectorAppKey, …>` so a connector added to the key set with no
+ * entry is a compile error rather than an unvalidated write path. The names are
+ * the same strings `CREDENTIAL_FIELDS` marks `required` in apps/web; nothing in
+ * the type system connects the two — `@open-smp/api-types` may only export
+ * frozen string arrays and `is*` guards (C39), so this cannot live there — and
+ * `apps/web/test/connector-credentials.test.ts` asserts the agreement.
+ */
+const REQUIRED_CREDENTIAL_FIELDS: Record<ConnectorAppKey, readonly string[]> = {
+  'google-workspace': ['serviceAccountJson', 'impersonateAdminEmail'],
+  slack: ['botToken'],
+};
+
+function missingRequiredCredentials(key: string, credentials: Record<string, string>): boolean {
+  const required = Object.hasOwn(REQUIRED_CREDENTIAL_FIELDS, key)
+    ? REQUIRED_CREDENTIAL_FIELDS[key as ConnectorAppKey]
+    : undefined;
+  // An app whose connector this product does not have (POST /contract-import
+  // creates those from CSV) declares no required fields, so there is nothing to
+  // enforce — the same rule `rejectCredentials` follows in the browser.
+  if (!required) return false;
+  return required.some((name) => (credentials[name] ?? '').trim() === '');
+}
 
 // SC2/C2. `z.enum` over a NAMED constant, not an inline array — and not only
 // for the usual reason. saas-app-key-pin.test.ts locates this declaration with
@@ -24,7 +80,7 @@ export const saasAppBodySchema = z
   .object({
     key: z.enum(CONNECTOR_APP_KEYS),
     displayName: z.string().min(1),
-    credentials: z.record(z.string(), z.string()),
+    credentials: credentialsSchema,
   })
   .strict();
 
@@ -35,111 +91,138 @@ const saasAppParamsSchema = z.object({ saasAppId: z.string().uuid() }).strict();
 const saasAppPatchSchema = z
   .object({
     displayName: z.string().min(1).max(200).optional(),
-    credentials: z.record(z.string(), z.string()).optional(),
+    credentials: credentialsSchema.optional(),
   })
   .strict();
 
 export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void {
-  app.post(
-    '/saas-apps',
-    { config: { rateLimit: MUTATION_RATE_LIMIT } },
-    async (req, reply) => {
-      const parsed = saasAppBodySchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: 'invalid_body' });
-      }
-      const { key, displayName, credentials } = parsed.data;
-      const { tenantId } = req.sessionContext;
+  app.post('/saas-apps', { config: { rateLimit: MUTATION_RATE_LIMIT } }, async (req, reply) => {
+    const parsed = saasAppBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_body' });
+    }
+    const { key, displayName, credentials } = parsed.data;
+    if (missingRequiredCredentials(key, credentials)) {
+      return reply.code(400).send({ error: 'invalid_credentials' });
+    }
+    const { tenantId } = req.sessionContext;
 
-      const plaintext = new TextEncoder().encode(JSON.stringify(credentials));
+    let created: SaasAppCreateResponse;
+    try {
+      created = await withTenant(deps.pool, tenantId, async (tx) => {
+        // SCL11's trigger, closed. Until C2 this route had NO ceiling at all:
+        // `MAX_SAAS_APPS_PER_TENANT` was counted only by the contract import,
+        // and what bounded this path was `UNIQUE (tenant_id, key)` against a
+        // one-literal field — an accident of the schema doing a limit's job.
+        // Widening the field to the connector set moves that bound from 1 to
+        // |CONNECTOR_APP_KEYS| rather than removing it, so this is not yet a
+        // reachable overrun; it is the control the route was asserted to have
+        // and did not.
+        //
+        // Under the lock, because `SELECT count(*)` takes none at READ
+        // COMMITTED and two concurrent creates would otherwise both read the
+        // same pre-insert count.
+        await lockTenantAppCatalog(tx, tenantId);
 
-      let created: SaasAppCreateResponse;
-      try {
-        created = await withTenant(deps.pool, tenantId, async (tx) => {
-          // SCL11's trigger, closed. Until C2 this route had NO ceiling at all:
-          // `MAX_SAAS_APPS_PER_TENANT` was counted only by the contract import,
-          // and what bounded this path was `UNIQUE (tenant_id, key)` against a
-          // one-literal field — an accident of the schema doing a limit's job.
-          // Widening the field to the connector set moves that bound from 1 to
-          // |CONNECTOR_APP_KEYS| rather than removing it, so this is not yet a
-          // reachable overrun; it is the control the route was asserted to have
-          // and did not.
-          //
-          // Under the lock, because `SELECT count(*)` takes none at READ
-          // COMMITTED and two concurrent creates would otherwise both read the
-          // same pre-insert count.
-          await lockTenantAppCatalog(tx, tenantId);
-          if ((await countTenantApps(tx, tenantId)) >= MAX_SAAS_APPS_PER_TENANT) {
-            throw new CatalogFullError();
-          }
+        // The DUPLICATE is decided first, and the order is the whole point.
+        // Checking the ceiling first meant that re-registering a key the
+        // tenant already holds, at the ceiling, reported `catalog_full` — so
+        // the operator was told to delete an application when what they
+        // actually had was a key already in use. That is the confusion C3
+        // read the discriminant to avoid, one layer down; it was found by an
+        // acceptance test written for this route in the review round, because
+        // the ceiling had none at all.
+        //
+        // Not a TOCTOU: the advisory lock above serialises catalog growth for
+        // this tenant, so nothing can insert this key between the check and
+        // the insert. The 23505 catch below stays as the backstop for a
+        // constraint this route does not own.
+        const existing = await tx.query(
+          'SELECT 1 FROM saas_apps WHERE tenant_id = $1 AND key = $2',
+          [tenantId, key],
+        );
+        if (existing.rowCount && existing.rowCount > 0) {
+          throw new DuplicateKeyError();
+        }
 
-          const insertResult = await tx.query<{ id: string }>(
-            `INSERT INTO saas_apps (tenant_id, key, display_name)
+        if ((await countTenantApps(tx, tenantId)) >= MAX_SAAS_APPS_PER_TENANT) {
+          throw new CatalogFullError();
+        }
+
+        const insertResult = await tx.query<{ id: string }>(
+          `INSERT INTO saas_apps (tenant_id, key, display_name)
              VALUES ($1, $2, $3)
              RETURNING id`,
-            [tenantId, key, displayName],
-          );
-          const saasAppId = insertResult.rows[0]?.id;
-          if (!saasAppId) {
-            throw new Error('saas-apps insert returned no row');
-          }
-
-          const { blob, keyVersion } = encryptCredentials(
-            plaintext,
-            { tenantId, saasAppId },
-            deps.encryptionKeys,
-          );
-
-          await tx.query(
-            `UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1`,
-            [saasAppId, Buffer.from(blob), keyVersion],
-          );
-
-          return { id: saasAppId, key, displayName };
-        });
-      } catch (err: unknown) {
-        if (err instanceof CatalogFullError) {
-          return reply.code(409).send({ error: 'catalog_full' });
-        }
-        // Scoped to this insert's known unique constraint only — any other
-        // error (or a future unique constraint added to this same path)
-        // rethrows rather than being mismapped to duplicate_key.
-        const isDuplicateKey =
-          typeof err === 'object' &&
-          err !== null &&
-          'code' in err &&
-          err.code === '23505' &&
-          'constraint' in err &&
-          err.constraint === 'saas_apps_tenant_id_key_key';
-        if (isDuplicateKey) {
-          return reply.code(409).send({ error: 'duplicate_key' });
-        }
-        throw err;
-      }
-
-      return reply.code(201).send(created);
-    },
-  );
-
-  app.get(
-    '/saas-apps',
-    { config: { rateLimit: LIST_RATE_LIMIT } },
-    async (req, reply) => {
-      const { tenantId } = req.sessionContext;
-
-      const items = await withTenant(deps.pool, tenantId, async (tx) => {
-        const result = await tx.query<{ id: string; key: string; display_name: string }>(
-          'SELECT id, key, display_name FROM saas_apps WHERE tenant_id = $1 ORDER BY display_name',
-          [tenantId],
+          [tenantId, key, displayName],
         );
-        return result.rows.map(
-          (row): SaasAppListItem => ({ id: row.id, key: row.key, displayName: row.display_name }),
+        const saasAppId = insertResult.rows[0]?.id;
+        if (!saasAppId) {
+          throw new Error('saas-apps insert returned no row');
+        }
+
+        // The zeroization is `encryptCredentialRecord`'s, not this route's.
+        // This site owned a `plaintext.fill(0)` for exactly one round — a fresh
+        // member of the class packages/crypto had just closed on the other
+        // side, appended here with nothing asserting it (R42 ①b).
+        const { blob, keyVersion } = encryptCredentialRecord(
+          credentials,
+          { tenantId, saasAppId },
+          deps.encryptionKeys,
         );
+
+        await tx.query(
+          `UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1`,
+          [saasAppId, Buffer.from(blob), keyVersion],
+        );
+
+        return { id: saasAppId, key, displayName };
       });
+    } catch (err: unknown) {
+      if (err instanceof DuplicateKeyError) {
+        return reply.code(409).send({ error: 'duplicate_key' });
+      }
+      if (err instanceof CatalogFullError) {
+        return reply.code(409).send({ error: 'catalog_full' });
+      }
+      // Scoped to this insert's known unique constraint only — any other
+      // error (or a future unique constraint added to this same path)
+      // rethrows rather than being mismapped to duplicate_key.
+      const isDuplicateKey =
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        err.code === '23505' &&
+        'constraint' in err &&
+        err.constraint === 'saas_apps_tenant_id_key_key';
+      if (isDuplicateKey) {
+        return reply.code(409).send({ error: 'duplicate_key' });
+      }
+      throw err;
+    }
 
-      return reply.code(200).send({ items });
-    },
-  );
+    return reply.code(201).send(created);
+  });
+
+  app.get('/saas-apps', { config: { rateLimit: LIST_RATE_LIMIT } }, async (req, reply) => {
+    const { tenantId } = req.sessionContext;
+
+    const items = await withTenant(deps.pool, tenantId, async (tx) => {
+      const result = await tx.query<{
+        id: string;
+        key: string;
+        display_name: string;
+      }>('SELECT id, key, display_name FROM saas_apps WHERE tenant_id = $1 ORDER BY display_name', [
+        tenantId,
+      ]);
+      return result.rows.map((row): SaasAppListItem => ({
+        id: row.id,
+        key: row.key,
+        displayName: row.display_name,
+      }));
+    });
+
+    return reply.code(200).send({ items });
+  });
 
   app.patch(
     '/saas-apps/:saasAppId',
@@ -160,48 +243,62 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
       }
       const { tenantId } = req.sessionContext;
 
-      const updated = await withTenant(deps.pool, tenantId, async (tx) => {
-        const existing = await tx.query<{ id: string; key: string; display_name: string }>(
-          'SELECT id, key, display_name FROM saas_apps WHERE id = $1',
-          [saasAppId],
-        );
-        const row = existing.rows[0];
-        if (!row) {
-          return null;
-        }
+      let updated: SaasAppListItem | null;
+      try {
+        updated = await withTenant(deps.pool, tenantId, async (tx) => {
+          const existing = await tx.query<{
+            id: string;
+            key: string;
+            display_name: string;
+          }>('SELECT id, key, display_name FROM saas_apps WHERE id = $1', [saasAppId]);
+          const row = existing.rows[0];
+          if (!row) {
+            return null;
+          }
 
-        if (displayName !== undefined) {
-          await tx.query('UPDATE saas_apps SET display_name = $2 WHERE id = $1', [
-            saasAppId,
-            displayName,
-          ]);
-        }
+          if (displayName !== undefined) {
+            await tx.query('UPDATE saas_apps SET display_name = $2 WHERE id = $1', [
+              saasAppId,
+              displayName,
+            ]);
+          }
 
-        if (credentials !== undefined) {
-          const plaintext = new TextEncoder().encode(JSON.stringify(credentials));
-          const { blob, keyVersion } = encryptCredentials(
-            plaintext,
-            { tenantId, saasAppId },
-            deps.encryptionKeys,
-          );
-          // The version column travels with the ciphertext in one statement.
-          // encryptCredentials always picks the max key version, so a
-          // replacement performed after a key rollout lands on the new one —
-          // writing credentials_enc alone would pair new-version ciphertext
-          // with a stale version, and the AAD (which binds keyVersion) would
-          // then fail the GCM tag check on every later read.
-          await tx.query(
-            'UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1',
-            [saasAppId, Buffer.from(blob), keyVersion],
-          );
-        }
+          if (credentials !== undefined) {
+            // The row's own key decides what is required — the request never says
+            // which connector it is replacing credentials for.
+            if (missingRequiredCredentials(row.key, credentials)) {
+              throw new InvalidCredentialsError();
+            }
+            // The zeroization is the primitive's; see the POST handler.
+            const { blob, keyVersion } = encryptCredentialRecord(
+              credentials,
+              { tenantId, saasAppId },
+              deps.encryptionKeys,
+            );
+            // The version column travels with the ciphertext in one statement.
+            // The primitive always picks the max key version, so a replacement
+            // performed after a key rollout lands on the new one — writing
+            // credentials_enc alone would pair new-version ciphertext with a
+            // stale version, and the AAD (which binds keyVersion) would then
+            // fail the GCM tag check on every later read.
+            await tx.query(
+              'UPDATE saas_apps SET credentials_enc = $2, credentials_key_version = $3 WHERE id = $1',
+              [saasAppId, Buffer.from(blob), keyVersion],
+            );
+          }
 
-        return {
-          id: row.id,
-          key: row.key,
-          displayName: displayName ?? row.display_name,
-        } satisfies SaasAppListItem;
-      });
+          return {
+            id: row.id,
+            key: row.key,
+            displayName: displayName ?? row.display_name,
+          } satisfies SaasAppListItem;
+        });
+      } catch (err: unknown) {
+        if (err instanceof InvalidCredentialsError) {
+          return reply.code(400).send({ error: 'invalid_credentials' });
+        }
+        throw err;
+      }
 
       if (!updated) {
         return reply.code(404).send({ error: 'not_found' });
@@ -267,7 +364,9 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
         return reply.code(404).send({ error: 'not_found' });
       }
       if (outcome !== 'deleted') {
-        return reply.code(409).send({ error: 'app_has_accounts', accountCount: outcome.accountCount });
+        return reply
+          .code(409)
+          .send({ error: 'app_has_accounts', accountCount: outcome.accountCount });
       }
 
       return reply.code(204).send();

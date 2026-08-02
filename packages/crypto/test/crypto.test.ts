@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   decryptCredentials,
@@ -126,6 +128,9 @@ describe('key rotation', () => {
   });
 });
 
+/** A canonical 32-byte key, so every cell below varies only the version. */
+const KEY_B64 = Buffer.alloc(32, 1).toString('base64');
+
 describe('parseEncryptionKeys', () => {
   it('parses a single version:base64key pair', () => {
     const key = Buffer.alloc(32, 7);
@@ -169,7 +174,112 @@ describe('parseEncryptionKeys', () => {
     expect(() => parseEncryptionKeys(`v1:${key}`)).toThrow();
   });
 
+  it.each([
+    // 2^31, the first value the COLUMN cannot hold. The first version of this
+    // bound came from the AAD's `writeUInt32BE` (2^32-1), so this range booted
+    // cleanly and failed at the first credential write with `integer out of
+    // range` — the case that made the check narrower than it read.
+    ['the first version the column cannot hold', () => `2147483648:${KEY_B64}`],
+    ['a version above 2^32-1', () => `4294967296:${KEY_B64}`],
+    ['a version beyond safe-integer range', () => `99999999999999999999:${KEY_B64}`],
+  ])('rejects %s', (_label, spell) => {
+    expect(() => parseEncryptionKeys(spell())).toThrow(/outside 0\.\./);
+  });
+
+  it('bounds the version at the column, and reds if the column changes', () => {
+    // THE DERIVATION, not the number. This bound was first taken from the AAD's
+    // `writeUInt32BE` (2^32-1) while the binding constraint was the signed
+    // `int` column, so a whole range booted and failed at the first write. If
+    // the column is ever widened to `bigint`, this cell reds and the constant
+    // above is revisited deliberately rather than left narrower than the schema.
+    const migration = readFileSync(
+      path.join(import.meta.dirname, '..', '..', 'schema', 'migrations', '0001_init.sql'),
+      'utf8',
+    );
+    const column = /credentials_key_version\s+(\w+)/.exec(migration);
+
+    // Non-vacuity: the migration really was read and the column really is there.
+    expect(column, 'credentials_key_version not found in 0001_init.sql').not.toBeNull();
+    expect(column?.[1]).toBe('int');
+    // PostgreSQL `int` is signed 4-byte.
+    expect(parseEncryptionKeys(`2147483647:${KEY_B64}`).size).toBe(1);
+    expect(() => parseEncryptionKeys(`2147483648:${KEY_B64}`)).toThrow();
+  });
+
+  it('accepts the largest version the column can hold', () => {
+    // The allow side, boundary-adjacent (RT10): without it the bound above is
+    // satisfiable by a check that refuses every version, and the failure would
+    // be an operator who cannot roll a key at all.
+    expect(parseEncryptionKeys(`2147483647:${KEY_B64}`).has(2147483647)).toBe(true);
+  });
+
+  it('rejects a key whose base64 is not canonical', () => {
+    // Node's decoder skips unrecognised characters and tolerates non-zero
+    // trailing bits, so distinct strings decode to the same 32 bytes — a typo
+    // inside the key can decode to a DIFFERENT valid key than the operator
+    // pasted, and the process boots cleanly under a master key nothing was
+    // sealed with.
+    const bytes = Buffer.alloc(32, 1);
+    const canonical = bytes.toString('base64');
+    // Same 32 bytes, different spelling. 32 % 3 === 2, so the last data
+    // character carries two bits the decoder ignores: `…AQE=` and `…AQF=` decode
+    // identically. Asserted rather than assumed, because the point of the cell
+    // is that these ARE equivalent to the decoder.
+    const nonCanonical = `${canonical.slice(0, 42)}F=`;
+    expect(Buffer.from(nonCanonical, 'base64').equals(bytes)).toBe(true);
+    expect(nonCanonical).not.toBe(canonical);
+
+    expect(() => parseEncryptionKeys(`1:${nonCanonical}`)).toThrow(/canonical/);
+    // The allow side: the spelling the operator actually gets from a generator.
+    expect(parseEncryptionKeys(`1:${canonical}`).size).toBe(1);
+  });
+
+  it('rejects a version that appears more than once', () => {
+    // `Map.set` silently overwrote, so this booted cleanly under the LAST key
+    // while every credential sealed under the first failed its GCM tag on the
+    // next read and the rotation sweep counted them all as failures. Raised by
+    // an external security review against a file this branch changed.
+    const a = Buffer.alloc(32, 1).toString('base64');
+    const b = Buffer.alloc(32, 2).toString('base64');
+
+    expect(() => parseEncryptionKeys(`1:${a},1:${b}`)).toThrow(/more than once/);
+    // The allow side: distinct versions are the supported rotation shape.
+    expect(parseEncryptionKeys(`1:${a},2:${b}`).size).toBe(2);
+  });
+
   it('rejects empty input', () => {
     expect(() => parseEncryptionKeys('')).toThrow();
+  });
+
+  it.each([
+    ['the version prefix is missing', (key: string) => key],
+    ['the version and key are transposed', (key: string) => `${key}:1`],
+  ])('names the position and not the key material when %s', (_label, spell) => {
+    // Review round 6. These two spellings are the likeliest operator mistakes,
+    // and in BOTH the offending text is the master key itself — base64's
+    // alphabet contains no `:`, so nothing truncates it. The messages reach
+    // stderr on every boot path and stderr is what ships to the log aggregator;
+    // recovery from publishing this value is a full key rotation.
+    const key = Buffer.alloc(32, 1).toString('base64');
+
+    const good = Buffer.alloc(32, 2).toString('base64');
+    let caught: unknown;
+    try {
+      parseEncryptionKeys(`1:${good},${spell(key)}`);
+    } catch (error) {
+      caught = error;
+    }
+
+    // Non-vacuity: it really did reject, and it really did say something.
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message.length).toBeGreaterThan(0);
+    expect((caught as Error).message).not.toContain(key);
+    // Not merely the whole key: any run of it is enough to shorten a search.
+    expect((caught as Error).message).not.toContain(key.slice(0, 8));
+    // The redaction without the position is not actionable: an operator with a
+    // multi-entry ENCRYPTION_KEYS would learn only that "some entry" is
+    // malformed. Both halves of the change are asserted, and the fixture puts
+    // the bad entry SECOND so a hard-coded 0 does not satisfy it.
+    expect((caught as Error).message).toMatch(/at index 1\b/);
   });
 });

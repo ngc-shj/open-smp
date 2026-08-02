@@ -6,7 +6,7 @@ import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
 import { CONNECTOR_APP_KEYS, type ConnectorAppKey } from '@/lib/api-types';
 import {
-  CREDENTIAL_FIELDS,
+  credentialFieldsFor,
   DEFAULT_CONNECTOR_APP_KEY,
   rejectCredentials,
   type CredentialField,
@@ -16,6 +16,7 @@ type FieldError =
   | 'invalidJson'
   | 'missingFields'
   | 'invalidToken'
+  | 'invalidEmail'
   | 'invalidBody'
   | 'duplicate'
   | 'catalogFull'
@@ -42,9 +43,13 @@ const ERROR_KEYS: Record<FieldError & string, MessageKey> = {
   invalidJson: 'saasapp.invalidJson',
   missingFields: 'saasapp.missingFields',
   invalidToken: 'saasapp.invalidToken',
+  invalidEmail: 'saasapp.invalidEmail',
   invalidBody: 'saasapp.invalidBodyRegister',
   duplicate: 'saasapp.duplicate',
-  catalogFull: 'saasapp.registerFailed',
+  // NOT registerFailed. That says "please try again", and retrying at the
+  // ceiling can never succeed — the discriminant was read and then discarded,
+  // which review pointed out defeats the reason C3 read it.
+  catalogFull: 'saasapp.catalogFull',
   network: 'error.network',
   unknown: 'saasapp.registerFailed',
 };
@@ -68,7 +73,12 @@ function CredentialInput({
   // lets three E2E specs stand unchanged as the proof that nothing moved.
   const common = {
     id: field.name,
-    required: field.required,
+    // `aria-required`, matching the manager. `required` inside this real
+    // `<form>` made the browser adjudicate blankness before `handleSubmit` ran,
+    // while the manager's identical field was adjudicated by
+    // `rejectCredentials` — the same split the `type` attribute had, on the same
+    // element, left behind by the fix that claimed to have removed it.
+    'aria-required': field.required,
     autoComplete: 'off' as const,
     value,
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
@@ -85,7 +95,21 @@ function CredentialInput({
       ) : (
         <input
           {...common}
-          type={field.kind === 'email' ? 'email' : field.kind === 'secret' ? 'password' : 'text'}
+          // ONE ADJUDICATOR, and it is `rejectAdminEmail`. `type="email"` inside
+          // this real `<form>` ran the browser's stricter WHATWG check FIRST and
+          // blocked submit before `handleSubmit`, so the regex never saw the
+          // value here — while the manager's inputs sit outside any form and
+          // only the regex applies there. Same field, same product, two verdicts
+          // decided by which panel the operator opened: `admin@corp_internal`
+          // was accepted when replacing credentials and rejected when
+          // registering. `rejectAdminEmail` is now the browser's own production
+          // applied on both surfaces, so `type="email"` would be a second engine
+          // deciding the same predicate (R48). The earlier version of this
+          // comment justified the choice by the regex being the LOOSER of the
+          // two — true when it was written, false since the predicate was
+          // tightened in the same commit that left this sentence behind.
+          type={field.kind === 'secret' ? 'password' : 'text'}
+          inputMode={field.kind === 'email' ? 'email' : undefined}
           className={FIELD_CLASS}
         />
       )}
@@ -105,7 +129,12 @@ export function SaasAppForm() {
   const [error, setError] = useState<FieldError>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const fields = CREDENTIAL_FIELDS[appKey];
+  // Through the shared accessor, like the manager. `appKey` is a
+  // `ConnectorAppKey` from a bounded `<select>` here, so a bare index would be
+  // safe — but one accessor with no exceptions is what lets the source scan in
+  // connector-credentials.test.ts stay a flat rule, and this class has already
+  // produced two sibling lookups one round apart.
+  const fields = credentialFieldsFor(appKey);
 
   function resetForm() {
     setDisplayName('');
@@ -161,7 +190,9 @@ export function SaasAppForm() {
         // is full (SC2/C2). Read the discriminant rather than reporting the
         // first as the second — "already registered" against a full catalog
         // sends the operator to delete an app they do not have.
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         setError(body?.error === 'catalog_full' ? 'catalogFull' : 'duplicate');
         return;
       }

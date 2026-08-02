@@ -2,6 +2,10 @@ import { WebClient } from '@slack/web-api';
 import type { UsersListResponse } from '@slack/web-api';
 import {
   ConnectorError,
+  REQUEST_TIMEOUT_MS,
+  diagnose,
+  isTransportError,
+  waitUnlessAborted,
   type ConnectorContext,
   type RawAccount,
   type SaaSConnector,
@@ -25,6 +29,18 @@ import {
 
 const PAGE_SIZE = 200;
 const MAX_ATTEMPTS = 5;
+
+/**
+ * The longest a provider-mandated wait may hold this run.
+ *
+ * `Retry-After` comes off a response header with no upper bound, and honouring
+ * it verbatim inside `runSync`'s open transaction is how a `retry-after:
+ * 2000000` holds a pooled connection, an idle-in-transaction session and a live
+ * credential buffer for weeks. Review found this the round after the round that
+ * closed the same blast radius. Above 2^31 ms Node fires the timer immediately,
+ * which turns the same header into a hot loop — the clamp closes both.
+ */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 /**
  * Derived from the response type rather than imported: `@slack/web-api` exports
@@ -68,10 +84,19 @@ function statusOf(error: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/** Seconds the provider asked us to wait, when it said so. */
+function retryAfterSeconds(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const value = (error as { retryAfter?: unknown }).retryAfter;
+  // Typed, not merely present. `'retryAfter' in error` classified any object
+  // carrying the property — whatever its value — as rate limited.
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function isRateLimited(error: unknown): boolean {
   if (statusOf(error) === 429) return true;
   if (platformErrorCode(error) === 'ratelimited') return true;
-  return typeof error === 'object' && error !== null && 'retryAfter' in error;
+  return retryAfterSeconds(error) !== undefined;
 }
 
 // Non-retryable by construction: retrying a revoked token or a missing scope
@@ -165,6 +190,7 @@ async function withRetry<T>(
   ctx: ConnectorContext,
   sleep: (ms: number) => Promise<void>,
   operation: string,
+  secret: string,
 ): Promise<T> {
   let attempt = 0;
 
@@ -176,37 +202,51 @@ async function withRetry<T>(
       const code = platformErrorCode(error);
       const status = statusOf(error);
 
-      // Every message below is a FIXED STRING and the provider error travels in
-      // `cause`. apps/worker/src/sync.ts writes `error.message` into
-      // discovery_events, whose UPDATE and DELETE are REVOKEd — so a message
-      // that interpolated the request config would have written a bearer token
-      // somewhere the application cannot redact it. The Google connector holds
-      // this by convention; here it is asserted.
-      if (code !== undefined && AUTH_ERRORS.has(code)) {
-        throw new ConnectorError('auth', false, 'Slack authentication failed', { cause: error });
-      }
-      if (status === 401 || status === 403) {
-        throw new ConnectorError('auth', false, 'Slack authentication failed', { cause: error });
-      }
-
-      const retryable =
-        isRateLimited(error) || (typeof status === 'number' && status >= 500 && status < 600);
-      if (!retryable || attempt >= MAX_ATTEMPTS) {
-        const kind = isRateLimited(error) ? 'rate_limit' : 'transient';
-        throw new ConnectorError(kind, true, `Slack ${operation} failed after retries`, {
-          cause: error,
+      // Every message is a FIXED STRING and the diagnosis travels in `cause`
+      // with the token removed — see diagnose(). `sync.ts` writes
+      // `error.message` into a table whose UPDATE and DELETE are REVOKEd.
+      if ((code !== undefined && AUTH_ERRORS.has(code)) || status === 401 || status === 403) {
+        throw new ConnectorError('auth', false, 'Slack authentication failed', {
+          cause: diagnose(error, secret),
         });
       }
 
-      const backoffMs = 2 ** (attempt - 1) * 1000;
-      const jitterMs = Math.random() * 1000;
+      const rateLimited = isRateLimited(error);
+      const retryable =
+        rateLimited ||
+        (typeof status === 'number' && status >= 500 && status < 600) ||
+        isTransportError(error);
+      if (!retryable || attempt >= MAX_ATTEMPTS) {
+        throw new ConnectorError(
+          rateLimited ? 'rate_limit' : 'transient',
+          true,
+          `Slack ${operation} failed after retries`,
+          { cause: diagnose(error, secret) },
+        );
+      }
+
+      // The provider's own number wins when it gave one. Serving a mandated
+      // 30-second wait with ~1 second of exponential backoff spends the next
+      // attempt on the same rate limit — the `retryAfter` was being read to
+      // CLASSIFY the error and then discarded.
+      // Clamped. The provider's number wins over the connector's schedule, but
+      // not over the run's own bound — see MAX_RETRY_AFTER_MS.
+      const mandatedMs = Math.min((retryAfterSeconds(error) ?? 0) * 1000, MAX_RETRY_AFTER_MS);
+      const backoffMs = 2 ** (attempt - 1) * 1000 + Math.random() * 1000;
+      const delayMs = Math.max(mandatedMs, backoffMs);
+
       ctx.logger.warn(`Slack ${operation} retrying after error`, {
         attempt,
         ...(status === undefined ? {} : { status }),
         ...(code === undefined ? {} : { code }),
-        delayMs: Math.round(backoffMs + jitterMs),
+        delayMs: Math.round(delayMs),
       });
-      await sleep(backoffMs + jitterMs);
+      await waitUnlessAborted(
+        delayMs,
+        ctx.signal,
+        sleep,
+        () => new ConnectorError('fatal', false, `Slack ${operation} aborted`),
+      );
     }
   }
 }
@@ -255,7 +295,29 @@ export class SlackConnector implements SaaSConnector {
       return this.cachedUsersList;
     }
 
-    const client = new WebClient(this.cfg.botToken);
+    // Options, not defaults, and every one of them was a review finding.
+    //
+    //   retries: 0            — the SDK's default is `tenRetriesInAboutThirtyMinutes`,
+    //                           which would sit UNDER `withRetry`'s own loop:
+    //                           MAX_ATTEMPTS of 5 became ~55 HTTP attempts and
+    //                           hours of wall clock per page, and the stated
+    //                           bound was not the real bound.
+    //   rejectRateLimitedCalls — the default (`false`) makes the SDK absorb a
+    //                           429, sleep out `Retry-After` internally, and
+    //                           finally throw a BARE Error carrying no
+    //                           `statusCode`, no `data.error` and no
+    //                           `retryAfter`. Every arm of `isRateLimited`
+    //                           missed it, so `kind: 'rate_limit'` was
+    //                           unreachable and a rate limit was reported as
+    //                           `transient`. `true` produces
+    //                           `WebAPIRateLimitedError`, which is the shape
+    //                           `isRateLimited` was written for.
+    //   timeout               — see REQUEST_TIMEOUT_MS.
+    const client = new WebClient(this.cfg.botToken, {
+      retryConfig: { retries: 0 },
+      rejectRateLimitedCalls: true,
+      timeout: REQUEST_TIMEOUT_MS,
+    });
 
     this.cachedUsersList = (params: UsersListParams) => client.users.list(params);
 
@@ -288,7 +350,13 @@ export class SlackConnector implements SaaSConnector {
         ...(cursor ? { cursor } : {}),
       };
 
-      const response = await withRetry(() => usersList(params), ctx, sleep, 'users.list');
+      const response = await withRetry(
+        () => usersList(params),
+        ctx,
+        sleep,
+        'users.list',
+        this.cfg.botToken,
+      );
 
       for (const member of response.members ?? []) {
         yield toRawAccount(member);

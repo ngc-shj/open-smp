@@ -1,0 +1,1110 @@
+# Code Review: second-connector (SC2 / C1, C2, C3)
+
+> Rounds 1-5 below were recorded across six commits; rounds 2-5 had been left in
+> commit bodies only and are restored here in round 6, which is itself a finding
+> about this loop's own record-keeping (step 3-4 requires each round's findings
+> and resolutions in this file).
+
+Date: 2026-08-02
+Review rounds: 6 (of a 10-round limit)
+Range reviewed: `02a6106..2ffa769` — PRs #39, #40, #41
+
+## Changes from Previous Round
+
+Initial review. **These three PRs were merged without the Phase 2 Step 2-5
+self-R-check**, so this round is first-pass discovery rather than incremental
+verification. The sibling PR (#42) received both a 2-5 pass and a Phase 3 pass;
+this is the retrospective equivalent for the three before it.
+
+Pre-screening: Ollama returned `No findings` for functionality and security, and
+four findings for testing — one of which (the untested `catalog_full` ceiling)
+the Testing expert verified and escalated to Critical.
+
+## Convergence
+
+Three findings were reached independently by more than one expert. Per
+"Perspective Convergence as a Severity Signal", each takes the higher floor.
+
+| Issue | Experts | Floor |
+|---|---|---|
+| Slack `WebClient` constructed with SDK defaults | Functionality F1, Security SEC-1, Testing F5/A1 | **Major**, and the only finding with an unbounded blast radius |
+| `rejectCredentials` falls through for any non-Google key | Functionality F2, Security SEC-3 + SEC-5 (adjacent) | **Major** |
+| The 429 test asserts a shape the real client cannot produce | Functionality F8 (adjacent), Testing F5 | **Major** |
+
+## Functionality Findings
+
+- **F1 [Major]** `packages/connectors/slack/src/index.ts:258` — `new WebClient(token)`
+  with no options. Verified against the installed SDK: `retryConfig =
+  tenRetriesInAboutThirtyMinutes`, `rejectRateLimitedCalls = false`,
+  `timeout = 0`. The connector's stated `MAX_ATTEMPTS = 5` therefore sits ON TOP
+  of 10 SDK retries (~55 HTTP attempts, hours of wall clock per page), and
+  `kind: 'rate_limit'` is unreachable — a 429 is absorbed by the SDK and
+  re-thrown as a bare `Error` with no `statusCode`, no `data.error` and no
+  `retryAfter`, so all three arms of `isRateLimited` miss it and it reports as
+  `transient`. The intent is legible: `'retryAfter' in error` matches
+  `WebAPIRateLimitedError`, the shape produced ONLY under
+  `rejectRateLimitedCalls: true`.
+- **F2 [Major]** `apps/web/src/lib/connector-credentials.ts:93-97` —
+  `rejectCredentials` is an `if/else`, not a dispatch, so every non-Google key
+  is validated as a Slack bot token. Reachable today: `seed.ts` seeds
+  `'notion'`, rendered through `SaasAppManager`; its Replace-credentials panel
+  renders ZERO inputs and Save reports *"That does not look like a bot token."*
+  A dead panel with an error naming an unrelated connector. The file's own
+  header argues for `Record<ConnectorAppKey, …>` "and not a lookup with a
+  fallback" — `CREDENTIAL_FIELDS` honours it; this function does not.
+- **F3 [Major]** `apps/web/src/components/SaasAppManager.tsx:247-269` —
+  `CredentialField.required` is applied in `SaasAppForm` and not here, and the
+  replace flow deliberately sends every declared field including blanks. An
+  operator who pastes a service account and leaves the admin email empty stores
+  a blank required credential; the failure surfaces only as a
+  `discovery_events` row.
+- **F4 [Major]** `apps/web/src/components/SaasAppForm.tsx:47` — `catalogFull`
+  maps to *"Registration failed. Please try again."*, the same string as
+  `unknown`. Retrying can never succeed at the ceiling, and the actual recovery
+  (delete an unused application) is never stated. C3's stated reason for reading
+  the discriminant was actionable copy; the code reads it and discards it.
+- **F5 [Minor]** `apps/web/src/lib/i18n/messages.ts:243,465` —
+  `saasapp.connector` added to both dictionaries, referenced nowhere.
+- **F6 [Minor]** `apps/web/test/untranslated-literals.ts:42` — the
+  `'google-workspace'` allowlist entry survives the literal it was written for.
+- **F7 [Major, adjacent]** `e2e/specs/apps.spec.ts:38-47` — `getByLabel`'s string
+  form is a case-insensitive SUBSTRING match, and the manager's replace labels
+  are "New service account JSON" / "New bot token". The `toHaveCount(0)`
+  assertions are green only because every manager panel is idle on load.
+- **F8 [Major, adjacent]** the 429 test cell — see Testing F5.
+
+## Security Findings
+
+- **SEC-1 [Major]** — the same `WebClient` defaults as F1, read for blast
+  radius: `timeout: 0` means a single request can hang indefinitely, and all of
+  it runs INSIDE the `withTenant` transaction (`sync.ts:91` opens it, `:125`
+  iterates the connector inside). `sync.ts:119` passes
+  `new AbortController().signal` — a signal nothing ever aborts — so the
+  connector's own `ctx.signal.aborted` check is inert. No `statement_timeout` or
+  `idle_in_transaction_session_timeout` anywhere in the repo. One tenant's
+  blackholed workspace holds a pooled connection and an idle-in-transaction
+  session for hours, and the sync worker's `concurrency: 1` stalls the queue for
+  every other tenant.
+- **SEC-2 [Major, R49]** `packages/connectors/slack/src/index.ts:181-184` — the
+  comment says the fixed-string property "here it is asserted". The test asserts
+  the message is clean AND **pins the token into `error.cause`**
+  (`list-users.test.ts:230`). A replayable bearer credential now crosses a
+  package boundary inside every auth/transient error, and the only thing
+  preventing disclosure is that every downstream consumer happens to use
+  `String(error)`. `console.error(msg, { error })` — the spelling the `Logger`
+  interface's `meta?: Record<string, unknown>` invites — inspects the cause chain
+  verbatim.
+- **SEC-3 [Minor]** — `rejectCredentials` fallthrough, see F2.
+- **SEC-4 [Minor, R49]** `apps/api/test/saas-app-key-pin.test.ts:27` — a
+  CONTROL_FILES member whose header still says *"POST /saas-apps still pins its
+  zod field to the one literal"* after the enum widening. Its prose IS the
+  control's specification.
+
+**Verified clean**: the reserved-source property holds (write-path set derived
+independently: exactly three, `PATCH` is `.strict()` with no `key`); the
+module-init guard is reachable on every API boot; tenant isolation and the
+advisory-lock key; `narrowRaw` genuinely drops the unmapped PII; RS2, RS3, RS4,
+R42, R43, R47, RT7, RT10. No Critical, no escalations.
+
+## Testing Findings
+
+Every finding below was **proved by mutation**, tree restored.
+
+- **F1 [Critical]** `apps/api/src/routes/saas-apps.ts:102` — the 409
+  `catalog_full` ceiling, PR #39's headline control, has **zero executable
+  coverage on any tier**. `grep -rn catalog_full` returns the `reply.code(409)`
+  and the web mapping, nothing else. The asymmetry is the evidence: the sibling
+  ceiling on the import route has both a limit test and a two-transaction
+  advisory-lock acceptance test; the sibling 409 on this same route has its own
+  describe block. RT8 also requires asserting no row was inserted.
+- **F2 [Major]** `list-users.test.ts:59` — `toEqual` treats an
+  `undefined`-valued key as absent, so **M11** (deleting `is_app_user`,
+  `is_restricted`, `is_ultra_restricted` from `narrowRaw`) passes 13/13 — the
+  exact three fields whose retention the source comment justifies.
+  `toStrictEqual` reds it.
+- **F3 [Major]** `connector-credentials.test.ts:54` — the declared-name set is
+  flattened across connectors, so the per-key association is unpinned. **M6**
+  (move `botToken` into the Google array, leaving `slack: []`) passes all 14
+  while the Slack form renders no inputs and posts `credentials: {}` — the exact
+  failure the file's header says it exists to prevent.
+- **F4 [Major]** `connector-credentials.test.ts:52` — the anti-vacuity guard is a
+  GLOBAL floor. **M7** (`const { botToken } = credentials` — a routine
+  refactor) passes all 14 with the Slack side of the detector matching nothing,
+  in exactly the state the guard's own message describes.
+- **F5 [Major]** `slack/src/index.ts:195,209` — **M1** (force `kind` to
+  `'transient'`) and **M2** (`sleep(0)`) both pass 13/13. `sleep` is asserted by
+  call count only, never by argument, so the backoff schedule is untested.
+- **F6 [Major]** `connector-registry.test.ts:39` — "builds a connector for every
+  key it claims" never builds one. **M5** (make `buildSlackConnector` throw)
+  leaves all three tests green.
+- **F7 [Minor]** — **M3** (`PAGE_SIZE` 200→1) and **M4** (delete the
+  `ctx.signal.aborted` guard) both pass 13/13.
+- **F8 [Minor]** `list-users.test.ts:32` — `as unknown as` on the JSON fixtures
+  disables the only available drift check against the SDK.
+- **F9 [Minor]** — `saasapp.connector` orphan key, see Functionality F5.
+
+**Rejected seeds**: the `saas-app-key-pin.test.ts` regex-brittleness concern —
+that file compensates deliberately and provably (**M8**: `z.enum` → `z.string()`
+reds 6 tests including the degradation cell). The uncompensated regex is
+`connector-credentials.test.ts:50`, adopted as F4.
+
+**CI integration clean**: canonical test script byte-identical, `vitest`
+declared, `tsconfig` includes `test`, Dockerfile COPY present, both new
+CONTROL_FILES listed by hand (correctly — both are family (b)).
+
+## Recurring Issue Check
+
+The dominant pattern is **RT7, four times**, and it is the same shape each time:
+a test whose COMMENT states the property correctly and whose ASSERTION is one
+abstraction level too coarse to see it — a flattened set, an
+undefined-tolerant equality, a global floor, existence rather than invocation.
+
+## Resolution Status
+
+All Critical and Major findings fixed. Round 1 closed.
+
+### Testing F1 [Critical] — the `catalog_full` ceiling had no coverage on any tier
+- Action: three acceptance tests in `apps/api/test/api.integration.test.ts` —
+  refusal at the ceiling asserting BOTH the 409 body and that no row was
+  inserted (RT8), the allow case landing exactly ON the ceiling (RT10), and the
+  duplicate-at-the-ceiling case.
+- **Writing the third one found a defect.** The ceiling was read before the
+  duplicate, so re-registering a key the tenant already held reported
+  `catalog_full` and sent the operator to delete an application when what they
+  had was a key in use. The duplicate is decided first now, under the same
+  advisory lock — not a TOCTOU, because the lock serialises catalog growth for
+  the tenant.
+- Modified: `apps/api/src/routes/saas-apps.ts:60-90`, `apps/api/test/api.integration.test.ts:1702`
+
+### F1 / SEC-1 [Major, 3-way convergence] — Slack client on SDK defaults
+- Action: `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`,
+  `timeout: REQUEST_TIMEOUT_MS`. `sync.ts` now supplies
+  `AbortSignal.timeout(SYNC_DEADLINE_MS)` instead of a signal nothing aborts.
+  `Retry-After` is obeyed, not merely read to classify.
+- Modified: `packages/connectors/slack/src/index.ts`, `apps/worker/src/sync.ts`
+
+### SEC-2 [Major] — the bot token was pinned into `error.cause` by a test
+- Action: `cause` is a `diagnose()` projection — classification fields plus a
+  message with the secret removed. The test now asserts the token is absent from
+  the serialized cause AND that the diagnosis survived, so the fix cannot be
+  satisfied by discarding it.
+- Modified: `packages/connectors/slack/src/index.ts`, `packages/connectors/slack/test/list-users.test.ts:226`
+
+### F2 / SEC-3 / SEC-5 [Major] — `rejectCredentials` fell through
+- Action: `Record<ConnectorAppKey, …>`, matching `CREDENTIAL_FIELDS`. A key with
+  no rejector returns `null` rather than Slack's check, and `SaasAppManager`
+  HIDES the Replace-credentials control when the connector declares no fields —
+  the seeded `notion` app had a dead panel reporting "That does not look like a
+  bot token".
+- Modified: `apps/web/src/lib/connector-credentials.ts`, `apps/web/src/components/SaasAppManager.tsx`
+
+### F3 [Major] — `required` honoured on one of two surfaces
+- Action: the manager checks every declared required field before sending, and
+  passes `required` to the rendered inputs.
+- Modified: `apps/web/src/components/SaasAppManager.tsx`
+
+### F4 [Major] — `catalog_full` told the operator to retry
+- Action: `saasapp.catalogFull` in both locales, naming the recovery that works.
+- Modified: `apps/web/src/lib/i18n/messages.ts`, `apps/web/src/components/SaasAppForm.tsx:47`
+
+### Testing F2, F3, F4, F6, F7 [Major/Minor] — five tests that could not fail
+- Action: `toStrictEqual`; per-connector credential-name assertion located
+  through the registry entry with a per-connector anti-vacuity floor; the
+  registry test CALLS each factory and checks the built connector, with a paired
+  deny case; `limit` asserted; an abort case added; a rate-limit classification
+  case and a backoff-duration assertion added.
+
+### F7 [Major] — `getByLabel` substring collision
+- Action: `{ exact: true }` on every label query in the new specs. The manager's
+  "New bot token" / "New service account JSON" labels contain the searched text.
+- Modified: `e2e/specs/apps.spec.ts`
+
+### F5 / F9, F6, SEC-4 [Minor] — records that had stopped being true
+- Action: orphan `saasapp.connector` removed from both locales; the
+  `'google-workspace'` allowlist entry removed with the literal it covered gone;
+  the CONTROL_FILE header rewritten from "the one literal" to what the control
+  now asserts.
+
+### F8 [Minor] — fixture casts disabled the drift check
+- Action: `as unknown as` replaced with annotations, restoring the compile error
+  an upstream `@slack/web-api` rename would produce.
+
+## Round mutations
+
+Fourteen run, thirteen red, one declared survivor.
+
+| mutation | result |
+|---|---|
+| the SDK retry layer comes back | SURVIVED (declared — the injected `usersList` bypasses `WebClient` entirely, so no unit test can observe its construction options. The only observer would be a test that constructs the real client and inspects it, which asserts about the SDK rather than about this connector. Recorded rather than papered over.) |
+| rate limits stop being classified as rate limits | reds |
+| the provider-mandated wait is ignored again | reds |
+| a stray `retryAfter` property classifies as a rate limit | reds |
+| the token is carried into the cause again | reds |
+| `narrowRaw` drops the classification flags | reds |
+| the page size moves | reds |
+| the abort guard is removed | reds |
+| a connector key loses its rejector | reds |
+| the worker reads a credential under a different name | reds |
+| a factory stops rejecting credentials it cannot use | reds |
+| the ceiling is read before the duplicate again | reds |
+| the ceiling refuses the registration that lands on it | reds |
+| the ceiling stops refusing at all | reds |
+
+## Termination
+
+Round 1 closed: every Critical and Major finding fixed, each fix mutation-proved
+except the one declared survivor above. Suite state: unit 562 (42 files),
+integration 232, E2E 60, lint / typecheck / build clean, CI-only
+typecheck-program gate clean, `assert-seed-preserved.sh` green against the live
+stack.
+
+---
+
+# Round 2 — Major 12 / Minor 10
+
+Recorded from commit `bea0c54`, which was this round's only record until round 6.
+
+Three findings were caused by Round 1's own fixes, which is why the round existed.
+
+**Regressions from Round 1.** Setting `retries: 0` on the Slack client moved a
+whole error class to a classifier that did not recognise it: `WebAPIRequestError`
+— every socket failure, and every one of the 30-second timeouts the same fix
+added — carries no `statusCode`, no `data.error` and no `retryAfter`, so it was
+retried by NOTHING. Not the SDK, not `withRetry`, not BullMQ, whose sync job runs
+`attempts: 1`. One slow response became a terminal sync failure. Honouring
+`Retry-After` made an unbounded provider-supplied number authoritative INSIDE the
+open sync transaction: `retry-after: 2000000` would have held a pooled
+connection, an idle-in-transaction session and a live credential buffer for
+weeks — the blast radius Round 1 closed, re-opened through an input Round 1 made
+authoritative.
+
+**R3 twice.** `token-audit.ts` still had the never-firing `AbortController`
+signal that `sync.ts` was fixed for, and it never zeroized its decrypted
+credentials. The google-workspace connector still put the raw provider error in
+`cause`, and the Slack fix had DELETED the comment recording that gap.
+
+**Eight more mutation-proved tests that could not fail**, including the mutation
+this repository had DECLARED a survivor — refutable in fifteen lines.
+
+## Resolution
+Transport error class added with a red-proving test; `Retry-After` clamped and
+made abort-aware; `diagnose` hoisted into `connectors-core`; the orphan-message-key
+class detected rather than fixed by hand.
+
+---
+
+# Round 3 — ~10 findings
+
+Recorded from commit `fe32732`.
+
+**The orphan-key detector written in Round 2 was a tautology.** It scanned
+`apps/web/src`, which CONTAINS the dictionary, so `code.includes("'key'")` was
+true by construction and `orphans` was always empty. It was written to close the
+class it then failed to detect, and had been registered in `CONTROL_FILES` on
+that premise.
+
+**`sync.ts` zeroed a copy.** `Buffer.from(decryptCredentials(...))` allocated a
+second buffer, so the `finally` cleared only that one and the plaintext
+service-account document lived for the life of the process. Round 2 had cited
+this function as the correct sibling while closing the credential-buffer class.
+
+**`diagnose` was hoisted without being widened.** It read `statusCode` and
+`data.error` — Slack's spellings — so every Google diagnosis came out
+`{statusCode: undefined, platformError: undefined}`. The secret passed was the
+whole service-account JSON, a needle no error message contains, making the scrub
+a guaranteed no-op on that path.
+
+**`waitUnlessAborted` did not bound the wait.** Checking the signal either side
+of a bare `setTimeout` ends the run one full wait later; it does not shorten it.
+It is a `Promise.race` now, in `connectors-core`.
+
+---
+
+# Round 4 — ~10 findings
+
+Recorded from commit `9a53d84`. The round's character changed: mostly "the fix
+has no observer" rather than "the fix is wrong".
+
+**The third member of a class declared closed twice.** `rotate-credentials.ts`
+did `Buffer.from(plaintext).fill(0)` — the exact construct removed from
+`sync.ts` one round earlier, in the same app, against the same helper. It is the
+worst of the three: rotation never stringifies the credential, so that buffer is
+the ONLY plaintext holder on the path, and the sweep decrypts every tenant's
+every stale credential in one process.
+
+`diagnose` still dropped googleapis' canonical shape: a NUMERIC `code`. The
+`privateKey()` correction overstated too — the PEM is not what a googleapis error
+carries. Dead code was presented as guards: the required-blank guard in
+`SaasAppManager` was unreachable for every connector, as was the post-sleep abort
+re-check in `waitUnlessAborted`.
+
+---
+
+# Round 5 — ~7 findings
+
+Recorded from commit `0af8d4e`.
+
+**The three call-site fixes were all defeated in one place.** `decryptCredentials`
+ended with `Buffer.concat([decipher.update(x), decipher.final()])`. For
+AES-256-GCM `update` returns the entire plaintext and `final` returns nothing, so
+the concat allocated a third buffer and left the first holding a complete copy.
+Zeroing the returned buffer — which `sync.ts`, `token-audit.ts` and
+`rotate-credentials.ts` were each taught to do across three consecutive rounds —
+cleared the copy and not the original.
+
+**And it had no control at all.** Nothing anywhere asserted zeroization: all
+three `.fill(0)` lines could be deleted with every suite green.
+`packages/crypto/test/zeroization.test.ts` was added, red-proven.
+
+Two more controls that could not fail were repaired: the invariant licensing the
+deleted required-blank guard filled every non-target field with `'placeholder'`
+(unparseable JSON), so the service-account arm short-circuited and the email arm
+was never reached; and the `AbortSignal.any` test asserted only facts that were
+also true under the `??` form it was written to reject.
+
+---
+
+# Round 6 — Critical 2 / Major 11 / Minor 9
+
+Date: 2026-08-02. Reviewed: `git show 0af8d4e` as the primary diff and
+`git diff main...HEAD` (28 files) as the secondary.
+
+## Changes from Previous Round
+
+Round 5 fixed the credential-zeroing primitive and added the class's first
+control. Round 6 found that fix open on its error path, and the control's own
+subject one level narrower than its caption. It also found that three patterns
+fixed on the Slack side in rounds 1-2 were never propagated to the Google
+connector, and that the API had no server-side credential validation at all.
+
+## Convergence
+
+| Issue | Experts | Floor |
+|---|---|---|
+| `decryptCredentials` retains the full plaintext when `final()` throws | Functionality F1, Security SEC-R6-1 | **Critical** (Security escalated: `escalate: true`) |
+| `zeroization.test.ts` unregistered in `CONTROL_FILES` | Security SEC-R6-3 (Major), Testing T13 (Minor) | **Major** |
+| The credential record is unbounded and the "the API validates" claim is false | Functionality F4 (Major), Security SEC-R6-7 (Minor) | **Major** |
+
+## Functionality Findings
+
+- **F1 [Critical]** `packages/crypto/src/index.ts:136-141` — no `try`/`finally`
+  around `update`/`final`. GCM authenticates in `final()`, which throws, and by
+  then `update()` has returned the GENUINE plaintext — CTR-mode decryption
+  happens before authentication. `rotate-credentials.ts:100-107` catches per row
+  and continues the sweep, so a version-skewed rollout leaves one uncleared
+  credential per failed row resident for the process's life. Neither case in the
+  new `zeroization.test.ts` exercises a throw.
+- **F2 [Major]** `packages/connectors/core/src/index.ts:125-131` — both
+  `platformError` arms require `typeof … === 'string'`. A googleapis failure
+  carries an OBJECT; gaxios' own extractor takes the same two branches
+  (`gaxios@7.3.0/build/esm/src/common.js:151,158`). Every real Google diagnosis
+  was `platformError: undefined`. It survived three rounds because
+  `diagnose.test.ts:44` fixtured a Slack-shaped body under a Google envelope —
+  a payload googleapis cannot produce.
+- **F3 [Major]** `packages/connectors/google-workspace/src/index.ts` — the
+  connector was still on the SDK defaults. `googleapis-common` sets
+  `options.retry = true` unless asked (`apirequest.js:260`), arming gaxios' own
+  3-retry interceptor UNDER `withRetry`, so `MAX_ATTEMPTS = 5` was really ~20
+  requests with two backoff schedules stacked; gaxios applies a timeout only when
+  supplied, so there was none; and `ctx.signal` never reached the SDK, so the
+  run deadline only fired between pages. All three are verbatim the findings the
+  Slack client was fixed for in rounds 1-2 and documented in a 20-line comment.
+- **F4 [Major]** `apps/api/src/routes/saas-apps.ts` — `credentials` was
+  `z.record(z.string(), z.string())` with no field check, so
+  `PATCH {"credentials":{}}` encrypted an empty object over the working
+  credential and returned 200, with no prior copy. `POST` had the mirror shape.
+  Two integration fixtures were themselves registering google-workspace apps
+  with no `impersonateAdminEmail` — the exact "registers fine, cannot sync"
+  state, which the worker factory rejects.
+- **F5 [Minor]** — the admin email was decided by two adjudicators: the browser's
+  WHATWG check on the register form (inside a real `<form>`) and
+  `rejectAdminEmail` on the manager (outside one). `admin@corp_internal` was
+  accepted on one surface and rejected on the other (R48, strict direction).
+
+## Security Findings
+
+- **SEC-R6-1 [Critical, escalate: true]** — same as F1, read for blast radius.
+  Measured on Node v26.5.0: both a tampered tag and a wrong AAD leave the real
+  plaintext in `head`. Attacker-reachable variant: anyone able to write
+  `saas_apps.credentials_enc` can force `final()` to throw on demand and grow the
+  count of resident plaintexts ahead of a memory dump.
+- **SEC-R6-2 [Major]** `packages/crypto/src/index.ts:27,34` —
+  `parseEncryptionKeys` interpolated the raw entry into its error. The two
+  likeliest operator mistakes both make the offending text the KEY ITSELF
+  (omitting the `1:` prefix; transposing to `<key>:1`, which base64 cannot
+  truncate). Every caller runs it unguarded at boot, and stderr ships to the log
+  aggregator. The repository's own test exercises the leaking branch.
+- **SEC-R6-3 [Major]** — `packages/crypto/test/zeroization.test.ts` was the only
+  assertion of the zeroization invariant and was not in `CONTROL_FILES`; it reads
+  no repository files, so the family-(a) addition-guard is structurally blind to
+  it. Deleting it leaves every gate green.
+- **SEC-R6-4 [Major]** `packages/connectors/google-workspace/src/index.ts:202` —
+  `privateKey()` ran per `withRetry` invocation, each time `JSON.parse`-ing the
+  document and minting a fresh JS string holding the PEM. Strings cannot be
+  zeroized at any level. One audit run of a 1 000-seat tenant leaves up to 1 000
+  permanently-unclearable copies of the highest-value secret in the system,
+  undoing five rounds of buffer narrowing.
+- **SEC-R6-5 [Major, R49]** — "this is the whole class" derived membership from
+  the `createDecipheriv` CALL rather than from the DEFECT. Re-derived, the class
+  also holds the encrypt-side input buffers at `saas-apps.ts:57,209` and
+  `seed.ts:318`. Major and not Critical precisely because the surrounding strings
+  are unzeroizable anyway — which is why the overstatement, not the code, is the
+  finding.
+- **SEC-R6-6 [Minor]** `apps/web/src/lib/connector-credentials.ts:119` —
+  `rejectCredentials(key: string)` indexed an object literal, so `constructor`,
+  `toString` and `valueOf` resolved through `Object.prototype` and were called.
+  `app.key` is tenant-supplied DB text (`POST /contract-import` writes it from a
+  CSV cell).
+- **SEC-R6-7 [Minor, RS3]** — no size or cardinality bound on the credential
+  record.
+
+## Testing Findings
+
+- **T1 [Critical]** — the three call-site `.fill(0)` lines named by Round 5's own
+  commit message STILL had no observer. `zeroization.test.ts` watched the
+  cipher's intermediates, not the buffer `decryptCredentials` returns.
+  `grep -rn "fill(0)\|zeroiz" apps/worker/test apps/api/test` returned nothing.
+  Deleting `rotate-credentials.ts:84` left every suite green.
+- **T2 [Major]** `sync.integration.test.ts:262` — the deadline cell repaired in
+  Round 5 distinguished only "the connector did not receive the caller's signal".
+  `AbortSignal.any([deps.signal])` — the deadline removed — kept it green.
+- **T3 [Major]** — `runTokenAudit` had no counterpart cell at all, on the
+  longer-running of the two jobs.
+- **T4 [Major]** `google-workspace/src/index.ts:148` — the retries-exhausted
+  `cause: diagnose(...)` site had no observer; every Google cell asserting on
+  `cause` reached the auth site instead. Round 2 recorded this defect verbatim
+  and closed it on the Slack side only.
+- **T5 [Major]** — Google's sleep mocks were declared `vi.fn(async () => {})`,
+  structurally incapable of observing the backoff. `sleep(0)` — a hot loop of
+  five immediate requests inside the open transaction — was green.
+- **T6 [Major]** `diagnose.test.ts:117` — the listener-removal cell pinned the
+  call count but not the listener identity, and the rejection-path removal had no
+  case at all.
+- **T7-T12 [Minor]** — `zeroization.test.ts`'s second cell had no failing state;
+  two module-level fixtures reset inside test bodies rather than hooks;
+  `FakeConnector.lastSignal` never reset; `privateKey()`'s catch arm unobserved;
+  `factoryBody`'s end-of-body locator with no non-vacuity check; `mockClear()` in
+  a test body.
+- **T13 [Minor]** — see SEC-R6-3.
+- **T14 [Minor, adjacent]** — `required={field.required}` added to manager inputs
+  the same diff documents as inert (no `<form>`, `type="button"`): a guard with
+  no failing state.
+
+## Seed Finding Disposition
+
+Ollama returned `No findings` for functionality and security — treated with
+higher scrutiny per the seed trust advisory, since the diff changes a
+cryptographic primitive; both experts recorded independent checks. For testing,
+three seeds: one adopted downgraded (T9 — the static reproduces, the flakiness
+claim does not: vitest runs cells in a file sequentially and no `it.concurrent`
+exists anywhere), two rejected with an adjacent real finding adopted in place of
+one (T11). The third seed's direction was inverted relative to the actual
+Round 3/4 defect; measured against all 187 `en` keys, the current detector has
+0 comment-only credits and 0 orphans.
+
+## Recurring Issue Check
+
+The dominant patterns are **R3** (three separate Slack-side fixes never
+propagated to Google — T3, T4, T5, F3) and **R42 ①b applied to the wrong
+primitive**: Round 5 correctly re-derived the class from `createDecipheriv`, but
+the defect's primitive is "an exit that leaves plaintext", and that function has
+two exits. **R49** fired three times (F1's closure claim, F2's "BOTH SHAPES",
+F4's "the API validates").
+
+## Resolution Status — Round 6
+
+### F1 / SEC-R6-1 [Critical, 2-way convergence, escalated] — the throw path kept the plaintext
+- Action: `try { head = update(...); tail = final(); return concat } finally { head?.fill(0); tail?.fill(0) }`.
+  A red-proven case tampers the auth tag, asserts the rejection, and asserts every
+  captured intermediate is zero — with its own non-vacuity check that a buffer at
+  least as long as the secret was produced before the rejection, so a cleared
+  secret is not confused with an empty one.
+- Modified: `packages/crypto/src/index.ts:136`, `packages/crypto/test/zeroization.test.ts`
+
+### T1 [Critical] — the three call-site zeroization lines still had no observer
+- Action: the class is closed by CONSTRUCTION rather than by a fourth assertion.
+  `withDecryptedCredentials(blob, version, ctx, keys, use)` decrypts, lends the
+  plaintext, and zeroes it in a `finally` however `use` ends; `sync.ts`,
+  `token-audit.ts` and `rotate-credentials.ts` all go through it and none of them
+  owns a `.fill(0)` any more.
+- **The convergence artifact required by step 3-8 for a class that expanded ≥2×**:
+  `zeroization.test.ts` now enumerates the class mechanically — it scans
+  `apps/{api,web,worker}/src` and reds if any production module calls
+  `decryptCredentials` directly. Reading repository files makes the file family (a),
+  so `package-test-parity.test.ts`'s addition-guard sees it; it is ALSO listed by
+  hand, because that guard cannot see a deletion.
+- Modified: `packages/crypto/src/index.ts`, `apps/worker/src/{sync,token-audit,rotate-credentials}.ts`,
+  `packages/crypto/test/zeroization.test.ts`, `apps/api/test/package-test-parity.test.ts`
+
+### SEC-R6-3 / T13 [Major] — the only zeroization control was unregistered
+- Action: listed in `CONTROL_FILES`; and, per the above, it is now family (a) so
+  the mechanical addition-guard covers the same shape in future.
+
+### F2 [Major] — `platformError` was unreachable for every real googleapis error
+- Action: an object arm reading `.status` (AIP-193) then `errors[0].reason` (the
+  classic Admin SDK body directory_v1 returns), scrubbed like the rest. The
+  fixture that hid it is replaced by two cells carrying shapes googleapis
+  actually produces.
+- Modified: `packages/connectors/core/src/index.ts:122`, `packages/connectors/core/test/diagnose.test.ts`
+
+### F3 [Major] — the Google connector was still on the SDK defaults
+- Action: `retry: false`, `timeout: REQUEST_TIMEOUT_MS`, and `signal` forwarded
+  per request; `REQUEST_TIMEOUT_MS` hoisted to `connectors-core` beside
+  `diagnose`/`waitUnlessAborted` rather than declared twice (R1/R2). The seam now
+  takes a second `GoogleRequestOptions` argument so `ctx.signal` reaches gaxios.
+  `packages/connectors/google-workspace/test/client-options.test.ts` is the
+  sibling of the Slack file written in round 2, and it drives BOTH clients —
+  they are built separately, so an option applied to one is not applied to the
+  other.
+- Modified: `packages/connectors/{core,slack,google-workspace}/src/index.ts`, new `google-workspace/test/client-options.test.ts`
+
+### F4 / SEC-R6-7 [Major] — the API accepted `credentials: {}` and overwrote a working credential
+- Action: `REQUIRED_CREDENTIAL_FIELDS` in the route, a `Record<ConnectorAppKey, …>`
+  so a new connector without an entry is a compile error; `POST` and `PATCH` both
+  refuse a blank required field with 400 `invalid_credentials`, the PATCH check
+  throwing inside the transaction so a rename in the same body rolls back with it.
+  `credentials` is bounded: key ≤ 64 chars, value ≤ 16 KiB, ≤ 16 fields.
+  `@open-smp/api-types` cannot host the shared declaration — C39 permits only
+  frozen string arrays and `is*` guards — so the agreement between the API and
+  the form is pinned in `apps/web/test/connector-credentials.test.ts`, which was
+  already the family-(b) control for this contract's other two ends.
+- Deny AND allow sides asserted (RT8/RT10): three refusal cells assert the 400
+  **and that the stored blob is byte-identical**, plus the partial-write cell.
+- Two integration fixtures were themselves registering google-workspace apps with
+  no `impersonateAdminEmail` — completed rather than exempted, because the worker
+  factory rejects that pair.
+- Modified: `apps/api/src/routes/saas-apps.ts`, `apps/api/test/api.integration.test.ts`, `apps/web/test/connector-credentials.test.ts`
+
+### SEC-R6-2 [Major] — the master key could reach boot logs
+- Action: the errors name the entry's INDEX and the expected shape, never the
+  entry or any prefix of it.
+- Modified: `packages/crypto/src/index.ts:19-40`
+
+### SEC-R6-4 [Major] — a fresh unzeroizable PEM per request
+- Action: `privateKey()` memoized on the instance. It cannot go below one copy
+  without abandoning the scrub, and one is what the surrounding design already
+  accepts.
+- Modified: `packages/connectors/google-workspace/src/index.ts:202`
+
+### SEC-R6-5 [Major, R49] — the closure claim was wider than the fix
+- Action: both. The comment now says it closes the DECRYPT half and names the
+  remaining members, and the encrypt-side buffers at `saas-apps.ts` are zeroed in
+  a `finally` — stated as defence in depth, since the surrounding
+  `JSON.stringify` result is an unzeroizable string.
+
+### T2, T3 [Major] — the deadline had no observer on either job
+- Action: `AbortSignal.timeout` is spied (passthrough by default), so one cell
+  asserts the deadline was composed with the right constant and another makes it
+  fire and asserts the run ends while the caller's signal stays unaborted.
+  `runTokenAudit` gained the counterpart cell it never had.
+- Modified: `apps/worker/src/{sync,token-audit}.ts` (constants exported), `apps/worker/test/{sync,token-audit}.integration.test.ts`
+
+### T4, T5 [Major] — Google's second throw site and its backoff
+- Action: the retries-exhausted cell now asserts the cause is a scrubbed
+  projection carrying `statusCode: 500`, and the sleep mock takes a parameter so
+  the schedule is asserted by argument rather than by call count.
+
+### T6 [Major] — the listener-removal cell
+- Action: `addEventListener` is spied alongside `removeEventListener` and the
+  identities are compared pairwise; the rejection path gained its own cell.
+
+### F5, SEC-R6-6, T7-T12, T14 [Minor] — applied
+- One adjudicator for the admin email (`type="email"` dropped, `inputMode`
+  retained); `Object.hasOwn` before the rejector lookup; the second zeroization
+  cell replaced by two that observe `withDecryptedCredentials` on its return AND
+  throw paths; `beforeEach` hooks for `captured`, `FakeConnector.lastSignal` and
+  `construct`; a cell for `privateKey()`'s catch arm asserting a `ConnectorError`
+  rather than a `SyntaxError`; a truncation guard on `factoryBody`;
+  `required` → `aria-required` on the manager's inert inputs.
+
+### Process finding — rounds 2-5 were never written to this file
+- Action: restored above from the commit bodies. Step 3-4 requires each round's
+  findings here; four rounds of this loop existed only in `git log`.
+
+## Round 6 verification
+
+typecheck 0 / lint 0 / **863 tests passed** (622 unit, 241 integration; was
+603/235) / build 0 / **E2E 62 passed** / seed-preservation gate 0.
+
+### Round 6 mutations
+
+Seventeen run, **seventeen red, no survivors**. One probe initially reported a
+survivor and the probe was wrong, not the guard: the class-enumeration cell looks
+for a CALL and the mutation only rebound the name. Re-run with a real call, it
+reds.
+
+| mutation | result |
+|---|---|
+| the throw path stops zeroing the intermediates again | reds |
+| the helper stops zeroing the plaintext it lends | reds |
+| a fourth call site decrypts without the helper | reds |
+| platformError goes back to string-only | reds |
+| the Google client goes back to the SDK retry default | reds |
+| the Google client loses its request timeout | reds |
+| the run signal stops reaching the Google SDK | reds |
+| the retries-exhausted throw carries the raw provider error again | reds |
+| the Google backoff collapses to a hot loop | reds |
+| the private key is re-parsed per request again | reds |
+| the sync deadline is removed from the composite | reds |
+| the token-audit deadline collapses to the `??` form | reds |
+| the API stops refusing a blank required credential | reds |
+| the master key goes back into the ENCRYPTION_KEYS error | reds |
+| the rejector lookup resolves through Object.prototype again | reds |
+| `waitUnlessAborted` removes some other listener | reds |
+| `waitUnlessAborted` leaks the listener on the rejection path | reds |
+
+Writing the spec found three fixes with no observer at all — the round's own work
+exhibiting the defect the round reported five times elsewhere. Those observers
+were added before the run rather than after it.
+
+**R42 class `credential-plaintext`: member-set expanded 3x (sync.ts → token-audit.ts
+→ rotate-credentials.ts → the primitive) — closed by mutation-verified guard
+`packages/crypto/test/zeroization.test.ts` (red-proven: a production module
+calling `decryptCredentials` directly), wired into the `unit` project and listed
+in `CONTROL_FILES`.** Its limit is stated in the file: a text scan sees the
+spelling, not the binding.
+
+---
+
+# Round 7 — Critical 2 / Major 8 / Minor 6
+
+Date: 2026-08-03. Reviewed: `git diff 0af8d4e..HEAD` (the Round 6 fixes) as the
+primary diff and `git diff main...HEAD` as the secondary.
+
+## Changes from Previous Round
+
+Round 6 closed the credential-plaintext class at the crypto primitive, propagated
+the Slack client's options to the Google connector, and gave the API its first
+server-side credential validation. Round 7 found that the propagation carried the
+change but not the precondition that made it safe, that the enumeration guard
+written to close the class scanned three of seven production roots, that the
+encrypt half re-opened the class in the same commit that closed the decrypt half,
+and that a fix resolving a two-adjudicator disagreement did so by deleting the
+stricter adjudicator.
+
+## Convergence
+
+| Issue | Experts | Floor |
+|---|---|---|
+| The class-enumeration guard's scope and the unasserted `createDecipheriv` cardinality | Security SEC-R7-1 (Major), Testing T4 (Major) | **Major** |
+| `withDecryptedCredentials` lends a live buffer nothing stops a caller returning | Security SEC-R7-4 (Minor) | Minor |
+
+## Functionality Findings
+
+- **F1 [Critical]** `packages/connectors/google-workspace/src/index.ts` — Round 6
+  set `retry: false` and added a 30-second timeout, moving retry responsibility
+  onto `withRetry`, and left behind the classifier that made the same change safe
+  on the Slack side. gaxios sets `status` only when there IS a response and
+  copies a string `code` from the cause (`ECONNRESET`) or the DOMException name
+  (`TimeoutError`) when there is not, so `statusOf` returned `undefined` for
+  every transport failure — and for every one of the timeouts the same change
+  added. `isRetryableStatus` was false, and the connector threw
+  `failed after retries` on attempt 1 having taken none. Nothing downstream
+  recovers it: the sync job runs `attempts: 1`. The Slack connector's own comment
+  records this defect verbatim, sixty lines from a line the same commit edited.
+- **F2 [Major]** — the JWT token exchange is a separate request
+  google-auth-library issues from its own transporter with no timeout, no signal
+  and no retry, on the first hop of every sync, inside the open `withTenant`
+  transaction. `REQUEST_TIMEOUT_MS`'s doc claimed to be "the per-request ceiling
+  every connector applies" (R49), and there is no `statement_timeout` underneath.
+- **F3 [Major, R43]** — dropping `type="email"` resolved a real two-adjudicator
+  divergence by deleting the STRICTER adjudicator. `admin@corp_internal` went
+  from rejected on the register form to accepted on both surfaces, with no
+  server-side format check to compensate. R48 asks for the most authoritative
+  adjudicator, not the most permissive.
+- **F4 [Minor]** — `required` remained on the same element inside a real
+  `<form>`, so the "ONE ADJUDICATOR" claim held only for the `type` attribute.
+- **F5 [Minor]** — the `REQUEST_TIMEOUT_MS` JSDoc was orphaned in the Slack
+  connector when the constant moved, and it carried the only record of why Slack
+  in particular needs a ceiling.
+- **F6 [Minor]** — `ctx.signal` threading was added to Google's requests and not
+  to Slack's.
+
+## Security Findings
+
+- **SEC-R7-1 [Major]** `packages/crypto/test/zeroization.test.ts` — the guard
+  written to enumerate the class scanned `apps/{api,web,worker}/src` and no
+  `packages/*/src`; its non-vacuity floor (`> 20` files, one named
+  representative) was satisfied with a whole root removed, so it could not
+  detect its own narrowing (R50 clause ii). Separately, the sentence the
+  primitive-level fix rests on — "there is exactly one `createDecipheriv` in this
+  repository" — was load-bearing prose nothing asserted (R47/R49): a fourth site
+  calling the primitive directly never touches `decryptCredentials`.
+- **SEC-R7-2 [Major]** `apps/web/src/components/SaasAppManager.tsx` —
+  `CREDENTIAL_FIELDS[app.key as ConnectorAppKey] ?? []`, the sibling of the
+  lookup Round 6 guarded 80 lines away. The fallback cannot fire for a prototype
+  member: `CREDENTIAL_FIELDS['constructor']` is `Object`, a function, and
+  `Object.length === 1` makes the replace-credentials control render, after which
+  `fields.map` throws during a client render — taking down the page an operator
+  opened to delete the offending row. `app.key` is CSV-supplied.
+- **SEC-R7-3 [Minor]** — two `JSON.parse(serviceAccountJson)` calls outside
+  `withRetry`, so their `SyntaxError` is never scrubbed and `runSync` writes it
+  verbatim into `discovery_events`. V8's message embeds the first ten characters
+  of the input.
+- **SEC-R7-4 [Minor]** — `withDecryptedCredentials` lends a live buffer and
+  nothing stops `use` returning it or a view of it.
+
+## Testing Findings
+
+- **T1 [Critical]** — `POST /saas-apps`'s blank-credential refusal had no
+  observer. Round 6's mutation spec cut the shared helper's body, which reds
+  through the PATCH cell and says nothing about whether the POST call site
+  exists; `if (false)` there left 863 tests green. **A 17/17 mutation result is
+  evidence about the sampled points, not about the control.**
+- **T2 [Major]** — the encrypt-side `plaintext.fill(0)` added at two new API
+  routes had no assertion anywhere: the same class Rounds 3-6 kept reopening,
+  reopened in the commit that closed the other half.
+- **T3 [Major]** — the credential size bounds had no observer on either side.
+- **T4 [Major]** — see SEC-R7-1, measured: dropping `apps/api/src` leaves 47
+  files scanned and both non-vacuity guards green.
+- **T5 [Major]** — the token-audit deadline was asserted PRESENT but never shown
+  able to END a run; a mutation that constructs the deadline (so the spy records
+  the constant) and then composes a different signal stayed green.
+- **T6 [Major]** — the `googleapis` fake discarded the JWT constructor argument,
+  so SC3/C1's scope separation had no observer repo-wide: widening
+  `scopes: [TOKENS_SCOPE]` to `[SCOPE, TOKENS_SCOPE]` left every gate green.
+- **T7 [Major]** — the "parses the service account once" cell ran on the injected
+  seam and could not see the two client-building parses on the production path.
+- **T8, T9, T10 [Minor]** — the sync deadline-fires cell asserted the rejection
+  but not that the run did nothing; the `AbortSignal.timeout` spy was hoisted to
+  a hook in one integration file and left in a body in its sibling; the
+  positional half of the ENCRYPTION_KEYS message had no observer.
+
+## Resolution Status — Round 7
+
+### F1 [Critical] — a single socket reset was a terminal sync
+- Action: `isTransportError` hoisted into `connectors-core` and given to BOTH
+  connectors. It is built on `diagnose`'s existing normalisation, so it reads the
+  four status spellings and both platform-error grammars rather than re-spelling
+  them, and it has an allow side (Slack request error, `ECONNRESET`,
+  `TimeoutError`, `AbortError`) and a deny side (any HTTP status, a platform
+  error, a numeric googleapis code, a non-object) so it cannot swallow a rate
+  limit. Google's `withRetry` gained the arm; a `ctx.signal` abort still ends the
+  run because `waitUnlessAborted` rejects before another request is issued.
+- Modified: `packages/connectors/core/src/index.ts`, both connectors, `core/test/diagnose.test.ts`, `google-workspace/test/list-users.test.ts`
+
+### T1 [Critical] — the POST call site had no observer
+- Action: three refusal cells on POST asserting the 400, the `invalid_credentials`
+  body, and that **no row was created** (RT8). The mutation spec now cuts at each
+  CALL SITE rather than only in the shared helper — the sampling error that hid
+  this.
+
+### SEC-R7-1 / T4 [Major] — the guard enumerated three of seven roots
+- Action: the roots are DERIVED from the workspace layout rather than listed;
+  each is checked for emptiness on its own; three representatives are named
+  (worker sweep, API routes, a connector package); and a second cell asserts the
+  `createDecipheriv` cardinality the primitive-level fix rests on. Red-proven by
+  removing a root and by adding a second primitive call site.
+
+### T2 [Major] — the encrypt half re-opened the class
+- Action: `encryptCredentialRecord` in `packages/crypto` owns the encode and the
+  zeroization; the two API routes and `seed.ts` go through it. The
+  class-enumeration cell covers BOTH halves — which immediately found the two
+  `seed.ts` members. The exemption for re-encrypting a plaintext the decrypt
+  helper already owns is structural (the module calls
+  `withDecryptedCredentials`), not a name.
+
+### SEC-R7-2 [Major] — the sibling prototype-reachable lookup
+- Action: `credentialFieldsFor(key)` in `connector-credentials.ts` — one lookup,
+  one guard, one place to assert — with a deny side (five prototype keys) and an
+  allow side (every connector gets its declared fields). The component had no
+  unit test, which is why the inline index had no observer.
+
+### F2 [Major] — the token exchange was unbounded
+- Action: `transporterOptions: { timeout: REQUEST_TIMEOUT_MS }` on both JWT
+  clients, asserted through the recording fake.
+
+### F3 [Major, R43] — the divergence was resolved toward the weaker semantics
+- Action: `rejectAdminEmail` IS the WHATWG production now — the platform's own
+  grammar, which is exactly what the register form was already running, so the
+  two surfaces agree at the STRICTER reading. The R47 objection `rejectBotToken`
+  raises does not transfer: a bot token's format is a vendor's private convention
+  that has changed before; an address's is a published grammar. Deny and allow
+  sides both asserted.
+
+### T5, T6, T7 [Major] — three controls that could not see their own subject
+- Action: the token-audit deadline gained the fires-and-ends-the-run cell its
+  sync sibling has had since Round 6; the `googleapis` fake records the JWT
+  constructor so each client's single scope is asserted (nothing in the
+  repository had ever asserted SC3/C1's scope separation); the parse-count moved
+  to the only file that reaches the real client builders, and the cell that
+  stayed was renamed to what it measures.
+
+### SEC-R7-3, SEC-R7-4, F4, F5, F6, T3, T8, T9, T10 [Minor] — applied
+- `parseServiceAccount` returns a fixed string; the returned-buffer behaviour of
+  `withDecryptedCredentials` is pinned rather than assumed; `required` →
+  `aria-required` on the register form; the orphaned JSDoc folded into the core
+  constant; the size bounds given deny AND boundary-adjacent allow cells; the
+  sync deadline cell asserts the connector's signal was itself aborted; the spy
+  hoisted into hooks; the positional `at index N` asserted with a two-entry
+  fixture so a hard-coded 0 does not satisfy it.
+- **F6 accepted as a known limitation**: `@slack/web-api` exposes no per-call
+  `AbortSignal`, so the run deadline still applies only between pages there.
+  Worst case: one in-flight request outlives an abort by at most
+  `REQUEST_TIMEOUT_MS` (30 s), which the client does enforce. Likelihood: every
+  aborted Slack sync. Cost to fix: a client-level transport override, which
+  replaces SDK behaviour this repository neither pins nor asserts. Recorded
+  rather than guessed at.
+
+## Round 7 mutations
+
+Twenty run. **Sixteen red on the first pass, four survivors — and the four are
+the round's most useful output.**
+
+| mutation | first pass | after |
+|---|---|---|
+| a Google socket reset is terminal again | reds | reds |
+| a Slack socket reset is terminal again | reds | reds |
+| the shared transport predicate stops seeing a string code | reds | reds |
+| the shared transport predicate swallows a rate limit | reds | reds |
+| the JWT token exchange loses its ceiling | reds | reds |
+| the tokens client asks for the directory-read scope too | reds | reds |
+| an unparseable service account escapes as a SyntaxError again | **SURVIVED** | reds |
+| the POST call site stops refusing a blank required credential | reds | reds |
+| the PATCH call site stops refusing a blank required credential | reds | reds |
+| the credential field-count ceiling is removed | **SURVIVED** | reds |
+| the credential key length bound is removed | reds | reds |
+| the encrypt-side plaintext is left unzeroed again | **SURVIVED** | reds |
+| a production module builds its own plaintext and encrypts it | reds | reds |
+| the class-enumeration guard loses a scanned root | reds | reds |
+| the decrypt primitive gains a second call site | reds | reds |
+| the token-audit deadline is constructed and then discarded | reds | reds |
+| the admin email check goes back to the loose form | reds | reds |
+| the admin email check rejects everything | reds | reds |
+| the manager field lookup reaches Object.prototype again | **SURVIVED** | reds |
+| the ENCRYPTION_KEYS message drops its position | reds | reds |
+
+The sharpest of the four: **"refuses a credential record with too many fields"
+was passing for a reason unrelated to what it claimed to check.** It sent
+seventeen filler fields and no `botToken`, so the required-field check returned
+400 first and the ceiling was never exercised — removing the ceiling entirely
+left it green. Every bound payload now carries a valid `botToken` and asserts
+`invalid_body` specifically, so only the bound under test can satisfy it.
+
+## Round 7 verification
+
+typecheck 0 / lint 0 / **910 tests passed** (660 unit, 250 integration; was
+622/241) / build 0 / **E2E 62 passed** / seed-preservation gate 0 / **20/20
+mutations red**.
+
+`pnpm typecheck` accepted a spy annotation that `pnpm build` rejected — the two
+run under different tsconfigs, and only the second is what CI gates on.
+
+## Out of scope, reported rather than fixed
+
+`docker-compose.yml:44,75,104` commit a literal `ENCRYPTION_KEYS` value. It is
+unchanged on `main`, outside this branch's diff, and is a development-stack
+default rather than something this branch introduced — but any deployment that
+inherits that compose value has every tenant's credentials decryptable from a
+public repository. Raised for an operator decision rather than changed here.
+
+---
+
+# Round 8 — Critical 0 / Major 7 / Minor 12
+
+Date: 2026-08-03. Reviewed: `git diff 6a96d13..HEAD` (the Round 7 fixes) as the
+primary diff and `git diff main...HEAD` as the secondary.
+
+**The first round since Round 1 with no Critical.**
+
+## Changes from Previous Round
+
+Round 7 fixed the Critical Round 6 introduced, closed the encrypt half at the
+primitive, and hardened the class-enumeration guard. Round 8 found that the
+guard's new "structural" exemption excused exactly the three files the class had
+grown in, that the token-exchange bound Round 7 added did not include the retry
+loop its own comment said was absent, and that two controls were tested at the
+helper rather than at the call site — the same sampling error Round 7 had just
+fixed elsewhere.
+
+## Convergence
+
+| Issue | Experts | Floor |
+|---|---|---|
+| The class-enumeration exemption is whole-file and applies to both patterns | Security S1, Functionality F7, Testing T5 | **Major** (3-way) |
+| The derived root walk is seeded from two literals, not from the workspace file | Security S3, Testing T6 | Minor |
+| `isTransportError`'s closure claim is false for `WebAPIRateLimitedError` | Security S4, Testing T12 | Minor |
+| `SaasAppForm`'s comment cites a rationale the same commit deleted | Functionality F4, Testing T11 | Minor |
+
+## A false positive, recorded because its cause is real
+
+Functionality **F1** reported an uncommitted `decryptCredentials` probe in
+`apps/api/src/routes/saas-apps.ts` and concluded Round 7's verification numbers
+did not describe the tree. **They did.** The probe belonged to the Security
+expert, which injected it to measure S1 and restored it; the three experts ran
+CONCURRENTLY, and the Functionality expert observed the other's edit in flight.
+`git status` was clean at HEAD `9ed42ae` and the route contained no such call.
+
+The finding is void; its cause is not. Running tree-mutating verifiers in
+parallel against one worktree makes every one of them an unreliable observer of
+the others. Future rounds either run such agents serially or give each an
+isolated worktree.
+
+## Functionality Findings
+
+- **F2 [Major]** — Round 7's `transporterOptions` comment claimed the token
+  exchange had "no timeout, no signal and no retry" and supplied only the
+  timeout. `gtoken` passes its own `retryConfig: { httpMethodsToRetry: ['POST'] }`
+  and gaxios arms its interceptor on that object's mere presence: `retry`
+  defaults to 3, `noResponseRetries` to 2, each attempt re-arming a fresh
+  30-second deadline. ~93 s per exchange, multiplied by `MAX_ATTEMPTS` by the
+  transport arm added in the same round — ~7.7 minutes inside `runSync`'s open
+  transaction, where before Round 7 the same failure threw on attempt 1.
+- **F3 [Major]** — domain-wide delegation that was never granted, and a
+  non-existent impersonated subject, are returned by the token endpoint as
+  **HTTP 400** with `unauthorized_client` / `invalid_grant`; RFC 6749 §5.2
+  reserves 401 for `invalid_client`. A 400 missed the auth arm, was not 429 or
+  5xx, and came out `transient`. `token-audit.ts` short-circuits only on `auth`
+  or `fatal`, so it repeated the same doomed exchange for up to
+  `TOKEN_AUDIT_MAX_ACCOUNTS` accounts and wrote `token_audit_completed` with zero
+  grants — a silent false negative on SC3/C1's headline output.
+- **F5 [Minor]** — `encryptCredentialRecord(value: unknown, …)`:
+  `JSON.stringify(undefined)` is `undefined` and `TextEncoder#encode()` defaults
+  to `''`, so the widened parameter would encrypt and persist a zero-length
+  plaintext with a valid tag, failing much later as a `JSON.parse('')` in the
+  worker.
+- **F6 [Minor, R29]** — the regex verifies character-for-character against the
+  HTML Living Standard, but the comment calls it an "ABNF"; the standard
+  publishes it as a regular expression and a willful violation of RFC 5322.
+
+## Security Findings
+
+- **S1 [Major]** — the exemption `!/\bwithDecryptedCredentials\s*\(/.test(source)`
+  is evaluated over the whole FILE and applied to BOTH patterns. The three
+  modules containing that spelling are `sync.ts`, `token-audit.ts` and
+  `rotate-credentials.ts` — the three sites this class grew by, one per round,
+  and the three whose own `.fill(0)` lines Round 6 deleted in reliance on this
+  guard. Measured: a direct `decryptCredentials` call added to `sync.ts` left the
+  cell green; the same edit in a non-exempt file reddened it.
+- **S2 [Minor]** — `createCipheriv` had no cardinality assertion, in the commit
+  that moved the encrypt half into the crypto package (R3 inside one commit).
+- **S5 [Minor, R43]** — the transport arm accepted **any** string `code`, which
+  admits Node's own: a truncated PEM throws `ERR_OSSL_UNSUPPORTED`, a permanent
+  credential fault, retried five times with cumulative backoff inside the open
+  transaction and reported as `transient`.
+- **S6 [Minor]** — the two `JSON.parse` calls whose input is the DECRYPTED
+  credential were unguarded, and V8's `SyntaxError` quotes a window of its input
+  into `discovery_events`. No producer writes non-JSON today; the finding is that
+  the round enumerated this class and stopped at three of five sites, leaving
+  exactly the two whose input is the secret.
+
+## Testing Findings
+
+- **T1 [Major]** — the token-exchange cell drove `listUsers` only, so the tokens
+  client's `transporterOptions` had no observer (RT7 shape (g): N parallel arms
+  need N mutations). The Round 7 mutation spec had the same blind spot.
+- **T2 [Major]** — `credentialFieldsFor` was tested at the HELPER; nothing
+  observed that `SaasAppManager` calls it. Reverting the component alone left all
+  910 tests green — the sampled-the-helper-not-the-site trap Round 7 fixed for
+  `missingRequiredCredentials` and reintroduced here in the same commit.
+- **T3 [Major]** — the WHATWG allow table could not pin the standard. Measured
+  twice: narrowing the local-part class (which rejects `first_last@corp.example`)
+  and requiring a dot in the domain BOTH left 660 tests green.
+- **T4 [Major]** — `required` → `aria-required` is a behaviour change with no
+  observer at any tier.
+- **T7-T10, T12 [Minor]** — the token-audit deadline cell lacked the
+  discriminator its sync twin gained in the same commit; two global-prototype
+  spies restored in bodies in the round that moved a third into hooks; two deny
+  rows named for the tightening pass under the predicate it replaced; the
+  encrypt-half cell asserts over every `TextEncoder` encode in its block rather
+  than the buffer it names.
+
+## From an external security review, verified independently
+
+- **`GET /api/jobs/:jobId` does not check tenant ownership** — confirmed. The
+  handler never compares `jobId` against `req.sessionContext.tenantId`, and
+  `getJob` discards `job.data.tenantId`. **Out of this branch's diff**
+  (`apps/api/src/routes/sync-match.ts` and `apps/api/src/main.ts` are unchanged
+  from `main`), so it is recorded here for a separate contract rather than fixed.
+  One correction to the report: job ids are `${QUEUE}:${tenantId}:${saasAppId}`,
+  so the attack needs another tenant's UUID from elsewhere — which is not an
+  authorization control, but does bound the exposure.
+- **`pnpm audit --prod`: 5 high / 1 moderate** — confirmed, and out of branch.
+  Reachability is narrower than the scanner's rating: `postcss` is `next`'s
+  build-time dependency and `brace-expansion` arrives via
+  `googleapis>…>rimraf>glob`, off the runtime path. `drizzle-orm` is the only
+  direct production dependency among them.
+- **`parseEncryptionKeys` accepts ambiguous input** — partially confirmed and
+  **fixed here**, because it is in a file this branch changed. A repeated version
+  silently won via `Map.set`, so `ENCRYPTION_KEYS=1:<a>,1:<b>` booted cleanly
+  under `<b>` while every credential sealed under `<a>` failed its GCM tag on the
+  next read. The base64 half is largely covered by the existing 32-byte length
+  check (a malformed string decodes short and is refused); what remains is a
+  non-canonical encoding that still decodes to exactly 32 bytes, which is not
+  fixed and is noted here.
+
+## Resolution Status — Round 8
+
+### S1 / F7 / T5 [Major, 3-way] — the exemption excused the class
+- Action: the exemption is **per half**. The decrypt half takes none — nothing
+  legitimate calls `decryptCredentials` outside the crypto package. The encrypt
+  half keeps one, for the rotation sweep's re-encrypt shape, and what it still
+  cannot see (a second, unrelated `encryptCredentials(` in a lending module) is
+  stated next to it rather than claimed away.
+- Red-proven before and after: the same probe that left the cell green under
+  Round 7's form now reds.
+
+### F2, F3, S5 [Major/Minor] — three predicates that admitted the wrong class
+- `transporterOptions` carries `retryConfig: { retry: 0, noResponseRetries: 0 }`
+  on both clients; the comment says what is bound rather than what is absent.
+- The auth arm classifies on the normalised `platformError` against
+  `OAUTH_AUTH_ERRORS` (RFC 6749 §5.2's registry, restricted to what a
+  service-account assertion can produce), with an allow case proving an ordinary
+  400 stays `transient`.
+- `TRANSPORT_CODE` enumerates the class — libuv/DNS codes and the two SDK
+  spellings. Small and stable, unlike a vendor's token format, so the R47
+  objection `rejectBotToken` raises does not transfer.
+
+### T1, T2, T3, T4 [Major] — four controls observed somewhere other than where they act
+- The token-exchange cell is parameterised over both clients and asserts `retry`
+  as well as `timeout`.
+- A source scan over **every component** asserts none indexes a tenant-keyed
+  record directly — which immediately found the register form doing the same
+  thing. That site is type-safe, but it was routed through the accessor rather
+  than exempted, so the rule stays flat and the next component is covered.
+- The email allow table pins one class of the production per row.
+- `aria-required` is asserted; the `required` removal is covered by the
+  classifier cells that now own blankness on both surfaces.
+
+### S2, S3/T6, S4/T12, S6, F4/T11, F5, F6, T7-T10 [Minor] — applied
+- `createCipheriv` gained the cardinality cell; the scan's top-level roots are
+  read from `pnpm-workspace.yaml`; the `isTransportError` docstring states that
+  callers must decide rate-limit first and why; `parseCredentialRecord` guards
+  both worker parses; the stale `SaasAppForm` rationale is corrected;
+  `encryptCredentialRecord` takes `Record<string, string>`; the citation says
+  "regular expression" and names the willful violation; the token-audit cell
+  gained its twin's discriminator; `vi.restoreAllMocks()` in `afterEach` for both
+  global-prototype spies; the two pre-existing deny rows moved to a cell named
+  for what they pin; the encrypt-half cell asserts `captured[0]`.
+
+## Round 8 mutations
+
+Fifteen run, **fifteen red, no survivors**.
+
+| mutation | result |
+|---|---|
+| a lending module decrypts directly | reds |
+| the encrypt primitive gains a second call site | reds |
+| the scan roots stop being read from the workspace manifest | reds |
+| the users client loses its token-exchange retry disable | reds |
+| the TOKENS client loses its token-exchange ceiling | reds |
+| a delegation failure is transient again | reds |
+| the auth arm widens to every 400 | reds |
+| the transport class goes back to any string code | reds |
+| the transport class loses its DNS codes | reds |
+| a component indexes the credential record directly again | reds |
+| the email predicate narrows its local-part class | reds |
+| the email predicate requires a dotted domain | reds |
+| a repeated encryption key version wins silently again | reds |
+| the encrypt-side plaintext is left unzeroed again | reds |
+| the token-audit deadline is constructed and then discarded | reds |
+
+A sixteenth was written and removed rather than declared: mutating the exemption
+predicate itself cannot red, because weakening a guard is unobservable unless a
+violating input exists at the same time and the harness mutates one file per
+entry. The proof is the first entry, measured on both sides of the fix.
+
+## Round 8 verification
+
+typecheck 0 / lint 0 / **926 tests passed** (699 unit, 227 integration) / build 0
+/ **E2E 62 passed** / seed-preservation gate 0 / **15/15 mutations red**.

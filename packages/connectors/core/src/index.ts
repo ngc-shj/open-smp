@@ -79,6 +79,228 @@ export interface SaaSConnector {
 
 export type ConnectorErrorKind = 'auth' | 'rate_limit' | 'transient' | 'fatal';
 
+/**
+ * What may travel in a `ConnectorError`'s `cause`.
+ *
+ * NOT the provider error. `apps/worker/src/sync.ts` writes `error.message` into
+ * `discovery_events`, whose UPDATE and DELETE are REVOKEd, and
+ * `console.error(msg, { error })` — the spelling the `Logger` interface's
+ * `meta?: Record<string, unknown>` invites — inspects the whole cause chain. An
+ * SDK error routinely carries the request it made, including its
+ * `Authorization` header.
+ *
+ * Lives HERE rather than in one connector because the class has as many members
+ * as there are connectors: review found the Slack half fixed and the Google half
+ * still passing the raw error, with the comment that had recorded the gap
+ * deleted by the same change.
+ */
+export function diagnose(error: unknown, secret: string): Record<string, unknown> {
+  // An empty secret would make `split('')` explode the message into characters.
+  // The guard is here and not at the call site because a connector whose
+  // credential is optional is a reachable shape.
+  const scrub = (text: string): string =>
+    secret === '' ? text : text.split(secret).join('[redacted]');
+
+  const source = (typeof error === 'object' && error !== null ? error : {}) as Record<
+    string,
+    unknown
+  >;
+  const response = source.response as { status?: unknown; data?: { error?: unknown } } | undefined;
+
+  // BOTH SHAPES. The first version read `statusCode` and `data.error`, which are
+  // Slack's spellings — a `GaxiosError` carries `status` and
+  // `response.data.error`, so hoisting the function without widening it made
+  // every Google diagnosis `{statusCode: undefined, platformError: undefined}`.
+  // Propagating a helper is not copying it (R3).
+  // Four spellings, and the numeric `code` is the one googleapis actually uses
+  // — `statusOf` in the Google connector reads it FIRST. Widening this function
+  // without it left the canonical Google error diagnosing as
+  // `{statusCode: undefined}`, which is the defect the widening was for.
+  const status = [source.statusCode, source.code, source.status, response?.status].find(
+    (value): value is number => typeof value === 'number',
+  );
+  const data = source.data as { error?: unknown } | undefined;
+  // Scrubbed like the other strings, and read from BOTH GRAMMARS. Slack puts a
+  // bare enum string here (`invalid_auth`, `ratelimited`). Google does not: an
+  // Admin SDK failure carries an OBJECT, which is why widening the envelope
+  // (`data.error` → also `response.data.error`) in an earlier round still left
+  // every real Google diagnosis at `platformError: undefined` — both arms
+  // required a string. gaxios' own extractor takes the same two branches
+  // (`typeof res.data.error === 'string'` then `=== 'object'`), reading
+  // `.status` for the AIP-193 spelling; the classic Admin SDK shape carries the
+  // machine-readable reason in `errors[0].reason` instead, so both are read.
+  //
+  // The fixture is the reason this survived three rounds: the Google case
+  // asserted a Slack-shaped body under a Google envelope, a payload googleapis
+  // cannot produce (RT1).
+  const platformErrorOf = (value: unknown): string | undefined => {
+    if (typeof value === 'string') return value;
+    if (typeof value !== 'object' || value === null) return undefined;
+    const record = value as { status?: unknown; errors?: unknown };
+    if (typeof record.status === 'string') return record.status;
+    const reason = (Array.isArray(record.errors) ? record.errors[0] : undefined) as
+      | { reason?: unknown }
+      | undefined;
+    return typeof reason?.reason === 'string' ? reason.reason : undefined;
+  };
+  const rawPlatformError = platformErrorOf(data?.error) ?? platformErrorOf(response?.data?.error);
+  const platformError = rawPlatformError === undefined ? undefined : scrub(rawPlatformError);
+
+  return {
+    name: typeof source.name === 'string' ? scrub(source.name) : undefined,
+    message: typeof source.message === 'string' ? scrub(source.message) : undefined,
+    // Scrubbed like every other string here: it is a provider-controlled path,
+    // which is the same reason `platformError` is.
+    code: typeof source.code === 'string' ? scrub(source.code) : undefined,
+    statusCode: status,
+    platformError,
+    retryAfter: typeof source.retryAfter === 'number' ? source.retryAfter : undefined,
+  };
+}
+
+/**
+ * Waits, and stops waiting when the run is over.
+ *
+ * `Promise.race`, not a check either side of the sleep. The first version
+ * checked before and after and claimed that was "the most a caller-supplied
+ * sleep can offer" — false: an abort one millisecond into a clamped 60-second
+ * wait still held `runSync`'s open transaction, its pooled connection and its
+ * decrypted credential buffer for the remaining 60 seconds. It ended the run one
+ * full wait later rather than shortening it.
+ *
+ * In `connectors-core` because the class has one member per connector, which is
+ * the lesson `diagnose` above was moved here for.
+ */
+export function waitUnlessAborted(
+  ms: number,
+  signal: AbortSignal,
+  sleep: (ms: number) => Promise<void>,
+  onAborted: () => Error,
+): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(onAborted());
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => reject(onAborted());
+    signal.addEventListener('abort', abort, { once: true });
+    void sleep(ms).then(
+      () => {
+        // No re-check here: after the pre-check there is no await before the
+        // listener is attached, so any later abort has already rejected. A
+        // re-check would be unreachable code wearing a guard's clothes.
+        signal.removeEventListener('abort', abort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+/**
+ * The decrypted credential record, or a fixed-string failure.
+ *
+ * The input here is the PLAINTEXT CREDENTIAL, not operator-pasted config, and
+ * V8's `SyntaxError` message quotes a window of its input. Both worker jobs
+ * write `error.message` verbatim into `discovery_events`, whose UPDATE and
+ * DELETE are REVOKEd — unredactable. No producer writes a non-JSON credential
+ * today (every writer goes through `encryptCredentialRecord`, and GCM
+ * authenticates), so this is completeness rather than a live path: review
+ * enumerated this class, guarded three of five sites, and left exactly the two
+ * whose input is the secret.
+ */
+export function parseCredentialRecord(plaintext: Uint8Array): Record<string, string> {
+  try {
+    return JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, string>;
+  } catch {
+    throw new ConnectorError('fatal', false, 'stored credentials are not valid JSON');
+  }
+}
+
+/**
+ * Errors an SDK used to retry and a connector that turned SDK retries off does
+ * not classify.
+ *
+ * HERE, not once per connector, and the reason is the review history rather
+ * than tidiness. Slack learned this in round 2: setting `retries: 0` moved the
+ * responsibility to the connector, and the first version of that fix left every
+ * socket failure and every one of the new request timeouts retried by NOTHING —
+ * not the SDK, not `withRetry` (no status, no platform error), and not BullMQ,
+ * whose sync job runs `attempts: 1`. A single slow response became a terminal
+ * sync failure. Round 6 then propagated `retry: false` and a request timeout to
+ * the Google connector WITHOUT this predicate, reproducing the identical defect
+ * against gaxios' spellings — the sites were enumerated, the reason the change
+ * was safe at the seed was not (R3).
+ *
+ * The evidence is provider-neutral because `diagnose` already normalises both
+ * providers' status and platform-error spellings:
+ *
+ *   - a DOMException name — `AbortError` from a signal, `TimeoutError` from a
+ *     request deadline. gaxios copies it into `code` (common.js: "The
+ *     DOMException's equivalent to code is its name"); `@slack/web-api` leaves
+ *     it on `name`.
+ *   - a STRING `code` with no HTTP status and no platform-error payload:
+ *     `slack_webapi_request_error`, or the Node socket code gaxios copies from
+ *     the cause (`ECONNRESET`, `ETIMEDOUT`). A numeric `code` is googleapis'
+ *     HTTP status and is NOT this class.
+ *
+ * CALLERS MUST DECIDE RATE-LIMIT FIRST. The first version of this docstring
+ * argued that a rate limit "carries a status or a platform error, so it does not
+ * reach the last line" — false for the one shape this repository's Slack client
+ * actually produces. With `rejectRateLimitedCalls: true`, `@slack/web-api`
+ * throws `WebAPIRateLimitedError`, which carries `code` and `retryAfter` and NO
+ * `statusCode` and NO `data`, so this predicate returns true for it. Both
+ * connectors evaluate their own rate-limit predicate before this one and take
+ * the KIND from that, which is why nothing is broken — but a connector author
+ * who relied on the old sentence instead of writing their own predicate would
+ * retry a rate limit on exponential backoff and ignore `Retry-After`.
+ *
+ * THE CODE CLASS IS ENUMERATED, not "any string". A bare `typeof code ===
+ * 'string'` admitted Node's own error codes: a truncated PEM makes
+ * `createSign().sign()` throw `ERR_OSSL_UNSUPPORTED`, a permanent credential
+ * fault, which was then retried five times with cumulative backoff inside
+ * `runSync`'s open transaction and reported as `transient`. The class here is
+ * small and stable — libuv/DNS codes and the two SDK spellings — unlike a
+ * vendor's token format, so enumerating it does not carry the R47 objection
+ * `rejectBotToken` raises.
+ */
+const TRANSPORT_CODE = /^(E[A-Z0-9]+|EAI_[A-Z]+|slack_webapi_request_error)$/;
+
+export function isTransportError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const source = error as { code?: unknown; name?: unknown };
+  if (source.name === 'AbortError' || source.name === 'TimeoutError') return true;
+  if (source.code === 'AbortError' || source.code === 'TimeoutError') return true;
+  if (typeof source.code !== 'string' || !TRANSPORT_CODE.test(source.code)) return false;
+
+  // The empty secret is "nothing to scrub", not a scrub of everything — see the
+  // guard in `diagnose`. Reused rather than re-spelled so this predicate reads
+  // the same four status spellings and both platform-error grammars the
+  // projection does. The projection is destructured and discarded: it is never
+  // logged, attached to a `cause`, or returned, and it must stay that way —
+  // with an empty secret its strings are UNSCRUBBED.
+  const { statusCode, platformError } = diagnose(error, '');
+  return statusCode === undefined && platformError === undefined;
+}
+
+/**
+ * The per-request ceiling every connector applies.
+ *
+ * HERE, not once per connector: the Slack client was given one in review round
+ * 1 and the Google client was still on the SDK default (none) in round 6 — the
+ * one-member-per-connector class this module exists for. Neither SDK applies one
+ * unasked: `@slack/web-api` defaults `timeout` to 0, which installs no
+ * `AbortSignal` at all, and gaxios applies one only when the request supplies
+ * it. `runSync` iterates a
+ * connector INSIDE an open `withTenant` transaction, so a hung request holds a
+ * pooled Postgres connection and an idle-in-transaction session for as long as
+ * it hangs, and the sync worker's `concurrency: 1` stalls every other tenant.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
 export class ConnectorError extends Error {
   kind: ConnectorErrorKind;
   retryable: boolean;

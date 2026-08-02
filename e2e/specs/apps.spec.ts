@@ -4,7 +4,11 @@ import {
   FAKE_SERVICE_ACCOUNT_JSON_MISSING_PRIVATE_KEY,
   FAKE_SERVICE_ACCOUNT_CREDENTIALS,
 } from '../fixtures/fake-service-account.js';
-import { SAAS_APP_DISPLAY_NAME, SAAS_APP_KEY } from '../fixtures/seed-facts.js';
+import {
+  CONTRACT_ONLY_APP_KEY,
+  SAAS_APP_DISPLAY_NAME,
+  SAAS_APP_KEY,
+} from '../fixtures/seed-facts.js';
 
 test.describe('apps', () => {
   test('list shows the seeded Google Workspace app', async ({ page }) => {
@@ -16,9 +20,9 @@ test.describe('apps', () => {
   test('duplicate registration (seeded key) returns the 409 message', async ({ page }) => {
     await page.goto('/apps');
 
-    await page.getByLabel('Display name').fill('E2E Duplicate Attempt');
-    await page.getByLabel('Service account JSON').fill(FAKE_SERVICE_ACCOUNT_JSON);
-    await page.getByLabel('Admin email to impersonate').fill(FAKE_SERVICE_ACCOUNT_CREDENTIALS.impersonate_admin_email);
+    await page.getByLabel('Display name', { exact: true }).fill('E2E Duplicate Attempt');
+    await page.getByLabel('Service account JSON', { exact: true }).fill(FAKE_SERVICE_ACCOUNT_JSON);
+    await page.getByLabel('Admin email to impersonate', { exact: true }).fill(FAKE_SERVICE_ACCOUNT_CREDENTIALS.impersonate_admin_email);
     await page.getByRole('button', { name: 'Register' }).click();
 
     await expect(
@@ -33,18 +37,22 @@ test.describe('apps', () => {
   test('choosing a connector swaps the credential fields it asks for', async ({ page }) => {
     await page.goto('/apps');
 
-    // Google is what a fresh form starts on, which is why the three specs
-    // around this one can fill its fields without selecting anything.
-    await expect(page.getByLabel('Service account JSON')).toBeVisible();
-    await expect(page.getByLabel('Bot token')).toHaveCount(0);
+    // `exact: true` throughout. getByLabel's string form is a case-insensitive
+    // SUBSTRING match, and the manager's replace-flow labels are "New service
+    // account JSON" and "New bot token" — both contain the text searched for
+    // here. The toHaveCount(0) assertions were green only because every manager
+    // panel happens to be closed on load, which makes them state-dependent on
+    // any spec that opens one. Found in review.
+    await expect(page.getByLabel('Service account JSON', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Bot token', { exact: true })).toHaveCount(0);
 
-    await page.getByLabel('Key').selectOption('slack');
+    await page.getByLabel('Key', { exact: true }).selectOption('slack');
 
-    await expect(page.getByLabel('Bot token')).toBeVisible();
+    await expect(page.getByLabel('Bot token', { exact: true })).toBeVisible();
     // Gone, not merely joined: a form that rendered both would post a service
     // account under `key: 'slack'`.
-    await expect(page.getByLabel('Service account JSON')).toHaveCount(0);
-    await expect(page.getByLabel('Admin email to impersonate')).toHaveCount(0);
+    await expect(page.getByLabel('Service account JSON', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('Admin email to impersonate', { exact: true })).toHaveCount(0);
   });
 
   test('a bot token with stray whitespace is refused without leaving the page', async ({ page }) => {
@@ -55,10 +63,10 @@ test.describe('apps', () => {
       if (req.url().includes('/api/saas-apps')) requests.push(req.url());
     });
 
-    await page.getByLabel('Key').selectOption('slack');
-    await page.getByLabel('Display name').fill('E2E Slack Bad Paste');
+    await page.getByLabel('Key', { exact: true }).selectOption('slack');
+    await page.getByLabel('Display name', { exact: true }).fill('E2E Slack Bad Paste');
     // The realistic error: a paste that carried the newline after it.
-    await page.getByLabel('Bot token').fill('xoxb-000-111-abc def');
+    await page.getByLabel('Bot token', { exact: true }).fill('xoxb-000-111-abc def');
     await page.getByRole('button', { name: 'Register' }).click();
 
     await expect(
@@ -81,9 +89,9 @@ test.describe('apps', () => {
       if (req.url().includes('/api/saas-apps')) requests.push(req.url());
     });
 
-    await page.getByLabel('Display name').fill('E2E Invalid JSON');
-    await page.getByLabel('Service account JSON').fill('{"client_email":');
-    await page.getByLabel('Admin email to impersonate').fill('admin@example.com');
+    await page.getByLabel('Display name', { exact: true }).fill('E2E Invalid JSON');
+    await page.getByLabel('Service account JSON', { exact: true }).fill('{"client_email":');
+    await page.getByLabel('Admin email to impersonate', { exact: true }).fill('admin@example.com');
     await page.getByRole('button', { name: 'Register' }).click();
 
     await expect(
@@ -100,9 +108,9 @@ test.describe('apps', () => {
       if (req.url().includes('/api/saas-apps')) requests.push(req.url());
     });
 
-    await page.getByLabel('Display name').fill('E2E Missing Field');
-    await page.getByLabel('Service account JSON').fill(FAKE_SERVICE_ACCOUNT_JSON_MISSING_PRIVATE_KEY);
-    await page.getByLabel('Admin email to impersonate').fill('admin@example.com');
+    await page.getByLabel('Display name', { exact: true }).fill('E2E Missing Field');
+    await page.getByLabel('Service account JSON', { exact: true }).fill(FAKE_SERVICE_ACCOUNT_JSON_MISSING_PRIVATE_KEY);
+    await page.getByLabel('Admin email to impersonate', { exact: true }).fill('admin@example.com');
     await page.getByRole('button', { name: 'Register' }).click();
 
     await expect(
@@ -118,20 +126,20 @@ test.describe('apps', () => {
     await page.goto('/apps');
 
     // Failure path 1: invalid JSON.
-    await page.getByLabel('Display name').fill('E2E Leak Check A');
-    await page.getByLabel('Service account JSON').fill('{"client_email":');
-    await page.getByLabel('Admin email to impersonate').fill('admin@example.com');
+    await page.getByLabel('Display name', { exact: true }).fill('E2E Leak Check A');
+    await page.getByLabel('Service account JSON', { exact: true }).fill('{"client_email":');
+    await page.getByLabel('Admin email to impersonate', { exact: true }).fill('admin@example.com');
     await page.getByRole('button', { name: 'Register' }).click();
     await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toBeVisible();
 
     // Failure path 2: missing private_key.
-    await page.getByLabel('Service account JSON').fill(FAKE_SERVICE_ACCOUNT_JSON_MISSING_PRIVATE_KEY);
+    await page.getByLabel('Service account JSON', { exact: true }).fill(FAKE_SERVICE_ACCOUNT_JSON_MISSING_PRIVATE_KEY);
     await page.getByRole('button', { name: 'Register' }).click();
     await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toBeVisible();
 
     // Fill the full fake SA JSON (private_key included) but do not submit —
     // the value must stay confined to the textarea itself.
-    await page.getByLabel('Service account JSON').fill(FAKE_SERVICE_ACCOUNT_JSON);
+    await page.getByLabel('Service account JSON', { exact: true }).fill(FAKE_SERVICE_ACCOUNT_JSON);
 
     const bodyTextOutsideTextarea = await page.evaluate(() => {
       const clone = document.body.cloneNode(true) as HTMLElement;
@@ -182,7 +190,7 @@ test.describe('apps management (C22)', () => {
     const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
 
     await row.getByRole('button', { name: 'Rename' }).click();
-    await row.getByLabel('Display name').fill('E2E Renamed Workspace');
+    await row.getByLabel('Display name', { exact: true }).fill('E2E Renamed Workspace');
     await row.getByRole('button', { name: 'Save' }).click();
 
     await expect(page.getByRole('cell', { name: 'E2E Renamed Workspace' })).toBeVisible();
@@ -209,5 +217,43 @@ test.describe('apps management (C22)', () => {
     // accessible name concatenates its button labels, which can otherwise
     // contain the display name as a substring.
     await expect(page.getByRole('cell', { name: SAAS_APP_DISPLAY_NAME, exact: true })).toBeVisible();
+  });
+
+  // SC2 review round 2. Both of these controls shipped with no test on any
+  // tier — the same shape as the untested ceiling Round 1 found, on Round 1's
+  // own fix. Neither mutates: one reads a row, the other is refused before any
+  // request leaves the page.
+  test('offers no credential replacement for an application with no connector', async ({ page }) => {
+    await page.goto('/apps');
+
+    const managed = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
+    await expect(managed.getByRole('button', { name: 'Replace credentials' })).toBeVisible();
+
+    // The contract-only application declares no credential fields, so the panel
+    // would render zero inputs and Save would report a bot-token error. The
+    // control is hidden instead.
+    const contractOnly = page.getByRole('row', { name: new RegExp(CONTRACT_ONLY_APP_KEY) });
+    await expect(contractOnly).toBeVisible();
+    await expect(contractOnly.getByRole('button', { name: 'Replace credentials' })).toHaveCount(0);
+  });
+
+  test('refuses an empty replacement without sending anything', async ({ page }) => {
+    await page.goto('/apps');
+
+    const requests: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/saas-apps')) requests.push(req.method());
+    });
+
+    const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
+    await row.getByRole('button', { name: 'Replace credentials' }).click();
+    // What this pins, named honestly after review measured it: the panel opens
+    // empty and Save is refused BEFORE any request. It does NOT single out the
+    // required-blank guard — the classifier rejects an empty service account
+    // first, and a spec claiming otherwise was satisfied by that.
+    await row.getByRole('button', { name: 'Replace', exact: true }).click();
+
+    await expect(row.getByRole('alert')).toBeVisible();
+    expect(requests.filter((m) => m === 'PATCH')).toHaveLength(0);
   });
 });

@@ -35,11 +35,14 @@ const NOT_COPY = new Set([
   '⟨', // the untranslated-key marker itself
   'open-smp', // a product name
   'CSV', // an initialism that is not translated in either locale
-  // Identifiers an operator TYPES or selects, not copy they read. Translating
-  // either would break the thing it names: `google-workspace` is the value the
-  // registration form posts as `key`, and `saasAppId` is the field name the
-  // sync control's placeholder is telling the operator to supply.
-  'google-workspace',
+  // An identifier an operator TYPES, not copy they read: `saasAppId` is the
+  // field name the sync control's placeholder tells them to supply.
+  //
+  // `google-workspace` used to sit here for a hardcoded `<option>`. SC2/C3
+  // replaced that with `{key}` rendered from CONNECTOR_APP_KEYS, which the
+  // detector already ignores as an expression — so the entry outlived its
+  // subject and silently permitted the literal anywhere in apps/web. Removed in
+  // review; if it reds, a real hardcoded connector key has appeared.
   'saasAppId',
 ]);
 

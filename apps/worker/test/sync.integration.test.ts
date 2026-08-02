@@ -1,11 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { encryptCredentials } from '@open-smp/crypto';
 import type { ConnectorContext, RawAccount, SaaSConnector } from '@open-smp/connectors-core';
-import { runSync } from '../src/sync.js';
+import { SYNC_DEADLINE_MS, runSync } from '../src/sync.js';
 
 // C5 acceptance: (a) re-running the same sync twice yields identical row
 // counts and last_synced_at monotonicity; (b) a sync job for tenant A writes
@@ -37,8 +47,20 @@ class FakeConnector implements SaaSConnector {
   authKind: SaaSConnector['authKind'] = 'apikey';
   tokenCapability: SaaSConnector['tokenCapability'] = 'none';
 
-  async *listUsers(_ctx: ConnectorContext): AsyncIterable<RawAccount> {
+  /** The signal of the most recent run, so a test can see WHICH signal arrived. */
+  static lastSignal: AbortSignal | undefined;
+
+  async *listUsers(ctx: ConnectorContext): AsyncIterable<RawAccount> {
+    FakeConnector.lastSignal = ctx.signal;
+    // The signal IS observed, like both real connectors observe it. A fake that
+    // ignored it made the deadline unobservable at this tier — reverting
+    // runSync to a never-aborting controller left this suite green, which is
+    // the state the deadline exists to prevent (RT1: the fake must not be more
+    // permissive than the thing it stands for).
     for (const account of FAKE_ACCOUNTS) {
+      if (ctx.signal.aborted) {
+        throw new Error('fake connector: run aborted');
+      }
       yield account;
     }
   }
@@ -46,9 +68,30 @@ class FakeConnector implements SaaSConnector {
 
 // Mutable Map (not the ReadonlyMap ConnectorRegistry alias) so seedTenantWithApp
 // can register a per-seed unique key; runSync accepts it structurally.
-const fakeRegistry = new Map<string, () => SaaSConnector>([['fake-app', () => new FakeConnector()]]);
+const fakeRegistry = new Map<string, () => SaaSConnector>([
+  ['fake-app', () => new FakeConnector()],
+]);
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {} };
+
+// The real constructor, captured before any spy replaces it.
+const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+let timeoutSpy: MockInstance<(milliseconds: number) => AbortSignal>;
+
+beforeEach(() => {
+  // In a hook, not in a body. `lastSignal` is static, so a cell added without
+  // its own reset inherits the previous cell's value and the assertions below
+  // are satisfied by residue rather than by this cell's own run.
+  FakeConnector.lastSignal = undefined;
+  // Passthrough by default: what is wanted is the CALL, so a cell can assert
+  // the deadline was composed at all and another can make it fire.
+  timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => realTimeout(ms));
+});
+
+afterEach(() => {
+  timeoutSpy.mockRestore();
+});
 
 let container: StartedPostgreSqlContainer;
 let adminPool: Pool;
@@ -100,14 +143,14 @@ beforeAll(async () => {
 
   // tenants is a root table with no RLS; insert directly via the admin pool
   // ahead of any withTenant call (tenants has no tenant_id column).
-  await adminPool.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant A') ON CONFLICT DO NOTHING`, [
-    tenantA,
-    `tenant-a-${tenantA}`,
-  ]);
-  await adminPool.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant B') ON CONFLICT DO NOTHING`, [
-    tenantB,
-    `tenant-b-${tenantB}`,
-  ]);
+  await adminPool.query(
+    `INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant A') ON CONFLICT DO NOTHING`,
+    [tenantA, `tenant-a-${tenantA}`],
+  );
+  await adminPool.query(
+    `INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant B') ON CONFLICT DO NOTHING`,
+    [tenantB, `tenant-b-${tenantB}`],
+  );
 }, 180_000);
 
 afterAll(async () => {
@@ -143,7 +186,9 @@ describe('C5 runSync acceptance', () => {
     expect(second.runId).not.toBe(first.runId);
 
     const rowCount = await withTenant(appPool, tenantA, async (tx) => {
-      const { rows } = await tx.query('SELECT * FROM saas_accounts WHERE saas_app_id = $1', [saasAppId]);
+      const { rows } = await tx.query('SELECT * FROM saas_accounts WHERE saas_app_id = $1', [
+        saasAppId,
+      ]);
       return rows.length;
     });
     expect(rowCount).toBe(FAKE_ACCOUNTS.length);
@@ -215,10 +260,111 @@ describe('C5 runSync acceptance', () => {
     );
 
     const visibleUnderB = await withTenant(appPool, tenantB, async (tx) => {
-      const { rows } = await tx.query('SELECT * FROM saas_accounts WHERE saas_app_id = $1', [saasAppId]);
+      const { rows } = await tx.query('SELECT * FROM saas_accounts WHERE saas_app_id = $1', [
+        saasAppId,
+      ]);
       return rows.length;
     });
 
     expect(visibleUnderB).toBe(0);
+  });
+
+  it('stops when the run deadline has passed', async () => {
+    // The deadline signal had no observer at all: reverting it to a
+    // never-aborting controller left this suite green, which is exactly the
+    // state it was added to leave. It is injectable now, so an already-aborted
+    // signal reaches the connector's own guard.
+    const saasAppId = await seedTenantWithApp(tenantA);
+
+    await expect(
+      runSync(
+        {
+          pool: appPool,
+          connectorRegistry: fakeRegistry,
+          encryptionKeys,
+          logger: noopLogger,
+          discoveryStoreRaw: false,
+          signal: AbortSignal.abort(),
+        },
+        { tenantId: tenantA, saasAppId },
+      ),
+    ).rejects.toThrow(/aborted/);
+    // Matched on the message, not bare. A bare `.toThrow()` was satisfied by a
+    // nonexistent saasAppId — a run that never built a connector and never saw
+    // the signal at all.
+  });
+
+  it('keeps its own deadline when a caller supplies a signal', async () => {
+    // `AbortSignal.any`, not `deps.signal ?? …`. The `??` form let a caller
+    // remove the deadline entirely, and it was chosen to answer a coverage
+    // finding — R43. Both forms satisfy an already-aborted injected signal, so
+    // the property needs a signal that never fires: the run must still be
+    // bounded by the deadline underneath it.
+    const saasAppId = await seedTenantWithApp(tenantA);
+    const never = new AbortController().signal;
+
+    const result = await runSync(
+      {
+        pool: appPool,
+        connectorRegistry: fakeRegistry,
+        encryptionKeys,
+        logger: noopLogger,
+        discoveryStoreRaw: false,
+        signal: never,
+      },
+      { tenantId: tenantA, saasAppId },
+    );
+
+    // The run completes — a never-aborting signal must not break it — and the
+    // signal the connector SAW is not the one that was passed in. That is the
+    // whole difference between `AbortSignal.any([deps.signal, deadline])` and
+    // `deps.signal ?? deadline`: both satisfy "the run finished" and "the
+    // caller's controller never aborted", and only this distinguishes them.
+    // Measured — the `??` form left the previous version of this cell green.
+    expect(result.upserted).toBeGreaterThan(0);
+    expect(never.aborted).toBe(false);
+    expect(
+      FakeConnector.lastSignal,
+      'the connector ran under the caller-supplied signal alone',
+    ).not.toBe(never);
+    expect(FakeConnector.lastSignal, 'the connector saw no signal at all').toBeDefined();
+    // THE DEADLINE ITSELF, not merely "a different object". Every assertion
+    // above is satisfied by `AbortSignal.any([deps.signal])` — a composite with
+    // the deadline removed, which is exactly the widening this cell exists to
+    // prevent. Spying the constructor is what tells the two apart.
+    expect(timeoutSpy, 'no deadline was composed into the run signal').toHaveBeenCalledWith(
+      SYNC_DEADLINE_MS,
+    );
+  });
+
+  it('bounds the run by its own deadline even when the caller never aborts', async () => {
+    // The other direction: the deadline must be able to END the run, not just be
+    // present in the composite. Firing it immediately is the only way to see
+    // that from outside, since the real value is ten minutes.
+    const saasAppId = await seedTenantWithApp(tenantA);
+    const never = new AbortController().signal;
+    timeoutSpy.mockReturnValue(AbortSignal.abort());
+
+    await expect(
+      runSync(
+        {
+          pool: appPool,
+          connectorRegistry: fakeRegistry,
+          encryptionKeys,
+          logger: noopLogger,
+          discoveryStoreRaw: false,
+          signal: never,
+        },
+        { tenantId: tenantA, saasAppId },
+      ),
+    ).rejects.toThrow(/aborted/);
+    expect(never.aborted, "the run aborted the caller's signal instead of its own").toBe(false);
+    // `/aborted/` alone is a loose regex over a message any abort in the call
+    // graph produces, so it cannot tell "the deadline stopped the run" from "the
+    // run failed for another reason under a mocked global". What distinguishes
+    // them is that the signal the connector was handed is itself aborted —
+    // i.e. the deadline reached the composite, rather than the run dying of
+    // something else.
+    expect(FakeConnector.lastSignal?.aborted, 'the run did not end on its deadline').toBe(true);
   });
 });

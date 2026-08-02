@@ -36,17 +36,45 @@ describe('SC2/C2: the connector registry and the accepted key set agree', () => 
     expect(createConnectorRegistry().size).toBeGreaterThan(0);
   });
 
-  it('builds a connector for every key it claims', () => {
-    // The map could hold a key whose factory throws on any input, which the
-    // equality above cannot see. Called with empty credentials, so what is
-    // asserted is that a factory EXISTS and is a function — a credential-shape
-    // rejection is the factory working, not failing.
-    for (const key of CONNECTOR_APP_KEYS) {
-      const factory = createConnectorRegistry().get(key);
+  it.each([...CONNECTOR_APP_KEYS])('builds a working connector for %s', (key) => {
+    // It used to assert `toBeTypeOf('function')` on the factory — implied by
+    // `Map<string, ConnectorFactory>` and by the key-equality test above, so no
+    // type-correct edit could red it. Measured in review: making
+    // buildSlackConnector throw unconditionally left all three tests green.
+    //
+    // The factory is CALLED, with credentials that satisfy every connector's
+    // validation, and the result is checked for the interface it must provide.
+    const connector = createConnectorRegistry().get(key)!({
+      serviceAccountJson: '{}',
+      impersonateAdminEmail: 'a@b.example',
+      botToken: 'xoxb-not-real',
+    });
 
-      expect(factory, `no factory for ${key}`).toBeTypeOf('function');
-    }
+    expect(connector.id, `${key} builds a connector declaring a different id`).toBe(key);
+    expect(connector.listUsers).toBeTypeOf('function');
   });
+
+  it.each([...CONNECTOR_APP_KEYS])('%s rejects credentials it cannot use', (key) => {
+    // The paired deny side. A factory that ignored its input would satisfy the
+    // allow case above while accepting an empty credential set and failing at
+    // the provider instead — which reaches the operator as an audit row.
+    let caught: unknown;
+    try {
+      createConnectorRegistry().get(key)!({ secretValue: 'xoxb-should-not-appear' });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught, `${key} accepted credentials it cannot use`).toBeInstanceOf(Error);
+    // A FIXED string. This throw happens inside runSync's try, so its message
+    // becomes a discovery_events payload in a table whose UPDATE and DELETE are
+    // REVOKEd — a factory that interpolated what it was given would write it
+    // there unredactably. A bare `.toThrow()` admitted exactly that, and an
+    // incidental TypeError as well.
+    expect((caught as Error).message).not.toContain('xoxb-should-not-appear');
+    expect((caught as Error).message).toMatch(/credentials require/);
+  });
+
 });
 
 describe('SC2/C4: the capability declaration and the method agree', () => {

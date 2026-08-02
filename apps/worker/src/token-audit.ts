@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import {
   ConnectorError,
+  parseCredentialRecord,
   rawTokenSchema,
   type ConnectorContext,
   type Logger,
   type RawToken,
 } from '@open-smp/connectors-core';
-import { decryptCredentials } from '@open-smp/crypto';
+import { withDecryptedCredentials } from '@open-smp/crypto';
 import { withTenant } from '@open-smp/schema';
 import {
   TOKEN_AUDIT_EVENT_SOURCE,
@@ -21,6 +22,8 @@ export interface TokenAuditDeps {
   connectorRegistry: ConnectorRegistry;
   encryptionKeys: Map<number, Buffer>;
   logger: Logger;
+  /** The run's deadline, injectable so it has an observer. See `SyncDeps.signal`. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -32,6 +35,15 @@ export interface TokenAuditDeps {
  * provider, which offers no domain-wide token endpoint — so an unbounded run on
  * a large tenant is thousands of sequential calls against a rate-limited API.
  */
+/**
+ * How long one audit may run.
+ *
+ * Longer than sync's, because the fan-out is per account and forced by the
+ * provider (`tokens.list` takes a userKey and nothing else) — but bounded,
+ * where it used to be unbounded in wall clock.
+ */
+export const TOKEN_AUDIT_DEADLINE_MS = 20 * 60 * 1000;
+
 export const TOKEN_AUDIT_MAX_ACCOUNTS = 1_000;
 
 /**
@@ -154,28 +166,37 @@ export async function runTokenAudit(
         throw new Error(`saas_apps row ${job.saasAppId} has no stored credentials`);
       }
 
-      const decrypted = decryptCredentials(
+      // The plaintext window opens HERE, immediately after the decrypt, and the
+      // zeroization is the helper's. It used to open after the query below, so a
+      // statement timeout or an RLS denial in between propagated with the
+      // plaintext key never zeroed — the exact path the fix claimed to close.
+      return await withDecryptedCredentials(
         app.credentials_enc,
         app.credentials_key_version,
         { tenantId: job.tenantId, saasAppId: job.saasAppId },
         deps.encryptionKeys,
-      );
+        async (decrypted) => {
+          // Ordered and bounded in SQL, so the cap selects a deterministic subset
+          // rather than whatever the planner happened to return first.
+          const { rows } = await tx.query<AccountRow>(
+            `SELECT external_id FROM saas_accounts
+             WHERE tenant_id = $1 AND saas_app_id = $2
+             ORDER BY external_id
+             LIMIT $3`,
+            [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
+          );
 
-      // Ordered and bounded in SQL, so the cap selects a deterministic subset
-      // rather than whatever the planner happened to return first.
-      const { rows } = await tx.query<AccountRow>(
-        `SELECT external_id FROM saas_accounts
-         WHERE tenant_id = $1 AND saas_app_id = $2
-         ORDER BY external_id
-         LIMIT $3`,
-        [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
+          return {
+            // `TextDecoder`, not `Buffer.from(...)`: the latter allocated an
+            // unzeroed copy at the same moment the helper's `finally` cleared the
+            // original. sync.ts was changed in one round and this sibling in the
+            // next; both go through one member now.
+            credentials: parseCredentialRecord(decrypted),
+            appKey: app.key,
+            externalIds: rows.map((row) => row.external_id),
+          };
+        },
       );
-
-      return {
-        credentials: JSON.parse(Buffer.from(decrypted).toString('utf8')) as Record<string, string>,
-        appKey: app.key,
-        externalIds: rows.map((row) => row.external_id),
-      };
     },
   );
 
@@ -210,7 +231,17 @@ export async function runTokenAudit(
   const ctx: ConnectorContext = {
     credentials,
     logger: deps.logger,
-    signal: new AbortController().signal,
+    // A signal that can fire. It was `new AbortController().signal` — the exact
+    // construct the sync path replaced one round earlier, leaving the
+    // connectors' own abort guards inert on the path that makes up to
+    // TOKEN_AUDIT_MAX_ACCOUNTS sequential requests. R3: the class had two
+    // members and only one was fixed.
+    // Injectable AND unremovable, the same shape sync uses — the sibling got
+    // an observer one round before this one did, which is the asymmetry review
+    // kept finding.
+    signal: deps.signal
+      ? AbortSignal.any([deps.signal, AbortSignal.timeout(TOKEN_AUDIT_DEADLINE_MS)])
+      : AbortSignal.timeout(TOKEN_AUDIT_DEADLINE_MS),
   };
 
   const grants: RawToken[] = [];

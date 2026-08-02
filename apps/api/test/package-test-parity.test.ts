@@ -636,6 +636,28 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // factory that reads them. A disagreement is a registration the operator
       // completes and a sync that fails in an audit row.
       'apps/web/test/connector-credentials.test.ts',
+      // Review round 2. i18n.test.ts became a control when it gained the
+      // orphan-message-key detector: it now asserts a repository-wide relation
+      // (every dictionary key is named by some source file) rather than the
+      // behaviour of one module. The addition-guard below caught it — family
+      // (a) working, on a file that had been an ordinary unit test.
+      'apps/web/test/i18n.test.ts',
+      // Review round 6. The only assertion that a decrypted credential is ever
+      // cleared, and — since it gained the class enumeration — the only thing
+      // stopping a fourth call site from owning the zeroization again, which is
+      // what three consecutive rounds each got wrong. Family (a) since round 6,
+      // so the addition-guard below would have caught it; listed anyway, because
+      // the guard cannot see a DELETION and this file's deletion removes the
+      // control that took five rounds to find.
+      'packages/crypto/test/zeroization.test.ts',
+      // Review round 8, from an external security review. The key-version bound
+      // in packages/crypto is derived from `saas_apps.credentials_key_version`
+      // being a signed `int`, and the first version of it was derived from the
+      // AAD's `writeUInt32BE` instead — a whole range booted and failed at the
+      // first write. This file now reads the migration and reds if the column
+      // changes, which is a repository-wide relation rather than the behaviour
+      // of one module. The addition-guard below caught it.
+      'packages/crypto/test/crypto.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

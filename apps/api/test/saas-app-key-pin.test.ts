@@ -24,7 +24,9 @@ import { RESERVED_APP_KEYS, normalizeAppKey } from '../src/app-key.js';
 // paths reach the column — POST /saas-apps, POST /contract-import, and seed.ts
 // — and the claim is that none of them can write a product-owned source value:
 //
-//   1. POST /saas-apps still pins its zod field to the one literal (below).
+//   1. POST /saas-apps pins its zod field to CONNECTOR_APP_KEYS, a set asserted
+//      disjoint from the reserved sources — and the route is asserted on what it
+//      ACCEPTS, not on how the field is spelled (below).
 //   2. POST /contract-import refuses the reserved set, on the exact bytes it
 //      would store (normalizeAppKey, below).
 //   3. seed.ts writes the same literal the schema pins.

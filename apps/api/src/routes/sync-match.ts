@@ -70,13 +70,23 @@ export function registerSyncMatchRoutes(app: FastifyInstance, deps: AppDeps): vo
         return reply.code(400).send({ error: 'invalid_params' });
       }
       const { jobId } = parsedParams.data;
+      const { tenantId } = req.sessionContext;
 
       const job = await deps.getJob(jobId);
-      if (!job) {
+      // AUTHORIZED IN THE HANDLER THAT TOUCHES THE DATA, not at the gateway.
+      // The session was required and the ownership was not checked, so any
+      // authenticated user holding another tenant's job id — the ids are
+      // `${queue}:${tenantId}:${saasAppId}`, so knowing the tenant's UUID is
+      // enough to construct one — read that tenant's sync counts, audited
+      // account counts and failure states (CWE-639).
+      //
+      // 404, not 403: a distinguishable response would confirm that a job with
+      // that id exists, which is the fact being protected.
+      if (!job || job.tenantId !== tenantId) {
         return reply.code(404).send({ error: 'not_found' });
       }
 
-      return reply.code(200).send(job);
+      return reply.code(200).send({ state: job.state, result: job.result });
     },
   );
 }

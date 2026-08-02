@@ -113,14 +113,29 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
   });
 
   it('gives up after max attempts on repeated 5xx and reports transient, retryable', async () => {
+    const PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nDEMO\n-----END PRIVATE KEY-----\n';
     const usersList = vi.fn(async () => {
-      const error = Object.assign(new Error('Internal Error'), { code: 500 });
+      const error = Object.assign(new Error(`Internal Error signed with ${PRIVATE_KEY}`), {
+        code: 500,
+        config: { headers: { Authorization: 'Bearer ya29.secret' } },
+      });
       throw error;
     });
-    const sleep = vi.fn(async () => {});
+    // The parameter exists so the argument can be asserted. Declared
+    // `async () => {}` the mock was structurally incapable of observing the
+    // backoff, which is why `sleep(0)` — a hot loop of five immediate requests
+    // inside the open sync transaction — was green here while the Slack sibling
+    // pinned the same schedule.
+    const sleep = vi.fn(async (_ms: number) => {});
 
     const connector = new GoogleWorkspaceConnector(
-      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      {
+        serviceAccountJson: JSON.stringify({
+          client_email: 'a@b.iam.gserviceaccount.com',
+          private_key: PRIVATE_KEY,
+        }),
+        impersonateAdminEmail: 'admin@corp.example',
+      },
       { usersList, sleep },
     );
 
@@ -134,6 +149,102 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(caught).toBeInstanceOf(ConnectorError);
     expect(caught).toMatchObject({ kind: 'transient', retryable: true });
     expect(usersList).toHaveBeenCalledTimes(5);
+
+    // THE SECOND THROW SITE. Both sites carry `cause: diagnose(...)`, and every
+    // other cell in this file reaches the auth site at 401/403 — so reverting
+    // this one to `cause: error` left the package green. Slack has covered both
+    // of its sites since round 2; this is the other member of that class.
+    const serialized = JSON.stringify((caught as Error).cause);
+    expect(serialized).not.toContain(PRIVATE_KEY);
+    expect(serialized).not.toContain('ya29.secret');
+    expect((caught as Error).cause).toMatchObject({ statusCode: 500 });
+
+    // The schedule, not the count. `2 ** (attempt - 1) * 1000` plus jitter, so
+    // each wait is at least the previous one's floor and never zero.
+    expect(sleep).toHaveBeenCalledTimes(4);
+    const waits = sleep.mock.calls.map((call) => call[0]);
+    expect(waits[0]).toBeGreaterThanOrEqual(1000);
+    expect(waits[3]).toBeGreaterThanOrEqual(8000);
+  });
+
+  it('reports an unparseable service account as a ConnectorError, not a SyntaxError', async () => {
+    // `privateKey()`'s catch arm, which had no case while the core suite's
+    // fixture comment names "an unparseable service account" as the reachable
+    // shape motivating diagnose's empty-secret guard. In production this is
+    // evaluated at the `withRetry` call, so without the catch a `SyntaxError`
+    // replaces the ConnectorError the worker's error handling is written
+    // against.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Forbidden'), { code: 403 });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{not json', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep: async () => {} },
+    );
+
+    const caught = await collect(connector.listUsers(makeContext())).catch(
+      (error: unknown) => error,
+    );
+
+    expect(caught).toBeInstanceOf(ConnectorError);
+    expect(caught).toMatchObject({ kind: 'auth' });
+    expect((caught as Error).cause).toMatchObject({ statusCode: 403 });
+  });
+
+  it('does not re-parse the service account on every retry', async () => {
+    // A JS string cannot be zeroized at any level, so each parse mints a
+    // permanently-unclearable copy of the PEM. `privateKey()` was called per
+    // `withRetry` invocation — once per page here, and once per account in the
+    // token audit, bounded only by TOKEN_AUDIT_MAX_ACCOUNTS — which would undo
+    // five rounds of narrowing the credential-buffer class with one audit run.
+    const SERVICE_ACCOUNT = JSON.stringify({
+      client_email: 'a@b.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\nDEMO\n-----END PRIVATE KEY-----\n',
+    });
+    const pages: UsersListResponseData[] = [page1, page2, page3];
+    let call = 0;
+    const usersList = vi.fn(async () => {
+      const data = pages[call] ?? { users: [] };
+      call += 1;
+      return { data };
+    });
+
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      const connector = new GoogleWorkspaceConnector(
+        { serviceAccountJson: SERVICE_ACCOUNT, impersonateAdminEmail: 'admin@corp.example' },
+        { usersList },
+      );
+
+      await collect(connector.listUsers(makeContext()));
+
+      // Non-vacuity: the run really did make several requests.
+      expect(usersList).toHaveBeenCalledTimes(3);
+      const serviceAccountParses = parse.mock.calls.filter(
+        (args) => args[0] === SERVICE_ACCOUNT,
+      ).length;
+      expect(serviceAccountParses, 'the service account is parsed per request').toBe(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('forwards the run signal to the SDK so an abort cuts an in-flight request', async () => {
+    // Without this the deadline only fires BETWEEN pages: a request that never
+    // answers holds the open withTenant transaction regardless of
+    // SYNC_DEADLINE_MS.
+    const controller = new AbortController();
+    const usersList = vi.fn(async () => ({ data: page3 as UsersListResponseData }));
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList },
+    );
+
+    await collect(connector.listUsers({ ...makeContext(), signal: controller.signal }));
+
+    expect(usersList).toHaveBeenCalledWith(expect.anything(), { signal: controller.signal });
   });
 
   it('declares the capability its listTokens implements', () => {
@@ -147,5 +258,186 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
 
     expect(connector.tokenCapability).toBe('per-user-grants');
     expect(typeof connector.listTokens).toBe('function');
+  });
+
+  it('keeps the private key out of the error it propagates', async () => {
+    // The half of the diagnose hoist that had none: reverting both call sites
+    // to `cause: error` left this package 13/13 green, which is the regression
+    // the hoist existed to prevent. gaxios redacts Authorization by default —
+    // a third-party default this repository neither pins nor asserts — so what
+    // is pinned here is the projection and the scrub, which are ours.
+    const PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nDEMO\n-----END PRIVATE KEY-----\n';
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error(`request signed with ${PRIVATE_KEY} failed`), {
+        code: 403,
+        config: { headers: { Authorization: 'Bearer ya29.secret' } },
+      });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      {
+        serviceAccountJson: JSON.stringify({
+          client_email: 'a@b.iam.gserviceaccount.com',
+          private_key: PRIVATE_KEY,
+        }),
+        impersonateAdminEmail: 'admin@corp.example',
+      },
+      { usersList, sleep: async () => {} },
+    );
+
+    let caught: unknown;
+    try {
+      await collect(connector.listUsers(makeContext()));
+    } catch (error) {
+      caught = error;
+    }
+
+    const serialized = JSON.stringify((caught as Error).cause);
+    expect((caught as Error).message).not.toContain(PRIVATE_KEY);
+    expect(serialized).not.toContain(PRIVATE_KEY);
+    // The whole request is gone, not merely the key: the projection is a
+    // whitelist and the Authorization header is not on it.
+    expect(serialized).not.toContain('ya29.secret');
+    // And the diagnosis survived, or the assertions above would be satisfied by
+    // discarding it.
+    expect(serialized).toContain('[redacted]');
+  });
+
+  it.each([
+    ['a socket reset', { code: 'ECONNRESET' }],
+    ['a request timeout', { code: 'TimeoutError' }],
+    ['an abort with no status', { name: 'AbortError' }],
+  ])('retries %s rather than reporting it as a terminal failure', async (_label, shape) => {
+    // THE ARM THIS CONNECTOR DID NOT HAVE. Review round 6 set `retry: false` and
+    // added a 30-second timeout, moving retry responsibility onto `withRetry` —
+    // and `statusOf` returns undefined for every one of these shapes, because
+    // gaxios sets `status` only when there IS a response. So a single socket
+    // reset threw `failed after retries` on attempt 1, and nothing downstream
+    // recovers it: the sync job runs `attempts: 1`. Verbatim the defect the
+    // Slack connector paid for in round 2.
+    let call = 0;
+    const usersList = vi.fn(async () => {
+      call += 1;
+      if (call === 1) throw Object.assign(new Error('transport'), shape);
+      return { data: page3 as UsersListResponseData };
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep },
+    );
+
+    const accounts = await collect(connector.listUsers(makeContext()));
+
+    expect(usersList, 'the transport failure was not retried').toHaveBeenCalledTimes(2);
+    expect(accounts).toHaveLength(1);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['unauthorized_client', 'invalid_grant', 'invalid_client'])(
+    'reports a 400 %s as a non-retryable auth failure, not a transient one',
+    async (oauthError) => {
+      // Domain-wide delegation that was never granted comes back as HTTP 400 —
+      // RFC 6749 §5.2 reserves 401 for `invalid_client` — so it missed the
+      // 401/403 arm, was not 429 or 5xx, and came out `transient, retryable`.
+      // The token audit only short-circuits on `auth` or `fatal`, so it repeated
+      // the same doomed exchange for every account and then wrote
+      // `token_audit_completed` with zero grants: an operator whose delegation
+      // was never granted read that as "no third-party applications".
+      const usersList = vi.fn(async () => {
+        throw Object.assign(new Error('Bad Request'), {
+          code: 400,
+          response: { status: 400, data: { error: oauthError } },
+        });
+      });
+      const sleep = vi.fn(async (_ms: number) => {});
+
+      const connector = new GoogleWorkspaceConnector(
+        { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+        { usersList, sleep },
+      );
+
+      const caught = await collect(connector.listUsers(makeContext())).catch(
+        (error: unknown) => error,
+      );
+
+      expect(caught).toMatchObject({ kind: 'auth', retryable: false });
+      // The mutation, not only the classification: a retryable verdict costs
+      // MAX_ATTEMPTS signings per account against a state that cannot change.
+      expect(usersList, 'a permanent credential fault was retried').toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still treats a 400 that is not an OAuth auth error as transient', async () => {
+    // The allow side: widening the auth arm to every 400 would make an ordinary
+    // bad-request retryable=false and stop the run recovering from it.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Bad Request'), {
+        code: 400,
+        response: { status: 400, data: { error: 'invalid_argument' } },
+      });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep: async () => {} },
+    );
+
+    const caught = await collect(connector.listUsers(makeContext())).catch(
+      (error: unknown) => error,
+    );
+
+    expect(caught).toMatchObject({ kind: 'transient', retryable: true });
+  });
+
+  it('does not wait out a retry after the run is over', async () => {
+    // The wait this connector gained had no test — reverting it to a bare
+    // `await sleep(...)` left the package 14/14 green, which is the same
+    // class-with-two-members shape the change was made to close.
+    const controller = new AbortController();
+    const usersList = vi.fn(async () => {
+      const error = Object.assign(new Error('Internal Error'), { code: 500 });
+      throw error;
+    });
+    const sleep = vi.fn(async () => {
+      controller.abort();
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep },
+    );
+    const ctx = { ...makeContext(), signal: controller.signal };
+
+    await expect(collect(connector.listUsers(ctx))).rejects.toMatchObject({ kind: 'fatal' });
+    expect(usersList).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the provider status into the diagnosis', async () => {
+    // Driven THROUGH the connector. The first version hand-built the error and
+    // called `diagnose` directly, discarding the connector it constructed — so
+    // it duplicated the core suite's fixture and could not see the path its own
+    // caption named. googleapis puts the status in a numeric `code`, which the
+    // shared projection did not read until review measured it.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Forbidden'), { code: 403 });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      { serviceAccountJson: '{}', impersonateAdminEmail: 'admin@corp.example' },
+      { usersList, sleep: async () => {} },
+    );
+
+    let caught: unknown;
+    try {
+      await collect(connector.listUsers(makeContext()));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ kind: 'auth' });
+    expect((caught as Error).cause).toMatchObject({ statusCode: 403 });
   });
 });
