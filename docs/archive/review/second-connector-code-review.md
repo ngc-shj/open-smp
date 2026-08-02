@@ -156,4 +156,99 @@ undefined-tolerant equality, a global floor, existence rather than invocation.
 
 ## Resolution Status
 
-Pending — findings reported, fixes not yet applied.
+All Critical and Major findings fixed. Round 1 closed.
+
+### Testing F1 [Critical] — the `catalog_full` ceiling had no coverage on any tier
+- Action: three acceptance tests in `apps/api/test/api.integration.test.ts` —
+  refusal at the ceiling asserting BOTH the 409 body and that no row was
+  inserted (RT8), the allow case landing exactly ON the ceiling (RT10), and the
+  duplicate-at-the-ceiling case.
+- **Writing the third one found a defect.** The ceiling was read before the
+  duplicate, so re-registering a key the tenant already held reported
+  `catalog_full` and sent the operator to delete an application when what they
+  had was a key in use. The duplicate is decided first now, under the same
+  advisory lock — not a TOCTOU, because the lock serialises catalog growth for
+  the tenant.
+- Modified: `apps/api/src/routes/saas-apps.ts:60-90`, `apps/api/test/api.integration.test.ts:1702`
+
+### F1 / SEC-1 [Major, 3-way convergence] — Slack client on SDK defaults
+- Action: `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`,
+  `timeout: REQUEST_TIMEOUT_MS`. `sync.ts` now supplies
+  `AbortSignal.timeout(SYNC_DEADLINE_MS)` instead of a signal nothing aborts.
+  `Retry-After` is obeyed, not merely read to classify.
+- Modified: `packages/connectors/slack/src/index.ts`, `apps/worker/src/sync.ts`
+
+### SEC-2 [Major] — the bot token was pinned into `error.cause` by a test
+- Action: `cause` is a `diagnose()` projection — classification fields plus a
+  message with the secret removed. The test now asserts the token is absent from
+  the serialized cause AND that the diagnosis survived, so the fix cannot be
+  satisfied by discarding it.
+- Modified: `packages/connectors/slack/src/index.ts`, `packages/connectors/slack/test/list-users.test.ts:226`
+
+### F2 / SEC-3 / SEC-5 [Major] — `rejectCredentials` fell through
+- Action: `Record<ConnectorAppKey, …>`, matching `CREDENTIAL_FIELDS`. A key with
+  no rejector returns `null` rather than Slack's check, and `SaasAppManager`
+  HIDES the Replace-credentials control when the connector declares no fields —
+  the seeded `notion` app had a dead panel reporting "That does not look like a
+  bot token".
+- Modified: `apps/web/src/lib/connector-credentials.ts`, `apps/web/src/components/SaasAppManager.tsx`
+
+### F3 [Major] — `required` honoured on one of two surfaces
+- Action: the manager checks every declared required field before sending, and
+  passes `required` to the rendered inputs.
+- Modified: `apps/web/src/components/SaasAppManager.tsx`
+
+### F4 [Major] — `catalog_full` told the operator to retry
+- Action: `saasapp.catalogFull` in both locales, naming the recovery that works.
+- Modified: `apps/web/src/lib/i18n/messages.ts`, `apps/web/src/components/SaasAppForm.tsx:47`
+
+### Testing F2, F3, F4, F6, F7 [Major/Minor] — five tests that could not fail
+- Action: `toStrictEqual`; per-connector credential-name assertion located
+  through the registry entry with a per-connector anti-vacuity floor; the
+  registry test CALLS each factory and checks the built connector, with a paired
+  deny case; `limit` asserted; an abort case added; a rate-limit classification
+  case and a backoff-duration assertion added.
+
+### F7 [Major] — `getByLabel` substring collision
+- Action: `{ exact: true }` on every label query in the new specs. The manager's
+  "New bot token" / "New service account JSON" labels contain the searched text.
+- Modified: `e2e/specs/apps.spec.ts`
+
+### F5 / F9, F6, SEC-4 [Minor] — records that had stopped being true
+- Action: orphan `saasapp.connector` removed from both locales; the
+  `'google-workspace'` allowlist entry removed with the literal it covered gone;
+  the CONTROL_FILE header rewritten from "the one literal" to what the control
+  now asserts.
+
+### F8 [Minor] — fixture casts disabled the drift check
+- Action: `as unknown as` replaced with annotations, restoring the compile error
+  an upstream `@slack/web-api` rename would produce.
+
+## Round mutations
+
+Fourteen run, thirteen red, one declared survivor.
+
+| mutation | result |
+|---|---|
+| the SDK retry layer comes back | SURVIVED (declared — the injected `usersList` bypasses `WebClient` entirely, so no unit test can observe its construction options. The only observer would be a test that constructs the real client and inspects it, which asserts about the SDK rather than about this connector. Recorded rather than papered over.) |
+| rate limits stop being classified as rate limits | reds |
+| the provider-mandated wait is ignored again | reds |
+| a stray `retryAfter` property classifies as a rate limit | reds |
+| the token is carried into the cause again | reds |
+| `narrowRaw` drops the classification flags | reds |
+| the page size moves | reds |
+| the abort guard is removed | reds |
+| a connector key loses its rejector | reds |
+| the worker reads a credential under a different name | reds |
+| a factory stops rejecting credentials it cannot use | reds |
+| the ceiling is read before the duplicate again | reds |
+| the ceiling refuses the registration that lands on it | reds |
+| the ceiling stops refusing at all | reds |
+
+## Termination
+
+Round 1 closed: every Critical and Major finding fixed, each fix mutation-proved
+except the one declared survivor above. Suite state: unit 562 (42 files),
+integration 232, E2E 60, lint / typecheck / build clean, CI-only
+typecheck-program gate clean, `assert-seed-preserved.sh` green against the live
+stack.
