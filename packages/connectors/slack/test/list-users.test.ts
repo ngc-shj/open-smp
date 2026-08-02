@@ -191,6 +191,29 @@ describe('SlackConnector.listUsers', () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it('scrubs the token on the auth branch too, not only on the retry branch', async () => {
+    // Review round 2: the scrub was asserted on ONE of the two throw sites, and
+    // a 401 whose SDK message echoes the Authorization header takes the other.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error(`401 for Authorization: Bearer ${BOT_TOKEN}`), {
+        data: { error: 'invalid_auth' },
+      });
+    });
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList });
+
+    let caught: unknown;
+    try {
+      await collect(connector.listUsers(makeContext()));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect((caught as Error).message).not.toContain(BOT_TOKEN);
+    expect(JSON.stringify((caught as Error).cause)).not.toContain(BOT_TOKEN);
+    expect((caught as Error).cause).toMatchObject({ platformError: 'invalid_auth' });
+  });
+
   it('gives up after max attempts on repeated 5xx and reports transient, retryable', async () => {
     const usersList = vi.fn(async () => {
       throw Object.assign(new Error('Internal Error'), { statusCode: 500 });
@@ -343,5 +366,104 @@ describe('SlackConnector.listUsers', () => {
     return expect(collect(connector.listUsers(makeContext()))).rejects.toMatchObject({
       kind: 'transient',
     });
+  });
+
+  it('waits on its own schedule when the provider named no delay', async () => {
+    // The other arm. The rate-limit test's mandated 30s dominates the max(), so
+    // `delayMs = mandatedMs` survived it — every 5xx retry would then sleep 0ms.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Internal Error'), { statusCode: 500 });
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+    await expect(collect(connector.listUsers(makeContext()))).rejects.toMatchObject({
+      kind: 'transient',
+    });
+
+    expect(sleep.mock.calls.length).toBe(4);
+    for (const call of sleep.mock.calls) {
+      expect(call[0]).toBeGreaterThanOrEqual(1000);
+    }
+  });
+
+  it('caps a provider-mandated wait', async () => {
+    // `Retry-After` has no upper bound on the wire, and the wait happens inside
+    // the sync transaction. A `retry-after: 2000000` held it for weeks; above
+    // 2^31 ms Node fires immediately and the same header becomes a hot loop.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('rate limited'), { retryAfter: 2_000_000 });
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+    await expect(collect(connector.listUsers(makeContext()))).rejects.toMatchObject({
+      kind: 'rate_limit',
+    });
+
+    for (const call of sleep.mock.calls) {
+      expect(call[0]).toBeLessThanOrEqual(60_000);
+    }
+  });
+
+  it.each([
+    ['an HTTP 429', { statusCode: 429 }],
+    ['the ratelimited platform code', { data: { error: 'ratelimited' } }],
+  ])('classifies %s as a rate limit', async (_label, shape) => {
+    // Two of the three arms had no case at all — deleting either passed 16/16.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('slow down'), shape);
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+
+    await expect(collect(connector.listUsers(makeContext()))).rejects.toMatchObject({
+      kind: 'rate_limit',
+    });
+  });
+
+  it('retries a transport failure, which nothing else would', async () => {
+    // Setting `retries: 0` on the SDK moved this class here. Before that clause
+    // a socket error or one of the new 30-second timeouts was retried by
+    // NOTHING — not the SDK, not withRetry, and not BullMQ, whose sync job runs
+    // `attempts: 1`. One slow response was a terminal sync failure.
+    let call = 0;
+    const usersList = vi.fn(async () => {
+      call += 1;
+      if (call === 1) {
+        throw Object.assign(new Error('A request error occurred'), {
+          code: 'slack_webapi_request_error',
+        });
+      }
+      return PAGES[2]!;
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+    const accounts = await collect(connector.listUsers(makeContext()));
+
+    expect(usersList).toHaveBeenCalledTimes(2);
+    expect(accounts.map((a) => a.externalId)).toEqual(['U0000000005']);
+  });
+
+  it('does not wait out a retry after the run is over', async () => {
+    // The wait is where a deadline used to be unobservable: the paging loop
+    // polls the signal only between pages, and defaultSleep never looked at it.
+    const controller = new AbortController();
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Internal Error'), { statusCode: 500 });
+    });
+    const sleep = vi.fn(async (_ms: number) => {
+      controller.abort();
+    });
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+    const ctx = { ...makeContext(), signal: controller.signal };
+
+    await expect(collect(connector.listUsers(ctx))).rejects.toMatchObject({ kind: 'fatal' });
+    // One request, one wait, then out — not the five attempts the schedule
+    // would otherwise have spent.
+    expect(usersList).toHaveBeenCalledTimes(1);
   });
 });

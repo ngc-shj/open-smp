@@ -16,6 +16,7 @@ type FieldError =
   | 'invalidJson'
   | 'missingFields'
   | 'invalidToken'
+  | 'invalidEmail'
   | 'invalidBody'
   | 'duplicate'
   | 'catalogFull'
@@ -42,6 +43,7 @@ const ERROR_KEYS: Record<FieldError & string, MessageKey> = {
   invalidJson: 'saasapp.invalidJson',
   missingFields: 'saasapp.missingFields',
   invalidToken: 'saasapp.invalidToken',
+  invalidEmail: 'saasapp.invalidEmail',
   invalidBody: 'saasapp.invalidBodyRegister',
   duplicate: 'saasapp.duplicate',
   // NOT registerFailed. That says "please try again", and retrying at the

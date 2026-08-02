@@ -37,8 +37,16 @@ class FakeConnector implements SaaSConnector {
   authKind: SaaSConnector['authKind'] = 'apikey';
   tokenCapability: SaaSConnector['tokenCapability'] = 'none';
 
-  async *listUsers(_ctx: ConnectorContext): AsyncIterable<RawAccount> {
+  async *listUsers(ctx: ConnectorContext): AsyncIterable<RawAccount> {
+    // The signal IS observed, like both real connectors observe it. A fake that
+    // ignored it made the deadline unobservable at this tier — reverting
+    // runSync to a never-aborting controller left this suite green, which is
+    // the state the deadline exists to prevent (RT1: the fake must not be more
+    // permissive than the thing it stands for).
     for (const account of FAKE_ACCOUNTS) {
+      if (ctx.signal.aborted) {
+        throw new Error('fake connector: run aborted');
+      }
       yield account;
     }
   }
@@ -220,5 +228,27 @@ describe('C5 runSync acceptance', () => {
     });
 
     expect(visibleUnderB).toBe(0);
+  });
+
+  it('stops when the run deadline has passed', async () => {
+    // The deadline signal had no observer at all: reverting it to a
+    // never-aborting controller left this suite green, which is exactly the
+    // state it was added to leave. It is injectable now, so an already-aborted
+    // signal reaches the connector's own guard.
+    const saasAppId = await seedTenantWithApp(tenantA);
+
+    await expect(
+      runSync(
+        {
+          pool: appPool,
+          connectorRegistry: fakeRegistry,
+          encryptionKeys,
+          logger: noopLogger,
+          discoveryStoreRaw: false,
+          signal: AbortSignal.abort(),
+        },
+        { tenantId: tenantA, saasAppId },
+      ),
+    ).rejects.toThrow();
   });
 });

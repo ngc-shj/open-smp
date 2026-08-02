@@ -2,6 +2,7 @@ import { WebClient } from '@slack/web-api';
 import type { UsersListResponse } from '@slack/web-api';
 import {
   ConnectorError,
+  diagnose,
   type ConnectorContext,
   type RawAccount,
   type SaaSConnector,
@@ -38,6 +39,43 @@ const MAX_ATTEMPTS = 5;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
+ * The longest a provider-mandated wait may hold this run.
+ *
+ * `Retry-After` comes off a response header with no upper bound, and honouring
+ * it verbatim inside `runSync`'s open transaction is how a `retry-after:
+ * 2000000` holds a pooled connection, an idle-in-transaction session and a live
+ * credential buffer for weeks. Review found this the round after the round that
+ * closed the same blast radius. Above 2^31 ms Node fires the timer immediately,
+ * which turns the same header into a hot loop — the clamp closes both.
+ */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/**
+ * Errors the SDK used to retry and the connector did not classify.
+ *
+ * Setting `retries: 0` moved that responsibility here, and the first version of
+ * that fix left `WebAPIRequestError` — every socket failure, and every one of
+ * the new 30-second timeouts — retried by NOTHING: not the SDK, not `withRetry`
+ * (no `statusCode`, no `data.error`), and not BullMQ, whose sync job is
+ * configured `attempts: 1`. A single slow response became a terminal sync
+ * failure. Found in review.
+ */
+const REQUEST_ERROR_CODES: ReadonlySet<string> = new Set([
+  'slack_webapi_request_error',
+  'slack_webapi_platform_error',
+]);
+
+function isTransportError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  const name = (error as { name?: unknown }).name;
+  if (typeof code === 'string' && REQUEST_ERROR_CODES.has(code) && statusOf(error) === undefined) {
+    return platformErrorCode(error) === undefined;
+  }
+  return name === 'AbortError' || name === 'TimeoutError';
+}
+
+/**
  * Derived from the response type rather than imported: `@slack/web-api` exports
  * `UsersListResponse` from its root and not the `Member` interface inside it, so
  * this is the spelling that makes an upstream rename a compile error.
@@ -58,6 +96,29 @@ export interface SlackConnectorConfig {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Waits, unless the run is already over.
+ *
+ * `defaultSleep` is a bare `setTimeout` and the paging loop polls
+ * `ctx.signal.aborted` only between pages, so a long wait was unreachable by
+ * the deadline the caller supplies. Checked before and after, which is the most
+ * a caller-supplied `sleep` can offer without changing the injection surface.
+ */
+async function waitUnlessAborted(
+  ms: number,
+  ctx: ConnectorContext,
+  sleep: (ms: number) => Promise<void>,
+  operation: string,
+): Promise<void> {
+  if (ctx.signal.aborted) {
+    throw new ConnectorError('fatal', false, `Slack ${operation} aborted`);
+  }
+  await sleep(ms);
+  if (ctx.signal.aborted) {
+    throw new ConnectorError('fatal', false, `Slack ${operation} aborted`);
+  }
 }
 
 /**
@@ -92,33 +153,6 @@ function isRateLimited(error: unknown): boolean {
   if (statusOf(error) === 429) return true;
   if (platformErrorCode(error) === 'ratelimited') return true;
   return retryAfterSeconds(error) !== undefined;
-}
-
-/**
- * What travels in `cause`.
- *
- * NOT the provider error. `sync.ts` writes `error.message` into an append-only
- * table, and `console.error(msg, { error })` — the spelling this repository's
- * `Logger` interface invites — inspects the whole cause chain, including a
- * `Bearer xoxb-…` an SDK put in its own message. The token is a directly
- * replayable credential, so what is kept is the diagnosis and not the text:
- * the classification fields, plus a message with the secret removed.
- *
- * Review found the previous form pinned the token INTO `cause` with a test, on
- * a file whose comment claimed the disclosure class was closed.
- */
-function diagnose(error: unknown, secret: string): Record<string, unknown> {
-  const scrub = (text: string): string => text.split(secret).join('[redacted]');
-  const source = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
-
-  return {
-    name: typeof source.name === 'string' ? scrub(source.name) : undefined,
-    message: typeof source.message === 'string' ? scrub(source.message) : undefined,
-    code: typeof source.code === 'string' ? source.code : undefined,
-    statusCode: statusOf(error),
-    platformError: platformErrorCode(error),
-    retryAfter: retryAfterSeconds(error),
-  };
 }
 
 // Non-retryable by construction: retrying a revoked token or a missing scope
@@ -234,7 +268,10 @@ async function withRetry<T>(
       }
 
       const rateLimited = isRateLimited(error);
-      const retryable = rateLimited || (typeof status === 'number' && status >= 500 && status < 600);
+      const retryable =
+        rateLimited ||
+        (typeof status === 'number' && status >= 500 && status < 600) ||
+        isTransportError(error);
       if (!retryable || attempt >= MAX_ATTEMPTS) {
         throw new ConnectorError(
           rateLimited ? 'rate_limit' : 'transient',
@@ -248,7 +285,9 @@ async function withRetry<T>(
       // 30-second wait with ~1 second of exponential backoff spends the next
       // attempt on the same rate limit — the `retryAfter` was being read to
       // CLASSIFY the error and then discarded.
-      const mandatedMs = (retryAfterSeconds(error) ?? 0) * 1000;
+      // Clamped. The provider's number wins over the connector's schedule, but
+      // not over the run's own bound — see MAX_RETRY_AFTER_MS.
+      const mandatedMs = Math.min((retryAfterSeconds(error) ?? 0) * 1000, MAX_RETRY_AFTER_MS);
       const backoffMs = 2 ** (attempt - 1) * 1000 + Math.random() * 1000;
       const delayMs = Math.max(mandatedMs, backoffMs);
 
@@ -258,7 +297,7 @@ async function withRetry<T>(
         ...(code === undefined ? {} : { code }),
         delayMs: Math.round(delayMs),
       });
-      await sleep(delayMs);
+      await waitUnlessAborted(delayMs, ctx, sleep, operation);
     }
   }
 }

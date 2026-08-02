@@ -79,6 +79,45 @@ export interface SaaSConnector {
 
 export type ConnectorErrorKind = 'auth' | 'rate_limit' | 'transient' | 'fatal';
 
+/**
+ * What may travel in a `ConnectorError`'s `cause`.
+ *
+ * NOT the provider error. `apps/worker/src/sync.ts` writes `error.message` into
+ * `discovery_events`, whose UPDATE and DELETE are REVOKEd, and
+ * `console.error(msg, { error })` — the spelling the `Logger` interface's
+ * `meta?: Record<string, unknown>` invites — inspects the whole cause chain. An
+ * SDK error routinely carries the request it made, including its
+ * `Authorization` header.
+ *
+ * Lives HERE rather than in one connector because the class has as many members
+ * as there are connectors: review found the Slack half fixed and the Google half
+ * still passing the raw error, with the comment that had recorded the gap
+ * deleted by the same change.
+ */
+export function diagnose(error: unknown, secret: string): Record<string, unknown> {
+  // An empty secret would make `split('')` explode the message into characters.
+  // The guard is here and not at the call site because a connector whose
+  // credential is optional is a reachable shape.
+  const scrub = (text: string): string =>
+    secret === '' ? text : text.split(secret).join('[redacted]');
+
+  const source = (typeof error === 'object' && error !== null ? error : {}) as Record<
+    string,
+    unknown
+  >;
+  const status = typeof source.statusCode === 'number' ? source.statusCode : undefined;
+  const data = source.data as { error?: unknown } | undefined;
+
+  return {
+    name: typeof source.name === 'string' ? scrub(source.name) : undefined,
+    message: typeof source.message === 'string' ? scrub(source.message) : undefined,
+    code: typeof source.code === 'string' ? source.code : undefined,
+    statusCode: status,
+    platformError: typeof data?.error === 'string' ? data.error : undefined,
+    retryAfter: typeof source.retryAfter === 'number' ? source.retryAfter : undefined,
+  };
+}
+
 export class ConnectorError extends Error {
   kind: ConnectorErrorKind;
   retryable: boolean;

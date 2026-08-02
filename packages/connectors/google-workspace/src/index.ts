@@ -1,6 +1,7 @@
 import { google, admin_directory_v1 } from 'googleapis';
 import {
   ConnectorError,
+  diagnose,
   type ConnectorContext,
   type RawAccount,
   type RawToken,
@@ -117,6 +118,7 @@ async function withRetry<T>(
   ctx: ConnectorContext,
   sleep: (ms: number) => Promise<void>,
   operation: string,
+  this_secret: string,
 ): Promise<T> {
   let attempt = 0;
 
@@ -128,13 +130,22 @@ async function withRetry<T>(
       const status = statusOf(error);
 
       if (status === 401 || status === 403) {
-        throw new ConnectorError('auth', false, 'Google Workspace authentication failed', { cause: error });
+        // The other member of the class SC2 fixed on the Slack side and left
+        // here — with the comment that had recorded the gap deleted by the same
+        // change. gaxios redacts `Authorization` by default, but that is a
+        // third-party default this repository neither pins nor asserts, and the
+        // config URL it does NOT redact carries an employee address.
+        throw new ConnectorError('auth', false, 'Google Workspace authentication failed', {
+          cause: diagnose(error, this_secret),
+        });
       }
 
       const isRetryableStatus = status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
       if (!isRetryableStatus || attempt >= MAX_ATTEMPTS) {
         const kind = status === 429 ? 'rate_limit' : 'transient';
-        throw new ConnectorError(kind, true, `Google Workspace ${operation} failed after retries`, { cause: error });
+        throw new ConnectorError(kind, true, `Google Workspace ${operation} failed after retries`, {
+          cause: diagnose(error, this_secret),
+        });
       }
 
       const backoffMs = 2 ** (attempt - 1) * 1000;
@@ -244,7 +255,7 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
     // One request, no loop: `Schema$Tokens` carries `{kind, etag, items}` and no
     // `nextPageToken`, and `Params$Resource$Tokens$List` accepts `userKey`
     // alone. Measured from the installed googleapis types, not assumed.
-    const response = await withRetry(() => tokensList({ userKey }), ctx, sleep, 'tokens.list');
+    const response = await withRetry(() => tokensList({ userKey }), ctx, sleep, 'tokens.list', this.cfg.serviceAccountJson);
 
     return (response.data.items ?? []).map((token) => toRawToken(token, userKey));
   }
@@ -265,7 +276,7 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
         ...(pageToken ? { pageToken } : {}),
       };
 
-      const response = await withRetry(() => usersList(params), ctx, sleep, 'users.list');
+      const response = await withRetry(() => usersList(params), ctx, sleep, 'users.list', this.cfg.serviceAccountJson);
       const users = response.data.users ?? [];
 
       for (const user of users) {

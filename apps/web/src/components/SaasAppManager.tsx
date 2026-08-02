@@ -11,6 +11,7 @@ type ManagerError =
   | 'invalidJson'
   | 'missingFields'
   | 'invalidToken'
+  | 'invalidEmail'
   | 'invalidBody'
   | 'hasAccounts'
   | 'notFound'
@@ -27,6 +28,7 @@ const ERROR_KEYS: Record<ManagerError & string, MessageKey> = {
   invalidJson: 'saasapp.invalidJson',
   missingFields: 'saasapp.missingFields',
   invalidToken: 'saasapp.invalidToken',
+  invalidEmail: 'saasapp.invalidEmail',
   invalidBody: 'saasapp.invalidBodyUpdate',
   hasAccounts: 'saasapp.hasAccounts',
   notFound: 'saasapp.notFound',

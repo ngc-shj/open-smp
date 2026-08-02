@@ -32,6 +32,15 @@ export interface TokenAuditDeps {
  * provider, which offers no domain-wide token endpoint — so an unbounded run on
  * a large tenant is thousands of sequential calls against a rate-limited API.
  */
+export /**
+ * How long one audit may run.
+ *
+ * Longer than sync's, because the fan-out is per account and forced by the
+ * provider (`tokens.list` takes a userKey and nothing else) — but bounded,
+ * where it used to be unbounded in wall clock.
+ */
+const TOKEN_AUDIT_DEADLINE_MS = 20 * 60 * 1000;
+
 export const TOKEN_AUDIT_MAX_ACCOUNTS = 1_000;
 
 /**
@@ -171,11 +180,19 @@ export async function runTokenAudit(
         [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
       );
 
-      return {
-        credentials: JSON.parse(Buffer.from(decrypted).toString('utf8')) as Record<string, string>,
-        appKey: app.key,
-        externalIds: rows.map((row) => row.external_id),
-      };
+      try {
+        return {
+          credentials: JSON.parse(Buffer.from(decrypted).toString('utf8')) as Record<string, string>,
+          appKey: app.key,
+          externalIds: rows.map((row) => row.external_id),
+        };
+      } finally {
+        // The sibling in sync.ts has had this since S11; this path held the
+        // Google service-account private key for the life of the job with no
+        // zeroization at all. Review found it as the remaining member of the
+        // credential-buffer class.
+        decrypted.fill(0);
+      }
     },
   );
 
@@ -210,7 +227,12 @@ export async function runTokenAudit(
   const ctx: ConnectorContext = {
     credentials,
     logger: deps.logger,
-    signal: new AbortController().signal,
+    // A signal that can fire. It was `new AbortController().signal` — the exact
+    // construct the sync path replaced one round earlier, leaving the
+    // connectors' own abort guards inert on the path that makes up to
+    // TOKEN_AUDIT_MAX_ACCOUNTS sequential requests. R3: the class had two
+    // members and only one was fixed.
+    signal: AbortSignal.timeout(TOKEN_AUDIT_DEADLINE_MS),
   };
 
   const grants: RawToken[] = [];

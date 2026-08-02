@@ -71,26 +71,20 @@ export const CREDENTIAL_FIELDS: Record<ConnectorAppKey, readonly CredentialField
  */
 export const DEFAULT_CONNECTOR_APP_KEY: ConnectorAppKey = CONNECTOR_APP_KEYS[0];
 
-export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToken';
+export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToken' | 'invalidEmail';
 
-/**
- * Rejects credentials the browser can already tell are wrong.
- *
- * This is not defence — the API validates and the worker validates again. It is
- * what keeps a wrong paste from being SENT: three E2E specs assert zero requests
- * to `/api/saas-apps` on a malformed input, because credential material that
- * never leaves the page cannot be logged by anything in between.
- *
- * Every branch classifies and returns a symbol. Caught values are never read
- * for their text — `JSON.parse` echoes input snippets in its message, and a
- * pasted private key must not reach a React error overlay or a support
- * screenshot. See the header of SaasAppForm.tsx.
- */
 const REJECTORS: Record<
   ConnectorAppKey,
   (values: Readonly<Record<string, string>>) => CredentialRejection | null
 > = {
-  'google-workspace': (values) => rejectServiceAccountJson(values.serviceAccountJson ?? ''),
+  'google-workspace': (values) =>
+    rejectServiceAccountJson(values.serviceAccountJson ?? '') ??
+    // The manager's inputs sit outside a `<form>` behind a `type="button"`, so
+    // their `type="email"` and `required` attributes never trigger constraint
+    // validation — review found the register form's browser-side check had no
+    // counterpart there, and a malformed address reached storage and failed as
+    // an audit row. Checked here, where both surfaces reach it.
+    rejectAdminEmail(values.impersonateAdminEmail ?? ''),
   slack: (values) => rejectBotToken(values.botToken ?? ''),
 };
 
@@ -162,4 +156,16 @@ function rejectBotToken(raw: string): CredentialRejection | null {
     return 'invalidToken';
   }
   return null;
+}
+
+/**
+ * The loosest check that catches a paste error without adjudicating an address.
+ *
+ * Deliberately not an RFC 5322 attempt: enumerating what an address may look
+ * like is the surface-form problem `rejectBotToken` refuses for tokens, and a
+ * rejected VALID address is the worse direction. One `@`, something either
+ * side, and no whitespace.
+ */
+function rejectAdminEmail(raw: string): CredentialRejection | null {
+  return /^[^\s@]+@[^\s@]+$/.test(raw.trim()) ? null : 'invalidEmail';
 }

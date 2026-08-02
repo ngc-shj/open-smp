@@ -111,10 +111,29 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     expect(rejectCredentials('google-workspace', { serviceAccountJson })).toBe(expected);
   });
 
+  it.each([
+    ['an address with no @', 'nonsense'],
+    ['an address with whitespace', 'a b@x.example'],
+    ['an empty address', ''],
+  ])('rejects %s for the admin email', (_label, impersonateAdminEmail) => {
+    // The manager's inputs sit outside a <form> behind a type="button", so
+    // their `type="email"` never triggers constraint validation — the register
+    // form's browser-side check had no counterpart there and a malformed
+    // address reached storage, failing as an audit row.
+    expect(rejectCredentials('google-workspace', { serviceAccountJson: VALID_SA, impersonateAdminEmail })).toBe(
+      'invalidEmail',
+    );
+  });
+
   it('accepts a well-formed service account', () => {
     // RT10's allow side. A classifier that rejected everything satisfies every
     // assertion above and makes registration impossible.
-    expect(rejectCredentials('google-workspace', { serviceAccountJson: VALID_SA })).toBeNull();
+    expect(
+      rejectCredentials('google-workspace', {
+        serviceAccountJson: VALID_SA,
+        impersonateAdminEmail: 'admin@corp.example',
+      }),
+    ).toBeNull();
   });
 
   it.each([
@@ -134,6 +153,40 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     // token an operator holds is the worse direction. The API and the worker
     // are where a wrong token is found out.
     expect(rejectCredentials('slack', { botToken: 'xoxp-123-abc' })).toBeNull();
+  });
+
+  it('returns null for an application no connector handles', () => {
+    // `saas_apps.key` is free text — POST /contract-import writes it from a CSV
+    // cell and the seed ships `notion`. Before the dispatch became a Record,
+    // every such key fell through to the bot-token check and the operator was
+    // told their credentials did not look like a bot token, on a panel with no
+    // inputs. Restoring that fallthrough passed all fifteen tests.
+    expect(rejectCredentials('notion', {})).toBeNull();
+    expect(rejectCredentials('notion', { serviceAccountJson: 'anything' })).toBeNull();
+  });
+
+  it('declares no field its own factory does not read', () => {
+    // The OTHER direction. The reads ⊆ declared check above passes when a
+    // connector declares a field nothing reads — and since the replace flow now
+    // blocks Save on any blank declared REQUIRED field, such a field becomes an
+    // input that gates the flow and can never be satisfied by anything the
+    // worker looks at.
+    return (async () => {
+      const source = await readFile(WORKER_CONNECTORS, 'utf8');
+      for (const key of CONNECTOR_APP_KEYS) {
+        const read = new Set(
+          [...source.matchAll(/credentials\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!),
+        );
+        const declaredRequired = CREDENTIAL_FIELDS[key]
+          .filter((f) => f.required)
+          .map((f) => f.name);
+
+        expect(
+          declaredRequired.filter((name) => !read.has(name)),
+          `${key} requires a field no factory reads`,
+        ).toEqual([]);
+      }
+    })();
   });
 
   it('does not accept one connector by supplying the other one\'s field', () => {

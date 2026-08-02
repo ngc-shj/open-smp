@@ -636,6 +636,12 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // factory that reads them. A disagreement is a registration the operator
       // completes and a sync that fails in an audit row.
       'apps/web/test/connector-credentials.test.ts',
+      // Review round 2. i18n.test.ts became a control when it gained the
+      // orphan-message-key detector: it now asserts a repository-wide relation
+      // (every dictionary key is named by some source file) rather than the
+      // behaviour of one module. The addition-guard below caught it — family
+      // (a) working, on a file that had been an ordinary unit test.
+      'apps/web/test/i18n.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

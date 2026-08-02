@@ -58,7 +58,21 @@ describe('SC2/C2: the connector registry and the accepted key set agree', () => 
     // The paired deny side. A factory that ignored its input would satisfy the
     // allow case above while accepting an empty credential set and failing at
     // the provider instead — which reaches the operator as an audit row.
-    expect(() => createConnectorRegistry().get(key)!({})).toThrow();
+    let caught: unknown;
+    try {
+      createConnectorRegistry().get(key)!({ secretValue: 'xoxb-should-not-appear' });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught, `${key} accepted credentials it cannot use`).toBeInstanceOf(Error);
+    // A FIXED string. This throw happens inside runSync's try, so its message
+    // becomes a discovery_events payload in a table whose UPDATE and DELETE are
+    // REVOKEd — a factory that interpolated what it was given would write it
+    // there unredactably. A bare `.toThrow()` admitted exactly that, and an
+    // incidental TypeError as well.
+    expect((caught as Error).message).not.toContain('xoxb-should-not-appear');
+    expect((caught as Error).message).toMatch(/credentials require/);
   });
 
 });

@@ -1759,9 +1759,12 @@ describe('SC2/C2 acceptance: the application ceiling on POST /saas-apps', () => 
 
     expect(res.statusCode, res.payload).toBe(409);
     expect(res.json()).toEqual({ error: 'catalog_full' });
-    // The refusal happens mid-transaction, after the lock and before the
-    // insert. Asserting only the status would pass against a route that
-    // inserted the row and then reported failure.
+    // What this pins, stated honestly after review measured it: NOT the
+    // ordering inside the transaction. `withTenant` ROLLBACKs on any throw, so
+    // inserting the row immediately before `throw new CatalogFullError()`
+    // leaves this green — measured. What it does pin is that the refusal stays
+    // INSIDE the transaction: a ceiling checked after a committed insert, or in
+    // a second connection, would leave the row behind.
     expect(await countApps(tenantId)).toBe(before);
   });
 

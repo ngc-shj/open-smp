@@ -23,6 +23,16 @@ export interface SyncDeps {
   encryptionKeys: Map<number, Buffer>;
   logger: Logger;
   discoveryStoreRaw: boolean;
+  /**
+   * The run's deadline, injectable so it has an observer.
+   *
+   * Review found the previous form — a bare `AbortSignal.timeout(...)` inline —
+   * had none: reverting it to the never-aborting `new AbortController().signal`
+   * left the integration suite green, which is the state the fix existed to
+   * leave. Optional, so production takes the default and only a test supplies
+   * its own.
+   */
+  signal?: AbortSignal;
 }
 
 interface SaasAppRow {
@@ -132,7 +142,7 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
       const ctx: ConnectorContext = {
         credentials,
         logger: deps.logger,
-        signal: AbortSignal.timeout(SYNC_DEADLINE_MS),
+        signal: deps.signal ?? AbortSignal.timeout(SYNC_DEADLINE_MS),
       };
 
       let count = 0;
