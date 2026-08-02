@@ -81,6 +81,23 @@ export const CREDENTIAL_FIELDS: Record<ConnectorAppKey, readonly CredentialField
  */
 export const DEFAULT_CONNECTOR_APP_KEY: ConnectorAppKey = CONNECTOR_APP_KEYS[0];
 
+/**
+ * The fields a connector asks for, for a key that may not be one.
+ *
+ * `Object.hasOwn`, and HERE rather than at each consumer. `SaasAppManager`
+ * indexed `CREDENTIAL_FIELDS` directly with `?? []`, which cannot fire for a
+ * prototype member: `CREDENTIAL_FIELDS['constructor']` is `Object`, a function,
+ * so `Object.length === 1` made the replace-credentials control render and
+ * `fields.map` threw during the render — taking down the page an operator opened
+ * to delete the offending row. `app.key` is arbitrary tenant text: POST
+ * /contract-import writes it from a CSV cell. Review round 6 guarded the
+ * `REJECTORS` lookup below and left this sibling, which is why both now go
+ * through a function rather than through two spellings of the same index.
+ */
+export function credentialFieldsFor(key: string): readonly CredentialField[] {
+  return Object.hasOwn(CREDENTIAL_FIELDS, key) ? CREDENTIAL_FIELDS[key as ConnectorAppKey] : [];
+}
+
 export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToken' | 'invalidEmail';
 
 const REJECTORS: Record<

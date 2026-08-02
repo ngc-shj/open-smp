@@ -6,6 +6,7 @@ import { MESSAGES } from '../src/lib/i18n/messages';
 import {
   CREDENTIAL_FIELDS,
   DEFAULT_CONNECTOR_APP_KEY,
+  credentialFieldsFor,
   rejectCredentials,
 } from '../src/lib/connector-credentials';
 
@@ -135,6 +136,23 @@ describe('every connector declares the credentials its factory reads', () => {
       expect(declared.length, `${key} declares no required field`).toBeGreaterThan(0);
       expect([...(api.get(key) ?? [])].sort(), `${key}: form and API disagree`).toEqual(declared);
     }
+  });
+
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'])(
+    'offers no credential fields for an app named %s',
+    (key) => {
+      // The sibling lookup, which had no observer because it lived inline in a
+      // component. `CREDENTIAL_FIELDS['constructor']` is `Object` — a function,
+      // so a `?? []` fallback never fires and `Object.length === 1` made the
+      // replace-credentials panel render and then throw during the render.
+      expect(credentialFieldsFor(key)).toEqual([]);
+    },
+  );
+
+  it.each([...CONNECTOR_APP_KEYS])('offers %s the fields it declares', (key) => {
+    // The allow side: a guard that returned [] for everything would satisfy the
+    // cell above and hide every connector's form.
+    expect(credentialFieldsFor(key)).toBe(CREDENTIAL_FIELDS[key]);
   });
 
   it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'])(

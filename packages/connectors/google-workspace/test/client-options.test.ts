@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConnectorError } from '@open-smp/connectors-core';
 
 // SC2, review round 6. The Slack sibling of this file was written in round 2,
 // and this connector was still on the SDK's defaults four rounds later — the
@@ -108,6 +109,47 @@ describe('the Google clients this connector builds', () => {
     });
     expect(admin).toHaveBeenCalledWith(expect.objectContaining({ version: 'directory_v1' }));
   });
+
+  it.each([
+    [
+      'users.list',
+      async (c: InstanceType<typeof GoogleWorkspaceConnector>) => {
+        for await (const _ of c.listUsers(makeContext(new AbortController().signal))) {
+          // drained
+        }
+      },
+    ],
+    [
+      'tokens.list',
+      async (c: InstanceType<typeof GoogleWorkspaceConnector>) => {
+        await c.listTokens(makeContext(new AbortController().signal), 'user-1');
+      },
+    ],
+  ])(
+    'reports an unparseable service account as a fixed string on the %s path',
+    async (_l, drive) => {
+      // These two parses run OUTSIDE `withRetry`, so a `SyntaxError` never reaches
+      // `diagnose` and is never scrubbed — and `runSync` writes `error.message`
+      // verbatim into `discovery_events`, whose UPDATE and DELETE are REVOKEd.
+      // V8's message embeds the first ten characters of its input, so a pasted
+      // document's prefix would be written to an unredactable table.
+      const connector = new GoogleWorkspaceConnector({
+        serviceAccountJson: 'MIIEvQIBADANBgkqhkiG9w0-not-json',
+        impersonateAdminEmail: 'admin@corp.example',
+      });
+
+      const caught = await drive(connector).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      expect(caught).toBeInstanceOf(ConnectorError);
+      expect((caught as Error).message).toBe(
+        'google-workspace serviceAccountJson is not valid JSON',
+      );
+      expect((caught as Error).message).not.toContain('MIIEvQIBAD');
+    },
+  );
 
   it('bounds the token exchange, which the per-request options cannot reach', async () => {
     // The JWT client issues its own request to obtain an access token, from its

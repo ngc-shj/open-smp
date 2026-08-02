@@ -2386,10 +2386,22 @@ describe('C22 acceptance: SaaS app management', () => {
   });
 
   it.each([
-    ['too many fields', Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`f${i}`, 'x']))],
-    ['an oversized value', { botToken: 'x'.repeat(16_385) }],
-    ['an oversized key', { ['k'.repeat(65)]: 'x' }],
-    ['an empty key', { '': 'x' }],
+    // Every payload carries a valid `botToken`, so the ONLY thing that can
+    // refuse it is the bound under test. Without that the required-field check
+    // returned 400 first and each of these passed for a reason that had nothing
+    // to do with the ceiling — measured by mutation, not assumed.
+    [
+      'too many fields',
+      {
+        botToken: 'xoxb-real-enough',
+        ...Object.fromEntries(
+          Array.from({ length: MAX_CREDENTIAL_FIELDS }, (_, i) => [`f${i}`, 'x']),
+        ),
+      },
+    ],
+    ['an oversized value', { botToken: 'x'.repeat(MAX_CREDENTIAL_VALUE_LENGTH + 1) }],
+    ['an oversized key', { botToken: 'xoxb-real-enough', ['k'.repeat(65)]: 'x' }],
+    ['an empty key', { botToken: 'xoxb-real-enough', '': 'x' }],
   ])('refuses a credential record with %s', async (label, credentials) => {
     // The bounds had no observer on either side. Whatever this accepts is
     // stringified, encrypted, stored, and later decrypted into worker memory by
@@ -2405,6 +2417,9 @@ describe('C22 acceptance: SaaS app management', () => {
     });
 
     expect(res.statusCode).toBe(400);
+    // `invalid_body`, not `invalid_credentials`: the bound refused it, not the
+    // required-field check that used to be answering for it.
+    expect(res.json()).toMatchObject({ error: 'invalid_body' });
   });
 
   it('admits a credential record that lands exactly ON every bound', async () => {

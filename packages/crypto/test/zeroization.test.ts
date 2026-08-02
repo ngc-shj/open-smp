@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   decryptCredentials,
+  encryptCredentialRecord,
   encryptCredentials,
   withDecryptedCredentials,
   type CredentialContext,
@@ -164,6 +165,43 @@ describe('withDecryptedCredentials owns the caller half of the class', () => {
 
     expect(lent).toBeDefined();
     expectAllZero([lent as Uint8Array], 'the lent plaintext on the throwing path');
+  });
+});
+
+describe('encryptCredentialRecord owns the encrypt half', () => {
+  it('zeroes the plaintext it builds', () => {
+    // The encrypt side was closed one round after the decrypt side, and in
+    // between it lived as two `plaintext.fill(0)` call sites in the API routes
+    // with nothing asserting either. The buffer is allocated inside the helper,
+    // so the only way to see it is to capture what `TextEncoder` handed back.
+    const captured: Uint8Array[] = [];
+    // A fresh encoder rather than `this`: TextEncoder is stateless and always
+    // UTF-8, and the receiver is not typed the same way in every tsconfig this
+    // package builds under.
+    const realEncode = TextEncoder.prototype.encode;
+    const spy = vi.spyOn(TextEncoder.prototype, 'encode').mockImplementation((input?: string) => {
+      const out = realEncode.call(new TextEncoder(), input);
+      captured.push(out);
+      return out;
+    });
+
+    try {
+      const keys = makeKeys();
+      const { blob } = encryptCredentialRecord({ botToken: SECRET }, ctx, keys);
+
+      // Non-vacuity: the encode really happened, it really carried the secret,
+      // and the ciphertext really was produced.
+      expect(captured.length, 'nothing was encoded').toBeGreaterThan(0);
+      expect(
+        captured.some((buffer) => buffer.length >= SECRET.length),
+        'the captured buffer never held the credential',
+      ).toBe(true);
+      expect(blob.length).toBeGreaterThan(0);
+
+      expectAllZero(captured, 'the encrypt-side plaintext');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
