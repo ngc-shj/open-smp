@@ -29,7 +29,11 @@ async function collect(iterable: AsyncIterable<RawAccount>): Promise<RawAccount[
   return results;
 }
 
-const PAGES = [page1, page2, page3] as unknown as UsersListResponseData[];
+// Annotated, not double-cast. `as unknown as` turned off the one drift check
+// available at this boundary: SlackMember is derived FROM UsersListResponse so
+// an upstream rename is a compile error, and the cast undid that for the
+// fixtures. Found in review.
+const PAGES: UsersListResponseData[] = [page1, page2, page3];
 const ALL_MEMBERS = PAGES.flatMap((page) => page.members ?? []);
 
 describe('SlackConnector.listUsers', () => {
@@ -53,10 +57,17 @@ describe('SlackConnector.listUsers', () => {
     // The cursor is read from the PREVIOUS page rather than invented, and the
     // last page's empty string ends the loop rather than requesting page 4.
     expect(seen.map((p) => p.cursor)).toEqual([undefined, 'cursor-page2', 'cursor-page3']);
+    // The page size too. Asserting only the cursor left PAGE_SIZE free to move:
+    // 200 → 1 passed 13/13 and multiplies calls per sync by 200.
+    expect(new Set(seen.map((p) => p.limit))).toEqual(new Set([200]));
 
     // Full-field equality on one account, so a mapping that dropped a field
     // reds here rather than in whichever assertion happened to name it.
-    expect(accounts.find((a) => a.externalId === 'U0000000001')).toEqual<RawAccount>({
+    // toStrictEqual, not toEqual. `toEqual` treats a key valued `undefined` as
+    // absent, so deleting is_app_user / is_restricted / is_ultra_restricted from
+    // narrowRaw passed 13/13 — precisely the fields whose retention the source
+    // comment justifies. Measured in review as mutation M11.
+    expect(accounts.find((a) => a.externalId === 'U0000000001')).toStrictEqual<RawAccount>({
       externalId: 'U0000000001',
       email: 'taro.yamada@corp.example',
       displayName: 'Taro Yamada',
@@ -95,7 +106,7 @@ describe('SlackConnector.listUsers', () => {
     // `raw` is persisted into an append-only table, so what it holds is a
     // retention decision. The fixture deliberately carries a phone number and a
     // job title that nothing maps.
-    const taro = page1.members[0] as unknown as SlackMember;
+    const taro: SlackMember = page1.members[0]!;
     expect(taro.profile?.phone, 'the fixture no longer carries an unmapped field').toBeDefined();
 
     const raw = toRawAccount(taro).raw as { profile: Record<string, unknown> };
@@ -116,7 +127,7 @@ describe('SlackConnector.listUsers', () => {
     ).toEqual([]);
 
     for (const member of ALL_MEMBERS) {
-      expect(toRawAccount(member as SlackMember).lastActivityAt).toBeNull();
+      expect(toRawAccount(member).lastActivityAt).toBeNull();
     }
   });
 
@@ -125,7 +136,7 @@ describe('SlackConnector.listUsers', () => {
     // which is trivially true and proves nothing. `'suspended'` is unreachable
     // from Slack because the provider has one boolean where Google has two
     // fields, and that is a property of the mapping rather than of the fixture.
-    const base = page1.members[0] as unknown as SlackMember;
+    const base: SlackMember = page1.members[0]!;
     const image = new Set(
       [true, false].map((deleted) => toRawAccount({ ...base, deleted }).accountStatus),
     );
@@ -147,7 +158,7 @@ describe('SlackConnector.listUsers', () => {
       }
       return PAGES[2]!;
     });
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_ms: number) => {});
 
     const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
     const accounts = await collect(connector.listUsers(makeContext()));
@@ -166,7 +177,7 @@ describe('SlackConnector.listUsers', () => {
     const usersList = vi.fn(async () => {
       throw Object.assign(new Error('nope'), shape);
     });
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_ms: number) => {});
 
     const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
 
@@ -184,7 +195,7 @@ describe('SlackConnector.listUsers', () => {
     const usersList = vi.fn(async () => {
       throw Object.assign(new Error('Internal Error'), { statusCode: 500 });
     });
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_ms: number) => {});
 
     const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
 
@@ -212,7 +223,7 @@ describe('SlackConnector.listUsers', () => {
         statusCode: 500,
       });
     });
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_ms: number) => {});
 
     const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
 
@@ -224,10 +235,16 @@ describe('SlackConnector.listUsers', () => {
     }
 
     expect((caught as Error).message).not.toContain(BOT_TOKEN);
-    // The provider error is not discarded — it travels in `cause`, which sync
-    // does not read. Without this the assertion above is satisfied by throwing
-    // away the diagnosis.
-    expect(((caught as Error).cause as Error).message).toContain(BOT_TOKEN);
+    // And NOT in `cause` either. The previous form pinned the token there on
+    // the reasoning that sync reads only `.message` — which made disclosure a
+    // convention held at every consumer, on a file whose own comment says
+    // convention is insufficient. `console.error(msg, { error })` inspects the
+    // whole chain. Review found it; the cause is now a scrubbed diagnosis.
+    expect(JSON.stringify((caught as Error).cause)).not.toContain(BOT_TOKEN);
+    // The diagnosis survives the scrubbing, or the assertion above would be
+    // satisfied by discarding it.
+    expect((caught as Error).cause).toMatchObject({ statusCode: 500 });
+    expect(JSON.stringify((caught as Error).cause)).toContain('[redacted]');
   });
 
   it('builds a client per instance, never one shared across tenants', () => {
@@ -263,5 +280,68 @@ describe('SlackConnector.listUsers', () => {
     // Measured in review: without this line that mutation survived the whole
     // tree, including the plan's own mutation table claiming it redded.
     expect(connector.tokenCapability).toBe('none');
+  });
+
+  it('stops paging when the run is cancelled', async () => {
+    // The abort guard had no case at all, neither side: makeContext() always
+    // supplied a live signal, so deleting the check passed 13/13 and a
+    // cancelled sync would have kept paging. sync.ts now supplies a real
+    // deadline signal, which is what makes this guard reachable in production.
+    const controller = new AbortController();
+    const usersList = vi.fn(async () => {
+      controller.abort();
+      return PAGES[0]!;
+    });
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList });
+    const ctx = { ...makeContext(), signal: controller.signal };
+
+    await expect(collect(connector.listUsers(ctx))).rejects.toMatchObject({ kind: 'fatal' });
+    // One page was read and yielded before the abort was observed; the SECOND
+    // request is the one that must not happen.
+    expect(usersList).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies a rate limit as a rate limit, and waits as long as the provider asked', async () => {
+    // Both halves were unasserted. Forcing `kind` to 'transient' passed 13/13,
+    // and `sleep(0)` passed 13/13 because sleep was checked by call count only —
+    // so a provider-mandated 30s wait was served with ~1s and the next attempt
+    // met the same limit.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('A rate limit was exceeded'), {
+        code: 'slack_webapi_rate_limited_error',
+        retryAfter: 30,
+      });
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+
+    await expect(collect(connector.listUsers(makeContext()))).rejects.toMatchObject({
+      kind: 'rate_limit',
+      retryable: true,
+    });
+    expect(usersList).toHaveBeenCalledTimes(5);
+    // Every wait is at least the mandated 30s, and none is the ~1s the
+    // exponential schedule alone would have produced on attempt 1.
+    expect(sleep.mock.calls.length).toBeGreaterThan(0);
+    for (const call of sleep.mock.calls) {
+      expect(call[0]).toBeGreaterThanOrEqual(30_000);
+    }
+  });
+
+  it('does not classify a stray retryAfter property as a rate limit', () => {
+    // `'retryAfter' in error` fired on any object carrying the property,
+    // whatever its value. RT10's allow side for the typed replacement.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('nope'), { retryAfter: 'soon', statusCode: 500 });
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+
+    return expect(collect(connector.listUsers(makeContext()))).rejects.toMatchObject({
+      kind: 'transient',
+    });
   });
 });

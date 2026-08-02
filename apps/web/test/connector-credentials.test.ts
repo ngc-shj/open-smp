@@ -42,20 +42,41 @@ describe('every connector declares the credentials its factory reads', () => {
     expect(Object.keys(CREDENTIAL_FIELDS).sort()).toEqual([...CONNECTOR_APP_KEYS].sort());
   });
 
-  it('names every required field the worker factory demands', async () => {
-    // The worker reads `credentials.<name>` and throws when it is absent. Every
-    // such read must correspond to a field the form actually renders — the
-    // direction that catches a rename on the worker side.
+  it.each([...CONNECTOR_APP_KEYS])('declares every credential %s\'s factory reads', async (key) => {
+    // PER CONNECTOR, both directions. The previous form flattened every
+    // connector's field names into one set and applied a single global
+    // anti-vacuity floor — so moving `botToken` into the Google array and
+    // leaving `slack: []` passed all fourteen tests while the Slack form
+    // rendered no inputs and posted `credentials: {}`, and a routine
+    // `const { botToken } = credentials` refactor in the worker left the Slack
+    // side of the detector matching nothing with the floor still satisfied by
+    // Google's three. Both measured in review.
     const source = await readFile(WORKER_CONNECTORS, 'utf8');
-    const read = [...source.matchAll(/credentials\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!);
 
-    expect(read.length, 'no credential reads found — the detector stopped matching').toBeGreaterThan(0);
-
-    const declared = new Set(
-      Object.values(CREDENTIAL_FIELDS).flatMap((fields) => fields.map((f) => f.name)),
+    // The factory body for this key, located through the REGISTRY ENTRY rather
+    // than by a name convention: the map is what binds a key to a builder.
+    const builderName = /\[\s*'([^']+)'\s*,\s*(\w+)\s*\]/g;
+    const builders = new Map(
+      [...source.matchAll(builderName)].map((m) => [m[1]!, m[2]!] as const),
     );
+    const builder = builders.get(key);
+    expect(builder, `no registry entry for ${key}`).toBeDefined();
 
-    expect([...new Set(read)].filter((name) => !declared.has(name)), 'read by the worker, offered by no form').toEqual([]);
+    const bodyStart = source.indexOf(`function ${builder}(`);
+    expect(bodyStart, `no body for ${builder}`).toBeGreaterThan(-1);
+    const body = source.slice(bodyStart, source.indexOf('\n}', bodyStart));
+
+    const read = [...body.matchAll(/credentials\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!);
+    expect(
+      read.length,
+      `no credential reads found in ${builder} — the detector stopped matching`,
+    ).toBeGreaterThan(0);
+
+    const declared = new Set(CREDENTIAL_FIELDS[key].map((f) => f.name));
+    expect(
+      [...new Set(read)].filter((name) => !declared.has(name)),
+      `read by ${builder}, offered by no field of ${key}`,
+    ).toEqual([]);
   });
 
   it('resolves every label through a message the dictionary carries', () => {

@@ -44,7 +44,10 @@ const ERROR_KEYS: Record<FieldError & string, MessageKey> = {
   invalidToken: 'saasapp.invalidToken',
   invalidBody: 'saasapp.invalidBodyRegister',
   duplicate: 'saasapp.duplicate',
-  catalogFull: 'saasapp.registerFailed',
+  // NOT registerFailed. That says "please try again", and retrying at the
+  // ceiling can never succeed — the discriminant was read and then discarded,
+  // which review pointed out defeats the reason C3 read it.
+  catalogFull: 'saasapp.catalogFull',
   network: 'error.network',
   unknown: 'saasapp.registerFailed',
 };

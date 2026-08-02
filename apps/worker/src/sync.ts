@@ -6,6 +6,17 @@ import { withTenant } from '@open-smp/schema';
 import type { SyncJobData, SyncJobResult } from '@open-smp/queues';
 import type { ConnectorRegistry } from './connectors.js';
 
+/**
+ * How long one sync may hold its transaction.
+ *
+ * Not a request timeout — the connector owns that. This bounds the WHOLE
+ * interaction, including paging: an unbounded `do … while (cursor)` over a
+ * provider that keeps answering slowly holds a pooled connection and an
+ * idle-in-transaction Postgres session for as long as it takes, and the sync
+ * worker's concurrency of 1 means that stalls every other tenant.
+ */
+const SYNC_DEADLINE_MS = 10 * 60 * 1000;
+
 export interface SyncDeps {
   pool: Pool;
   connectorRegistry: ConnectorRegistry;
@@ -113,10 +124,15 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
       }
       const connector = buildConnector(credentials);
 
+      // A signal that can actually fire. It used to be
+      // `new AbortController().signal` — never aborted by anything — which made
+      // every connector's own `ctx.signal.aborted` check inert, and the whole
+      // provider interaction runs inside this open transaction. Found in
+      // review, alongside the Slack client's `timeout: 0` default.
       const ctx: ConnectorContext = {
         credentials,
         logger: deps.logger,
-        signal: new AbortController().signal,
+        signal: AbortSignal.timeout(SYNC_DEADLINE_MS),
       };
 
       let count = 0;

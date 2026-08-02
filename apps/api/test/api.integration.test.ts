@@ -13,6 +13,7 @@ type SweepMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { runMigrations, withTenant } from '@open-smp/schema';
+import { MAX_SAAS_APPS_PER_TENANT } from '../src/import-limits.js';
 import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
 import { decryptCredentials } from '@open-smp/crypto';
 import {
@@ -1696,6 +1697,118 @@ describe('C11 acceptance: account labeling', () => {
         );
       }
     });
+  });
+});
+
+describe('SC2/C2 acceptance: the application ceiling on POST /saas-apps', () => {
+  // The control PR #39 was titled for, and it had ZERO executable coverage on
+  // any tier until this review round — no unit, no integration, no E2E. The
+  // asymmetry was the evidence: the sibling ceiling on the import route has
+  // both a limit test and a two-transaction advisory-lock acceptance test, and
+  // the sibling 409 on this same route has the describe block below.
+
+  async function fillCatalog(tenantId: string, count: number): Promise<void> {
+    await withTenant(appPool, tenantId, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_apps (tenant_id, key, display_name)
+         SELECT $1, 'bulk-' || g, 'Bulk ' || g FROM generate_series(1, $2::int) g`,
+        [tenantId, count],
+      );
+    });
+  }
+
+  async function countApps(tenantId: string): Promise<number> {
+    return withTenant(appPool, tenantId, async (tx) => {
+      const { rows } = await tx.query<{ n: string }>(
+        'SELECT count(*) AS n FROM saas_apps WHERE tenant_id = $1',
+        [tenantId],
+      );
+      return Number(rows[0]!.n);
+    });
+  }
+
+  const payload = {
+    key: 'google-workspace',
+    displayName: 'GWS At The Ceiling',
+    credentials: { serviceAccountJson: '{"client_email":"a@b.iam.gserviceaccount.com"}' },
+  };
+
+  async function tenantAtCount(
+    slug: string,
+    count: number,
+  ): Promise<{ tenantId: string; cookie: string }> {
+    const tenantId = await seedTenant(slug, 'Ceiling Tenant');
+    await seedUser(tenantId, 'admin@example.com', 'correct-password');
+    await fillCatalog(tenantId, count);
+    const cookie = await loginAndGetCookie(slug, 'admin@example.com', 'correct-password');
+    expect(cookie).not.toBeNull();
+    return { tenantId, cookie: cookie! };
+  }
+
+  it('refuses at the ceiling with catalog_full, and inserts nothing', async () => {
+    const slug = `tenant-ceiling-${randomUUID()}`;
+    const { tenantId, cookie } = await tenantAtCount(slug, MAX_SAAS_APPS_PER_TENANT);
+    const before = await countApps(tenantId);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: { origin: APP_ORIGIN, cookie },
+      payload,
+    });
+
+    expect(res.statusCode, res.payload).toBe(409);
+    expect(res.json()).toEqual({ error: 'catalog_full' });
+    // The refusal happens mid-transaction, after the lock and before the
+    // insert. Asserting only the status would pass against a route that
+    // inserted the row and then reported failure.
+    expect(await countApps(tenantId)).toBe(before);
+  });
+
+  it('admits the registration that lands exactly ON the ceiling', async () => {
+    // RT10's allow side, adjacent to the boundary: `>=` against `>` is a
+    // one-character edit, and a ceiling that refuses the last legitimate
+    // registration is a feature nobody can complete.
+    const slug = `tenant-ceiling-ok-${randomUUID()}`;
+    const { tenantId, cookie } = await tenantAtCount(slug, MAX_SAAS_APPS_PER_TENANT - 1);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: { origin: APP_ORIGIN, cookie },
+      payload,
+    });
+
+    expect(res.statusCode, res.payload).toBe(201);
+    expect(await countApps(tenantId)).toBe(MAX_SAAS_APPS_PER_TENANT);
+  });
+
+  it('reports a duplicate as duplicate_key even at the ceiling', async () => {
+    // Two conflicts now share status 409, and the order of the checks decides
+    // which an operator is told. The ceiling is read first, so a re-registration
+    // of a key the tenant already holds would report "catalog is full" and send
+    // them to delete something — the confusion C3 read the discriminant to
+    // avoid, one layer down.
+    const slug = `tenant-ceiling-dup-${randomUUID()}`;
+    const { cookie } = await tenantAtCount(slug, MAX_SAAS_APPS_PER_TENANT - 1);
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: { origin: APP_ORIGIN, cookie },
+      payload,
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/saas-apps',
+      headers: { origin: APP_ORIGIN, cookie },
+      payload,
+    });
+
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: 'duplicate_key' });
   });
 });
 

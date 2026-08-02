@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import type { ConnectorAppKey, SaasAppListItem } from '@/lib/api-types';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
-import { CREDENTIAL_FIELDS, rejectCredentials } from '@/lib/connector-credentials';
+import { CREDENTIAL_FIELDS, rejectCredentials, type CredentialField } from '@/lib/connector-credentials';
 
 type ManagerError =
   | 'invalidJson'
@@ -51,8 +51,14 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   // the set would land here with no field list — the fallback is an empty one,
   // which renders no inputs rather than throwing on a page an operator opened
   // to fix exactly that.
-  const appKey = app.key as ConnectorAppKey;
-  const fields = CREDENTIAL_FIELDS[appKey] ?? [];
+  // `app.key` is arbitrary DB text: POST /contract-import writes it from a CSV
+  // cell, and the seed ships `notion`. An application this product has no
+  // connector for declares no credential fields, and the control that offers to
+  // replace them is HIDDEN rather than rendering an empty panel whose Save
+  // reported "That does not look like a bot token" — review found that reachable
+  // with the shipped seed.
+  const fields: readonly CredentialField[] = CREDENTIAL_FIELDS[app.key as ConnectorAppKey] ?? [];
+  const canReplaceCredentials = fields.length > 0;
 
   function close() {
     setMode('idle');
@@ -114,7 +120,16 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   }
 
   async function handleReplaceCredentials() {
-    const rejection = rejectCredentials(appKey, values);
+    // `required` is declared per field and was applied only by the registration
+    // form. A replace SENDS every declared field including blanks, so a required
+    // one left empty stored an unusable credential whose failure reached the
+    // operator as an audit row.
+    if (fields.some((field) => field.required && (values[field.name] ?? '').trim() === '')) {
+      setError('invalidBody');
+      return;
+    }
+
+    const rejection = rejectCredentials(app.key, values);
     if (rejection) {
       setError(rejection);
       return;
@@ -156,14 +171,16 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
         >
           {t('saasapp.rename')}
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => setMode(mode === 'credentials' ? 'idle' : 'credentials')}
-          className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
-        >
-          {t('saasapp.replaceCredentials')}
-        </button>
+        {canReplaceCredentials && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setMode(mode === 'credentials' ? 'idle' : 'credentials')}
+            className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+          >
+            {t('saasapp.replaceCredentials')}
+          </button>
+        )}
         <button
           type="button"
           disabled={busy}
@@ -250,6 +267,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               {field.kind === 'multiline' ? (
                 <textarea
                   id={`cred-${field.name}-${app.id}`}
+                  required={field.required}
                   rows={6}
                   autoComplete="off"
                   disabled={busy}
@@ -260,6 +278,7 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
               ) : (
                 <input
                   id={`cred-${field.name}-${app.id}`}
+                  required={field.required}
                   type={field.kind === 'email' ? 'email' : field.kind === 'secret' ? 'password' : 'text'}
                   autoComplete="off"
                   disabled={busy}

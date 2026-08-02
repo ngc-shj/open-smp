@@ -86,14 +86,44 @@ export type CredentialRejection = 'invalidJson' | 'missingFields' | 'invalidToke
  * pasted private key must not reach a React error overlay or a support
  * screenshot. See the header of SaasAppForm.tsx.
  */
+const REJECTORS: Record<
+  ConnectorAppKey,
+  (values: Readonly<Record<string, string>>) => CredentialRejection | null
+> = {
+  'google-workspace': (values) => rejectServiceAccountJson(values.serviceAccountJson ?? ''),
+  slack: (values) => rejectBotToken(values.botToken ?? ''),
+};
+
+/**
+ * Rejects credentials the browser can already tell are wrong.
+ *
+ * This is not defence — the API validates and the worker validates again. It is
+ * what keeps a wrong paste from being SENT: four E2E specs assert zero requests
+ * to `/api/saas-apps` on a malformed input, because credential material that
+ * never leaves the page cannot be logged by anything in between.
+ *
+ * A `Record<ConnectorAppKey, …>` like `CREDENTIAL_FIELDS`, and for the same
+ * reason the header gives. This was an `if (key === 'google-workspace') … else`
+ * — so a third connector silently inherited Slack's whitespace check, and every
+ * app key that is NOT a connector key (`POST /contract-import` creates those
+ * from CSV, and the seed ships `notion`) reached the same branch and was told
+ * its credentials did not look like a bot token. Found in review.
+ *
+ * `null` for a key with no rejector: an application whose connector this
+ * product does not have declares no credential fields either, so there is
+ * nothing to reject and the caller renders no form.
+ *
+ * Every branch classifies and returns a symbol. Caught values are never read
+ * for their text — `JSON.parse` echoes input snippets in its message, and a
+ * pasted private key must not reach a React error overlay or a support
+ * screenshot. See the header of SaasAppForm.tsx.
+ */
 export function rejectCredentials(
-  key: ConnectorAppKey,
+  key: string,
   values: Readonly<Record<string, string>>,
 ): CredentialRejection | null {
-  if (key === 'google-workspace') {
-    return rejectServiceAccountJson(values.serviceAccountJson ?? '');
-  }
-  return rejectBotToken(values.botToken ?? '');
+  const reject = REJECTORS[key as ConnectorAppKey];
+  return reject ? reject(values) : null;
 }
 
 function rejectServiceAccountJson(raw: string): CredentialRejection | null {

@@ -12,6 +12,9 @@ import { MUTATION_RATE_LIMIT, LIST_RATE_LIMIT } from '../rate-limits.js';
 /** The catalog is full. Thrown inside the transaction so the ceiling is read under the lock. */
 class CatalogFullError extends Error {}
 
+/** The tenant already registered this key. Decided before the ceiling — see the call site. */
+class DuplicateKeyError extends Error {}
+
 // SC2/C2. `z.enum` over a NAMED constant, not an inline array — and not only
 // for the usual reason. saas-app-key-pin.test.ts locates this declaration with
 // a regex that stops at the first comma, so an inline `z.enum(['a', 'b'])`
@@ -69,6 +72,28 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
           // COMMITTED and two concurrent creates would otherwise both read the
           // same pre-insert count.
           await lockTenantAppCatalog(tx, tenantId);
+
+          // The DUPLICATE is decided first, and the order is the whole point.
+          // Checking the ceiling first meant that re-registering a key the
+          // tenant already holds, at the ceiling, reported `catalog_full` — so
+          // the operator was told to delete an application when what they
+          // actually had was a key already in use. That is the confusion C3
+          // read the discriminant to avoid, one layer down; it was found by an
+          // acceptance test written for this route in the review round, because
+          // the ceiling had none at all.
+          //
+          // Not a TOCTOU: the advisory lock above serialises catalog growth for
+          // this tenant, so nothing can insert this key between the check and
+          // the insert. The 23505 catch below stays as the backstop for a
+          // constraint this route does not own.
+          const existing = await tx.query(
+            'SELECT 1 FROM saas_apps WHERE tenant_id = $1 AND key = $2',
+            [tenantId, key],
+          );
+          if (existing.rowCount && existing.rowCount > 0) {
+            throw new DuplicateKeyError();
+          }
+
           if ((await countTenantApps(tx, tenantId)) >= MAX_SAAS_APPS_PER_TENANT) {
             throw new CatalogFullError();
           }
@@ -98,6 +123,9 @@ export function registerSaasAppsRoute(app: FastifyInstance, deps: AppDeps): void
           return { id: saasAppId, key, displayName };
         });
       } catch (err: unknown) {
+        if (err instanceof DuplicateKeyError) {
+          return reply.code(409).send({ error: 'duplicate_key' });
+        }
         if (err instanceof CatalogFullError) {
           return reply.code(409).send({ error: 'catalog_full' });
         }

@@ -240,7 +240,6 @@ const en = {
   'saasapp.botToken': 'Bot token',
   'saasapp.invalidToken': 'That does not look like a bot token. Check for stray spaces or line breaks.',
   'saasapp.newBotToken': 'New bot token',
-  'saasapp.connector': 'Connector',
   'saasapp.rename': 'Rename',
   'saasapp.replaceCredentials': 'Replace credentials',
   'saasapp.newServiceAccountJson': 'New service account JSON',
@@ -255,6 +254,7 @@ const en = {
   'saasapp.invalidBodyUpdate': 'Please provide a value to update.',
   'saasapp.duplicate': 'This app is already registered for your tenant.',
   'saasapp.registerFailed': 'Registration failed. Please try again.',
+  'saasapp.catalogFull': 'This tenant has reached its application limit. Delete an application you no longer use, then register this one.',
 
   'contracts.upload': 'Upload contracts',
   'contracts.columnsHint':
@@ -462,7 +462,6 @@ const ja: Record<MessageKey, string> = {
   'saasapp.botToken': 'ボットトークン',
   'saasapp.invalidToken': 'ボットトークンではないようです。前後の空白や改行が混ざっていないか確認してください。',
   'saasapp.newBotToken': '新しいボットトークン',
-  'saasapp.connector': 'コネクタ',
   'saasapp.rename': '名称変更',
   'saasapp.replaceCredentials': '認証情報を差し替え',
   'saasapp.newServiceAccountJson': '新しいサービスアカウント JSON',
@@ -477,6 +476,7 @@ const ja: Record<MessageKey, string> = {
   'saasapp.invalidBodyUpdate': '更新する値を入力してください。',
   'saasapp.duplicate': 'このアプリはこのテナントに登録済みです。',
   'saasapp.registerFailed': '登録に失敗しました。もう一度お試しください。',
+  'saasapp.catalogFull': 'このテナントは登録できるアプリケーション数の上限に達しています。使っていないアプリケーションを削除してから登録してください。',
 
   'contracts.upload': '契約をアップロード',
   'contracts.columnsHint':
