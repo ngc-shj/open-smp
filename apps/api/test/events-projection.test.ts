@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACCOUNT_LABEL_KINDS } from '@open-smp/api-types';
+import { ACCOUNT_LABEL_KINDS, TOKEN_CAPABILITIES } from '@open-smp/api-types';
 import {
   projectAuditPayload,
   projectContractPayload,
@@ -243,5 +243,33 @@ describe('SC3 acceptance: the token-audit projection serves what a run observed'
 
     expect(projected).not.toHaveProperty('applications');
     expect(projected.scanned).toBe(1);
+  });
+});
+
+describe('SC2/C4: the capability a connector reported', () => {
+  const RUN = '66666666-6666-6666-6666-666666666666';
+
+  it.each([...TOKEN_CAPABILITIES])('serves the vocabulary member %s', (capability) => {
+    expect(projectTokenAuditPayload({ runId: RUN, auditedAppKey: 'slack', capability })).toMatchObject({
+      capability,
+    });
+  });
+
+  it.each([
+    ['a value outside the vocabulary', 'everything'],
+    ['an empty string', ''],
+    ['markup', '<script>alert(1)</script>'],
+  ])('withholds %s', (_label, capability) => {
+    // The payload is CONNECTOR-written and this string reaches a rendered page.
+    // Serving it because it is a string is the difference between a projection
+    // and a passthrough, and the events projection exists precisely because a
+    // connector is code this repository owns today and may not tomorrow.
+    expect(
+      projectTokenAuditPayload({ runId: RUN, auditedAppKey: 'slack', capability }),
+    ).not.toHaveProperty('capability');
+  });
+
+  it('withholds a non-string', () => {
+    expect(projectTokenAuditPayload({ runId: RUN, capability: 42 })).not.toHaveProperty('capability');
   });
 });

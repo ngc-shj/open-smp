@@ -208,6 +208,9 @@ importers:
 
   packages/connectors/core:
     dependencies:
+      '@open-smp/api-types':
+        specifier: workspace:*
+        version: link:../../api-types
       zod:
         specifier: ^3.25.76
         version: 3.25.76

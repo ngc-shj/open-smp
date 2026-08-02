@@ -50,8 +50,9 @@ assert_status 'alice.tanaka@demo.example' 'matched'
 assert_status 'bob.suzuki@demo.example' 'ghost'
 assert_status 'shared.mailbox@demo.example' 'ambiguous'
 assert_status 'unknown.contractor@demo.example' 'orphan'
+assert_status 'chris.wong@demo.example' 'orphan'
 
-# Labels are checked on ALL FOUR seeded accounts, not just the orphan: a
+# Labels are checked on EVERY seeded account, not just the orphan: a
 # bulk-labeling spec touches several of them, and a teardown that misses one
 # leaves the shared stack poisoned for every later run — silently, if the gate
 # only ever inspected the orphan.
@@ -71,6 +72,7 @@ assert_label_null 'alice.tanaka@demo.example'
 assert_label_null 'bob.suzuki@demo.example'
 assert_label_null 'shared.mailbox@demo.example'
 assert_label_null 'unknown.contractor@demo.example'
+assert_label_null 'chris.wong@demo.example'
 
 # The seeded app's displayName. apps.spec.ts renames it and restores in
 # afterEach — which does not run when a spec crashes mid-test. This leak is

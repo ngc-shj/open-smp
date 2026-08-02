@@ -135,4 +135,17 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(caught).toMatchObject({ kind: 'transient', retryable: true });
     expect(usersList).toHaveBeenCalledTimes(5);
   });
+
+  it('declares the capability its listTokens implements', () => {
+    // The paired pin to Slack's. Between them the two connectors sit on
+    // opposite sides of the vocabulary, which is what makes it more than a
+    // rename of the optional method it replaced.
+    const connector = new GoogleWorkspaceConnector({
+      serviceAccountJson: '{}',
+      impersonateAdminEmail: 'admin@corp.example',
+    });
+
+    expect(connector.tokenCapability).toBe('per-user-grants');
+    expect(typeof connector.listTokens).toBe('function');
+  });
 });

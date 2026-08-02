@@ -4,6 +4,7 @@ import {
   SEEDED_DISCOVERED_ANONYMOUS_CLIENT_ID,
   SEEDED_DISCOVERED_KNOWN_CLIENT_ID,
   SEEDED_DISCOVERED_UNSTATED_CLIENT_ID,
+  SLACK_APP_KEY,
 } from '../fixtures/seed-facts.js';
 
 // SC3/C4 against the compose stack. Read-only throughout: the seeded audit is
@@ -47,5 +48,23 @@ test.describe('discovery', () => {
 
     await expect(page.getByText(SEEDED_DISCOVERED_ANONYMOUS_CLIENT_ID)).toHaveCount(0);
     await expect(page.getByText(SEEDED_DISCOVERED_KNOWN_CLIENT_ID)).toHaveCount(0);
+  });
+
+  // SC2/C4. The other answer the vocabulary can give, rendered.
+  //
+  // Before this, a connector with no third-party grant concept wrote
+  // `token_audit_failed` — the same kind an authentication failure writes — and
+  // this page dropped both, so the application simply did not appear. An
+  // operator could not tell "cannot be audited" from "was never audited", and
+  // one of those is something to go and fix.
+  test('states that a connector without a grant concept cannot be audited', async ({ page }) => {
+    await page.goto('/discovery');
+
+    await expect(page.getByTestId(`unauditable-${SLACK_APP_KEY}`)).toContainText(
+      'cannot be audited',
+    );
+    // Beside the completed run, not instead of it: the page shows both answers
+    // at once, which is what makes the distinction visible rather than stated.
+    await expect(page.getByTestId(`audit-${SAAS_APP_KEY}`)).toBeVisible();
   });
 });

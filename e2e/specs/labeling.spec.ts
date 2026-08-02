@@ -103,16 +103,31 @@ test.describe('labeling', () => {
     const noteInput = row.getByPlaceholder('Note (optional)');
     await expect(noteInput).toHaveValue('original note');
     await noteInput.fill('updated note');
+
+    // Armed BEFORE the click, and it is the PUT itself — not a rendered
+    // consequence. The previous two attempts both waited for the "Known shared"
+    // chip, which the FIRST save had already put on screen: it was true before
+    // this save, after it, and against a stale server render, so it waited for
+    // nothing. Re-navigating narrowed the window and left the race; review
+    // measured that the replacement assertion was exactly as blind as the line
+    // it replaced.
+    //
+    // LabelControl seeds its editor in openEditor() and nothing re-seeds it, so
+    // reopening before the write lands reads the old note and no retry can
+    // recover — which is why the wait has to be on the mutation.
+    const saved = page.waitForResponse(
+      (res) => /\/api\/accounts\/[^/]+\/label$/.test(new URL(res.url()).pathname) && res.request().method() === 'PUT',
+    );
     await row.getByRole('button', { name: 'Save' }).click();
+    expect((await saved).ok()).toBe(true);
 
-    await expect(row.getByText('Known shared', { exact: true }).first()).toBeVisible();
+    const reloaded = await orphanRow(page);
+    const reloadedButton = labelButton(reloaded);
 
-    // Reopen once more to confirm the note field shows the new text and the
-    // kind is unchanged.
-    await button.click();
-    await expect(row.getByRole('combobox')).toHaveValue('known_shared');
-    await expect(row.getByPlaceholder('Note (optional)')).toHaveValue('updated note');
-    await row.getByRole('button', { name: 'Cancel' }).click();
+    await reloadedButton.click();
+    await expect(reloaded.getByRole('combobox')).toHaveValue('known_shared');
+    await expect(reloaded.getByPlaceholder('Note (optional)')).toHaveValue('updated note');
+    await reloaded.getByRole('button', { name: 'Cancel' }).click();
   });
 
   test('CSV-injection note is neutralized with a leading quote in the export', async ({ page }) => {

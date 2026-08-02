@@ -131,6 +131,8 @@ const en = {
   'discovery.intro':
     'Third-party applications your people have granted access to. This is evidence of a grant, not an application the product manages — nothing here has been registered.',
   'discovery.noAudit': 'No token audit has completed yet.',
+  'discovery.unauditable.none': '{app} cannot be audited: this connector reports no third-party application grants.',
+  'discovery.unauditable.workspaceApps': '{app} cannot be audited per user: this connector reports installed applications without saying who granted them.',
   'discovery.users': 'Users',
   'discovery.registered': 'Registered',
   'discovery.scopes': 'Scopes',
@@ -231,7 +233,6 @@ const en = {
 
   'sourceFilter.all': 'All',
   'sourceFilter.labelAudit': 'Label audit',
-  'sourceFilter.sync': 'Sync',
   'sourceFilter.matching': 'Matching',
 
   'saasapp.register': 'Register a SaaS app',
@@ -363,6 +364,8 @@ const ja: Record<MessageKey, string> = {
   'discovery.intro':
     '組織のメンバーがアクセスを許可したサードパーティ製アプリケーションです。これは許可が行われた証跡であり、本製品が管理しているアプリケーションではありません — ここにあるものは登録されていません。',
   'discovery.noAudit': '完了したトークン監査がまだありません。',
+  'discovery.unauditable.none': '{app} は監査できません: このコネクタはサードパーティへの許可を報告しません。',
+  'discovery.unauditable.workspaceApps': '{app} はユーザー単位では監査できません: このコネクタはインストール済みアプリケーションを、誰が許可したかを示さずに報告します。',
   'discovery.users': 'ユーザー数',
   'discovery.registered': '登録済み',
   'discovery.scopes': 'スコープ',
@@ -452,7 +455,6 @@ const ja: Record<MessageKey, string> = {
 
   'sourceFilter.all': 'すべて',
   'sourceFilter.labelAudit': 'ラベル監査',
-  'sourceFilter.sync': '同期',
   'sourceFilter.matching': '突合',
 
   'saasapp.register': 'SaaS アプリを登録',

@@ -4,6 +4,15 @@ Cycle 9. `docs/roadmap.md` puts SC2 next and records that it was blocked on one
 input this repository cannot supply — *which* provider. That input is now given:
 **Slack**, chosen on what it teaches rather than on market share.
 
+Revision 7 — **triangulate review applied to C4/C5/C6.** Three agents against a
+diff whose gates were all green and whose nine mutations had all landed as
+declared. They found seven Major findings, three of which were claims written in
+this document that were not true. Corrected below and in the code.
+
+Revision 6 — **C4, C5 and C6 built. SC2 is closed.** Three contracts landed
+together because they are one change seen from three places: the second
+connector becoming real in the product.
+
 Revision 5 — **C3 built.** The registration form asks each connector for what it
 needs, so C1 is a capability the product can reach rather than one only the API
 could. Two behaviours changed beyond the new connector, both recorded below.
@@ -549,3 +558,171 @@ own comment says `C20` added the filter to prevent. The filter derives from
   closes the difference.
 - **Nothing here writes to Slack.** `users:read` is a read scope, and SC4
   remains the only item that writes to a customer's system.
+
+## What closing C4, C5 and C6 added
+
+**C4's vocabulary is REQUIRED on the interface, and that is what made it
+land.** Every fake in the test tree failed to compile until it declared one —
+which is the property `typeof connector.listTokens === 'function'` never had.
+`workspace-apps` is declared and not implemented, and stays a member rather than
+a synonym for `none` because they are different answers to "can this be shown at
+all".
+
+The vocabulary moved to `@open-smp/api-types` mid-implementation, for the reason
+`CONNECTOR_APP_KEYS` did and which the plan should have said: `apps/api` projects
+the value onto a rendered page and `apps/web` displays it, and neither depends on
+a connector package. Declaring it in `connectors-core` compiled and then had
+nowhere to be read from.
+
+**⚠12 — C4's consumer was buildable after all.** Revision 2 reduced C4 on the
+finding that `/discovery` renders *nothing* for an unauditable connector. That
+was true of the page and not of the cause: the page dropped the event because a
+connector without grants wrote `token_audit_failed`, the same KIND an
+authentication failure writes. A distinct kind — `token_audit_unsupported` —
+makes the page able to say so, beside the completed run rather than instead of
+it, and the seed carries one so the demo shows both answers at once.
+
+**C5 broke an assumption three specs shared.** `seed-facts.ts` keyed each account
+BY its link status, which held while the demo had one account per status and
+stopped holding the moment a second account-bearing application produced a second
+orphan — the two would have collapsed into one entry in
+`seed-gate-agreement.test.ts`'s parser, the derived count would have matched a
+gate asserting only one of them, and the other account would have lost both its
+assertions with every gate green. The status is a field now; the parser reads the
+claim instead of inferring it.
+
+`accounts.spec.ts`'s `toHaveCount(1)` became a named set, as revision 2 required.
+A bumped number says "as many rows as the seed happens to produce", which is true
+of any seed.
+
+**⚠13 — the unsupported audit event was invisible on an existing volume.** It sat
+behind the completed run's content guard, so it never appeared on a stack whose
+volume already carried that run, and CI would have passed on its fresh volume.
+That is `SCL17`'s shape, warned about in a comment two lines above the code that
+reproduced it. The guards are independent now. Found by running the E2E, not by
+reading.
+
+### C4/C5/C6's mutations
+
+Nine run, eight red, one declared survivor.
+
+| mutation | result |
+|---|---|
+| Slack claims a capability it cannot exercise | ⚠14 — **this row was false.** The mutation run used `per-user-grants`, which reds because `listTokens` is absent. `workspace-apps` — the mutation the connector's own comment names — survived the entire tree. Both connectors now pin their declaration, and it reds. |
+| both connectors answer the capability question the same way | reds (the non-vacuity that makes the vocabulary more than a rename) |
+| an unauditable connector is read as a failed run | reds |
+| the completed-run reader also claims the unsupported events | reds |
+| the API passes a connector-written capability string through unchecked | reds |
+| a seeded account loses its status field | reds |
+| the second orphan is dropped from the shell gate | reds |
+| two seeded accounts share an email | reds |
+| the capability vocabulary loses its unimplemented member | SURVIVED in the file it ran against — and ⚠15: **not globally.** `events-projection.test.ts` hardcoded the three members and would have redded. The declaration was wrong in the safe direction, which still means the mutation accounting was not evidence. That test now spreads `TOKEN_CAPABILITIES`. |
+
+One mutation was **first reported red against an already-red file**: the new
+projection test referenced a `const` scoped to another `describe` and threw
+rather than asserting. A red file makes every mutation over it read as caught,
+which is the same class as a survivor being read as safe — it was fixed and the
+set re-run.
+
+Suite state: unit 546 green (42 files), integration 227 green, E2E 60 green,
+lint / typecheck / build clean, CI-only typecheck-program gate clean, and
+`e2e/scripts/assert-seed-preserved.sh` green against the live stack.
+
+## SC2 is closed
+
+C1 through C6 are built. What the cycle set out to learn, it learned: `RawAccount`
+did not survive a non-IdP provider, and the losses are recorded at the sites that
+suffer them rather than in this document alone.
+
+Residue carried forward, each with a trigger:
+
+- **`'suspended'` is unreachable from Slack.** A UI filter on that state means
+  "Google accounts only". Trigger: a third connector with a suspend concept, or
+  the first operator confusion about the filter.
+- **`lastActivityAt` is null for every Slack account**, so `/licenses` gets
+  nothing new from Slack for the reclaimable derivation. Trigger: `SCL6`/`SCL7`,
+  whenever per-application activity becomes derivable.
+- **Bots arrive as orphans by construction.** The demo deliberately seeds none.
+  Trigger: the first operator report that the orphan screen is unreadable.
+- **`workspace-apps` has no implementation.** Trigger: an operator with
+  Enterprise Grid asking why `/discovery` is empty for Slack.
+- **The i18n `en-US` number formatting** and the identity page's hand-synced
+  `50` are unchanged from the i18n cycle.
+
+## What the triangulate review found that the gates did not
+
+Every gate was green. Nine mutations had run and landed exactly as declared. The
+three-agent pass found seven Major findings — which is the argument for the pass
+existing, made against my own work rather than in the abstract.
+
+### Real defects
+
+**The two `/discovery` readers were not disjoint.** They filtered the event log
+twice, independently, and `discovery_events` has UPDATE and DELETE REVOKEd — so
+an application that once reported `unsupported` and later completed a run
+satisfied **both** readers forever, and the page would render a results table and
+"cannot be audited" for the same key. That is the documented upgrade path for
+Slack (`none` → `workspace-apps` on an Enterprise Grid token). Both now derive
+from one *newest decisive event per application* primitive: disjointness is
+structural, and `token_audit_failed` stays non-decisive so a failed attempt still
+cannot erase a finding.
+
+**The seed reverted an operator's credentials.** `ensureSlackApp` re-encrypted
+and `UPDATE`d on every run; the peer it was copied from returns early instead.
+The seeder runs on every `docker compose up` and `PATCH /saas-apps` accepts a
+credential update, so a real bot token entered in the demo was silently replaced
+by `xoxb-demo-not-a-real-token` at the next boot — a destructive, unobserved
+regression.
+
+**The unauditable copy stated `none`'s claim for every capability.** False for
+`workspace-apps`, which reports applications without saying who granted them.
+That is the flattening C4 exists to stop, reintroduced at the single place the
+vocabulary is read — and `capability` was computed, projected, whitelisted,
+tested and then **never consumed**.
+
+### ⚠16 — the labeling race fix did not fix the race
+
+Revision 6 recorded closing it by re-navigating. Measured in review: the
+replacement assertion waited for the "Known shared" chip, which the FIRST save
+had already put on screen — true before the save, after it, and against a stale
+render alike. It waited for nothing, exactly like the line it replaced, and the
+comment claiming otherwise was the third untrue claim in this round. It now waits
+on the PUT itself, armed before the click.
+
+### Tests that could not fail for the reason they named
+
+- the newest-first assertion used payloads differing only by an `id` the result
+  never carries. **Measured**: deleting the per-application dedupe left every
+  test green
+- the disjointness test used two different application keys
+- the audit's `||` had two perfectly correlated operands in every test, so it
+  could have been `&&` with nothing noticing. Two mismatched fakes now reach both
+  arms — a state no real connector can be in, which is why only a fake can
+- the rewritten seed-gate parser had neither of the paired extractor self-tests
+  its two siblings carry, which is that file's own stated discipline
+- `SLACK_APP_DISPLAY_NAME` was an unread export, hand-synced with nothing
+  comparing it — the class the C38 gate exists for. Deleted rather than gated
+
+### The round's own mutations
+
+Seven run, five red, two declared survivors:
+
+| mutation | result |
+|---|---|
+| the newest decisive event is not deduped per application | reds |
+| the two readers filter the log independently again | reds |
+| a failed run erases the completed one it followed | reds |
+| Slack declares a capability its credentials cannot exercise | reds |
+| the audit trusts the method over the declaration | reds |
+| the seed overwrites credentials on an app it did not create | SURVIVED (declared — no gate observes the demo's credential blob; `assert-seed-preserved.sh` checks accounts, labels and contract figures, and checking a credential needs a decrypt inside a shell gate) |
+| the unauditable copy collapses the two capabilities | SURVIVED (declared — no unit test renders the page and no connector declares `workspace-apps`, so the branch has no observer at either tier) |
+
+### The lesson, stated plainly
+
+**Mutation testing scores the assertions that exist. It cannot score the
+assertion nobody wrote.** Every finding above sat in a place the mutation set
+did not reach, and two of them were mutations I *had* run whose result I read
+wrongly — one against a file that was already red, one against a member of the
+vocabulary I had not chosen. Gates and mutations are 2-4; the three-agent pass is
+2-5, and skipping it moved first-pass discovery to the point where the code was
+already merged in three of the four preceding PRs.

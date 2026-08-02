@@ -124,9 +124,17 @@ export function isContractAuditKind(value: string): value is ContractAuditKind {
 // first job that can read 900 of 1000 accounts, and calling that outcome
 // "failed" would discard the 900 while calling it "completed" without counts
 // would hide the 100.
+//
+// SC2/C4 adds a third. `token_audit_unsupported` was `token_audit_failed` with
+// an error string saying the connector does not support the audit — the same
+// KIND as an authentication failure, so `/discovery` dropped both and an
+// operator could not tell "this connector cannot be audited" from "the audit
+// broke". One is a permanent property of the integration and the other is
+// something to go and fix.
 export const TOKEN_AUDIT_KINDS = Object.freeze([
   'token_audit_completed',
   'token_audit_failed',
+  'token_audit_unsupported',
 ] as const);
 
 export type TokenAuditKind = (typeof TOKEN_AUDIT_KINDS)[number];
@@ -190,6 +198,38 @@ export const RESERVED_EVENT_SOURCES = Object.freeze([
 // So the arrow points from here TO the registry, and the registry is asserted
 // to hold exactly these keys — not the other way round.
 export const CONNECTOR_APP_KEYS = Object.freeze(['google-workspace', 'slack'] as const);
+
+/**
+ * What a connector can say about third-party application grants (SC2/C4).
+ *
+ * Designed against TWO implementations, one of which answers `none`, because a
+ * vocabulary whose every member answers "yes" is a rename of the optional
+ * method it replaces. That was `SCT1`'s condition, and SC3 declined to invent
+ * it against Google alone.
+ *
+ *   per-user-grants — the provider attributes each grant to the account that
+ *                     made it. That is what `RawToken.userKey` requires and
+ *                     what `/discovery`'s user count is derived from.
+ *   workspace-apps  — the provider reports installed applications with NO user
+ *                     attribution. DECLARED AND NOT IMPLEMENTED: Slack's
+ *                     `admin.apps.approved.list` has this shape and needs
+ *                     `admin.apps:read` on an org-level Enterprise Grid token.
+ *                     A member rather than a synonym for `none`, because the
+ *                     two are different answers to "can this be shown at all"
+ *                     and collapsing them is the flattening C4 exists to stop.
+ *   none            — no third-party application concept this product can read.
+ *
+ * It lives HERE and not in `connectors-core` for the reason `CONNECTOR_APP_KEYS`
+ * does: `apps/api` projects the value onto a rendered page and `apps/web`
+ * displays it, and neither depends on a connector package.
+ */
+export const TOKEN_CAPABILITIES = Object.freeze([
+  'per-user-grants',
+  'workspace-apps',
+  'none',
+] as const);
+
+export type TokenCapability = (typeof TOKEN_CAPABILITIES)[number];
 
 export type ConnectorAppKey = (typeof CONNECTOR_APP_KEYS)[number];
 
@@ -319,6 +359,13 @@ export type DiscoveryEventPayload = {
    * which is what building the reader found.
    */
   auditedAppKey?: string;
+  /**
+   * On a `token_audit_unsupported` event: what the connector said it could do
+   * (SC2/C4). Carried rather than inferred from the app key, because the answer
+   * belongs to the connector and a later provider tier could change it without
+   * the key moving.
+   */
+  capability?: string;
 };
 
 export type DiscoveryEventListItem = {

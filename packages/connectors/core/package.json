@@ -9,6 +9,7 @@
     "test": "pnpm -w exec vitest run --project unit packages/connectors/core/"
   },
   "dependencies": {
+    "@open-smp/api-types": "workspace:*",
     "zod": "^3.25.76"
   },
   "devDependencies": {

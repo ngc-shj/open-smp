@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { SEEDED_ACCOUNTS } from '../fixtures/seed-facts.js';
+import { SEEDED_ACCOUNTS, SEEDED_ORPHAN_EMAILS } from '../fixtures/seed-facts.js';
 
 const COLUMN_HEADERS = [
   'App',
@@ -17,7 +17,8 @@ const COLUMN_HEADERS = [
 
 test.describe('accounts', () => {
   test('each seeded status tab shows its account with the right chip', async ({ page }) => {
-    for (const [status, account] of Object.entries(SEEDED_ACCOUNTS)) {
+    for (const account of Object.values(SEEDED_ACCOUNTS)) {
+      const status = account.status;
       await page.goto(`/accounts?status=${status}`);
       const row = page.getByRole('row', { name: new RegExp(account.email) });
       await expect(row).toBeVisible();
@@ -58,12 +59,23 @@ test.describe('accounts', () => {
     await expect(popover.getByText(/^matched:/)).toHaveCount(0);
   });
 
-  test('?status=orphan filter shows exactly the orphan account', async ({ page }) => {
+  test('?status=orphan filter shows exactly the orphan accounts, by name', async ({ page }) => {
+    // SC2/C5. This asserted `toHaveCount(1)`, and a second account-bearing
+    // application makes that a number to bump — which asserts nothing, because
+    // "as many rows as the seed happens to produce" is true of any seed. The
+    // set is named instead, so one row too many and one row missing both red
+    // and both say WHICH.
     await page.goto('/accounts?status=orphan');
 
-    await expect(page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.orphan.email) })).toBeVisible();
-    const dataRows = page.locator('tbody tr');
-    await expect(dataRows).toHaveCount(1);
+    for (const email of SEEDED_ORPHAN_EMAILS) {
+      await expect(page.getByRole('row', { name: new RegExp(email) })).toBeVisible();
+    }
+    await expect(page.locator('tbody tr')).toHaveCount(SEEDED_ORPHAN_EMAILS.length);
+    // The count above is derived from the same list, so on its own it cannot
+    // see a row that is neither. This is what does.
+    const emails = await page.locator('tbody tr').allInnerTexts();
+    const unexpected = emails.filter((row) => !SEEDED_ORPHAN_EMAILS.some((e) => row.includes(e)));
+    expect(unexpected, 'orphan rows the fixture does not name').toEqual([]);
   });
 
   test('a malformed cursor falls back to the first page instead of erroring', async ({ page }) => {
@@ -74,7 +86,7 @@ test.describe('accounts', () => {
     await expect(page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.orphan.email) })).toBeVisible();
   });
 
-  test('CSV export contains the expected header and the 4 seeded emails', async ({ page }) => {
+  test('CSV export contains the expected header and every seeded email', async ({ page }) => {
     await page.goto('/accounts?status=matched');
 
     // Only "matched" has a row by default; switch to a filter with all
@@ -82,8 +94,11 @@ test.describe('accounts', () => {
     // a time) — export per-tab and assert header + presence + status only,
     // never label VALUES (label state is transient across specs, round-1
     // FN-F5). Exporting the matched tab is enough to validate header shape;
-    // presence of all 4 emails is checked by iterating every tab's export.
-    for (const [status, account] of Object.entries(SEEDED_ACCOUNTS)) {
+    // presence of every seeded email is checked by iterating each account's own
+    // tab. Two accounts now share the `orphan` tab (SC2/C5), so this visits it
+    // twice and asserts each email in turn rather than assuming one per tab.
+    for (const account of Object.values(SEEDED_ACCOUNTS)) {
+      const status = account.status;
       await page.goto(`/accounts?status=${status}`);
       const downloadPromise = page.waitForEvent('download');
       await page.getByRole('button', { name: 'Export CSV' }).click();

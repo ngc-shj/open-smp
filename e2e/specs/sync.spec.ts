@@ -24,7 +24,8 @@ test.describe('sync', () => {
     expect(matchRequests).toHaveLength(0);
 
     // Seeded chips are unchanged — a failed sync must not corrupt links.
-    for (const [status, account] of Object.entries(SEEDED_ACCOUNTS)) {
+    for (const account of Object.values(SEEDED_ACCOUNTS)) {
+      const status = account.status;
       await page.goto(`/accounts?status=${status}`);
       const row = page.getByRole('row', { name: new RegExp(account.email) });
       await expect(row.getByText(status, { exact: true })).toBeVisible();

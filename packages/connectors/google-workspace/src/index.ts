@@ -152,6 +152,7 @@ async function withRetry<T>(
 export class GoogleWorkspaceConnector implements SaaSConnector {
   id = 'google-workspace';
   authKind: SaaSConnector['authKind'] = 'oauth2';
+  tokenCapability: SaaSConnector['tokenCapability'] = 'per-user-grants';
 
   private readonly cfg: GoogleWorkspaceConnectorConfig;
   private readonly deps: GoogleWorkspaceConnectorDeps;
