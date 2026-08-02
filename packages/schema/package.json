@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@open-smp/api-types": "workspace:*",
-    "drizzle-orm": "^0.44.7",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.22.0"
   },
   "devDependencies": {

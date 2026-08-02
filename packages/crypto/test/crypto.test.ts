@@ -169,6 +169,40 @@ describe('parseEncryptionKeys', () => {
     expect(() => parseEncryptionKeys(`v1:${key}`)).toThrow();
   });
 
+  it.each([
+    ['a version above 2^32-1', () => `4294967296:${Buffer.alloc(32, 1).toString('base64')}`],
+    [
+      'a version beyond safe-integer range',
+      () => `99999999999999999999:${Buffer.alloc(32, 1).toString('base64')}`,
+    ],
+  ])('rejects %s', (_label, spell) => {
+    // `buildAad` writes the version with `writeUInt32BE`, which throws — but at
+    // the first ENCRYPT, long after boot accepted the value. Refused where it is
+    // read instead.
+    expect(() => parseEncryptionKeys(spell())).toThrow(/0\.\.2\^32-1/);
+  });
+
+  it('rejects a key whose base64 is not canonical', () => {
+    // Node's decoder skips unrecognised characters and tolerates non-zero
+    // trailing bits, so distinct strings decode to the same 32 bytes — a typo
+    // inside the key can decode to a DIFFERENT valid key than the operator
+    // pasted, and the process boots cleanly under a master key nothing was
+    // sealed with.
+    const bytes = Buffer.alloc(32, 1);
+    const canonical = bytes.toString('base64');
+    // Same 32 bytes, different spelling. 32 % 3 === 2, so the last data
+    // character carries two bits the decoder ignores: `…AQE=` and `…AQF=` decode
+    // identically. Asserted rather than assumed, because the point of the cell
+    // is that these ARE equivalent to the decoder.
+    const nonCanonical = `${canonical.slice(0, 42)}F=`;
+    expect(Buffer.from(nonCanonical, 'base64').equals(bytes)).toBe(true);
+    expect(nonCanonical).not.toBe(canonical);
+
+    expect(() => parseEncryptionKeys(`1:${nonCanonical}`)).toThrow(/canonical/);
+    // The allow side: the spelling the operator actually gets from a generator.
+    expect(parseEncryptionKeys(`1:${canonical}`).size).toBe(1);
+  });
+
   it('rejects a version that appears more than once', () => {
     // `Map.set` silently overwrote, so this booted cleanly under the LAST key
     // while every credential sealed under the first failed its GCM tag on the

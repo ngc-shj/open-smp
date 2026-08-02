@@ -48,8 +48,28 @@ export function parseEncryptionKeys(env: string): Map<number, Buffer> {
       );
     }
     const version = Number.parseInt(versionText, 10);
+    // BOUNDED. `buildAad` writes the version with `writeUInt32BE`, which throws
+    // above 2^32-1 — but only at the first encrypt, long after a bad value has
+    // been accepted at boot. A version outside the range the AAD can represent
+    // is a configuration error, so it is refused where it is read.
+    if (!Number.isSafeInteger(version) || version < 0 || version > 0xffff_ffff) {
+      throw new Error(
+        `Invalid ENCRYPTION_KEYS entry at index ${index}: version is outside 0..2^32-1`,
+      );
+    }
 
     const key = Buffer.from(base64Key, 'base64');
+    // CANONICAL, not merely decodable. Node's base64 decoder skips characters
+    // it does not recognise and tolerates non-zero trailing bits, so several
+    // distinct strings decode to the same 32 bytes and a typo inside the key can
+    // decode to a DIFFERENT valid key than the operator pasted — booting cleanly
+    // under a master key nothing was sealed with. Re-encoding and comparing is
+    // the cheapest exact check.
+    if (key.length === KEY_LENGTH && key.toString('base64') !== base64Key) {
+      throw new Error(
+        `Invalid ENCRYPTION_KEYS entry at index ${index}: key is not canonical base64`,
+      );
+    }
     if (key.length !== KEY_LENGTH) {
       throw new Error(
         `Invalid ENCRYPTION_KEYS key for version ${version}: expected ${KEY_LENGTH} bytes, got ${key.length}`,
