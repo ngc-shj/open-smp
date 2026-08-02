@@ -236,6 +236,10 @@ const en = {
 
   'saasapp.register': 'Register a SaaS app',
   'saasapp.customerId': 'Customer ID (optional)',
+  'saasapp.botToken': 'Bot token',
+  'saasapp.invalidToken': 'That does not look like a bot token. Check for stray spaces or line breaks.',
+  'saasapp.newBotToken': 'New bot token',
+  'saasapp.connector': 'Connector',
   'saasapp.rename': 'Rename',
   'saasapp.replaceCredentials': 'Replace credentials',
   'saasapp.newServiceAccountJson': 'New service account JSON',
@@ -453,6 +457,10 @@ const ja: Record<MessageKey, string> = {
 
   'saasapp.register': 'SaaS アプリを登録',
   'saasapp.customerId': 'カスタマー ID（任意）',
+  'saasapp.botToken': 'ボットトークン',
+  'saasapp.invalidToken': 'ボットトークンではないようです。前後の空白や改行が混ざっていないか確認してください。',
+  'saasapp.newBotToken': '新しいボットトークン',
+  'saasapp.connector': 'コネクタ',
   'saasapp.rename': '名称変更',
   'saasapp.replaceCredentials': '認証情報を差し替え',
   'saasapp.newServiceAccountJson': '新しいサービスアカウント JSON',

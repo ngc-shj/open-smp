@@ -26,6 +26,50 @@ test.describe('apps', () => {
     ).toBeVisible();
   });
 
+  // SC2/C3. The form asks for what the SELECTED connector needs. Neither of
+  // these registers anything: the seed state after the suite is asserted by
+  // e2e/scripts/assert-seed-preserved.sh, and a spec that created an app would
+  // have to delete it again on every path including the failing ones.
+  test('choosing a connector swaps the credential fields it asks for', async ({ page }) => {
+    await page.goto('/apps');
+
+    // Google is what a fresh form starts on, which is why the three specs
+    // around this one can fill its fields without selecting anything.
+    await expect(page.getByLabel('Service account JSON')).toBeVisible();
+    await expect(page.getByLabel('Bot token')).toHaveCount(0);
+
+    await page.getByLabel('Key').selectOption('slack');
+
+    await expect(page.getByLabel('Bot token')).toBeVisible();
+    // Gone, not merely joined: a form that rendered both would post a service
+    // account under `key: 'slack'`.
+    await expect(page.getByLabel('Service account JSON')).toHaveCount(0);
+    await expect(page.getByLabel('Admin email to impersonate')).toHaveCount(0);
+  });
+
+  test('a bot token with stray whitespace is refused without leaving the page', async ({ page }) => {
+    await page.goto('/apps');
+
+    const requests: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/saas-apps')) requests.push(req.url());
+    });
+
+    await page.getByLabel('Key').selectOption('slack');
+    await page.getByLabel('Display name').fill('E2E Slack Bad Paste');
+    // The realistic error: a paste that carried the newline after it.
+    await page.getByLabel('Bot token').fill('xoxb-000-111-abc def');
+    await page.getByRole('button', { name: 'Register' }).click();
+
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'That does not look like a bot token.' }),
+    ).toBeVisible();
+    // The property the whole client-side classifier exists for: credential
+    // material that never leaves the page cannot be logged by anything between
+    // here and the database.
+    expect(requests).toHaveLength(0);
+  });
+
   test('unparseable JSON shows an inline error with zero requests to /api/saas-apps', async ({ page }) => {
     await page.goto('/apps');
 

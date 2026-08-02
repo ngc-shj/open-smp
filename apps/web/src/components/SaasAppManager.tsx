@@ -2,13 +2,15 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { SaasAppListItem } from '@/lib/api-types';
+import type { ConnectorAppKey, SaasAppListItem } from '@/lib/api-types';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
+import { CREDENTIAL_FIELDS, rejectCredentials } from '@/lib/connector-credentials';
 
 type ManagerError =
   | 'invalidJson'
   | 'missingFields'
+  | 'invalidToken'
   | 'invalidBody'
   | 'hasAccounts'
   | 'notFound'
@@ -24,6 +26,7 @@ type ManagerError =
 const ERROR_KEYS: Record<ManagerError & string, MessageKey> = {
   invalidJson: 'saasapp.invalidJson',
   missingFields: 'saasapp.missingFields',
+  invalidToken: 'saasapp.invalidToken',
   invalidBody: 'saasapp.invalidBodyUpdate',
   hasAccounts: 'saasapp.hasAccounts',
   notFound: 'saasapp.notFound',
@@ -31,40 +34,31 @@ const ERROR_KEYS: Record<ManagerError & string, MessageKey> = {
   unknown: 'error.unknown',
 };
 
-function validateServiceAccountJson(raw: string): ManagerError {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return 'invalidJson';
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    return 'invalidJson';
-  }
-  const record = parsed as Record<string, unknown>;
-  if (typeof record.client_email !== 'string' || typeof record.private_key !== 'string') {
-    return 'missingFields';
-  }
-  return null;
-}
-
 export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   const t = useTranslator();
   const router = useRouter();
   const [mode, setMode] = useState<'idle' | 'rename' | 'credentials' | 'confirmDelete'>('idle');
   const [displayName, setDisplayName] = useState(app.displayName);
-  const [serviceAccountJson, setServiceAccountJson] = useState('');
-  const [impersonateAdminEmail, setImpersonateAdminEmail] = useState('');
+  // Keyed by credential name, like the registration form, because the field set
+  // is the connector's rather than this component's.
+  const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<ManagerError>(null);
   const [accountCount, setAccountCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // The app's own key decides what "replace credentials" asks for. It is a
+  // string on the wire, so a row written before a connector was removed from
+  // the set would land here with no field list — the fallback is an empty one,
+  // which renders no inputs rather than throwing on a page an operator opened
+  // to fix exactly that.
+  const appKey = app.key as ConnectorAppKey;
+  const fields = CREDENTIAL_FIELDS[appKey] ?? [];
 
   function close() {
     setMode('idle');
     setError(null);
     setAccountCount(null);
-    setServiceAccountJson('');
-    setImpersonateAdminEmail('');
+    setValues({});
     setDisplayName(app.displayName);
   }
 
@@ -120,16 +114,16 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
   }
 
   async function handleReplaceCredentials() {
-    const invalid = validateServiceAccountJson(serviceAccountJson);
-    if (invalid) {
-      setError(invalid);
+    const rejection = rejectCredentials(appKey, values);
+    if (rejection) {
+      setError(rejection);
       return;
     }
+    // Every field the connector declares, including the ones left blank: a
+    // replacement REPLACES, so omitting an empty optional field would silently
+    // keep the previous value under a form that showed it as cleared.
     await patch({
-      credentials: {
-        serviceAccountJson,
-        impersonateAdminEmail,
-      },
+      credentials: Object.fromEntries(fields.map((f) => [f.name, values[f.name] ?? ''])),
     });
   }
 
@@ -248,30 +242,34 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
 
       {mode === 'credentials' && (
         <div className="flex flex-col gap-1.5 rounded-md border border-neutral-200 bg-white p-2 text-xs">
-          <label htmlFor={`sa-json-${app.id}`} className="font-medium text-neutral-700">
-            {t('saasapp.newServiceAccountJson')}
-          </label>
-          <textarea
-            id={`sa-json-${app.id}`}
-            rows={6}
-            autoComplete="off"
-            disabled={busy}
-            value={serviceAccountJson}
-            onChange={(e) => setServiceAccountJson(e.target.value)}
-            className="rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
-          />
-          <label htmlFor={`sa-admin-${app.id}`} className="font-medium text-neutral-700">
-            {t('field.adminEmail')}
-          </label>
-          <input
-            id={`sa-admin-${app.id}`}
-            type="email"
-            autoComplete="off"
-            disabled={busy}
-            value={impersonateAdminEmail}
-            onChange={(e) => setImpersonateAdminEmail(e.target.value)}
-            className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
-          />
+          {fields.map((field) => (
+            <div key={field.name} className="flex flex-col gap-1.5">
+              <label htmlFor={`cred-${field.name}-${app.id}`} className="font-medium text-neutral-700">
+                {t(field.replaceLabelKey ?? field.labelKey)}
+              </label>
+              {field.kind === 'multiline' ? (
+                <textarea
+                  id={`cred-${field.name}-${app.id}`}
+                  rows={6}
+                  autoComplete="off"
+                  disabled={busy}
+                  value={values[field.name] ?? ''}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                  className="rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
+                />
+              ) : (
+                <input
+                  id={`cred-${field.name}-${app.id}`}
+                  type={field.kind === 'email' ? 'email' : field.kind === 'secret' ? 'password' : 'text'}
+                  autoComplete="off"
+                  disabled={busy}
+                  value={values[field.name] ?? ''}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                  className="rounded-md border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none disabled:opacity-50"
+                />
+              )}
+            </div>
+          ))}
           <div className="flex items-center gap-2">
             <button
               type="button"
