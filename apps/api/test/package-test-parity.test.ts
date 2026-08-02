@@ -650,6 +650,14 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // the guard cannot see a DELETION and this file's deletion removes the
       // control that took five rounds to find.
       'packages/crypto/test/zeroization.test.ts',
+      // Review round 8, from an external security review. The key-version bound
+      // in packages/crypto is derived from `saas_apps.credentials_key_version`
+      // being a signed `int`, and the first version of it was derived from the
+      // AAD's `writeUInt32BE` instead — a whole range booted and failed at the
+      // first write. This file now reads the migration and reds if the column
+      // changes, which is a repository-wide relation rather than the behaviour
+      // of one module. The addition-guard below caught it.
+      'packages/crypto/test/crypto.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

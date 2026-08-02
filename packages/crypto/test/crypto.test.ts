@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   decryptCredentials,
@@ -126,6 +128,9 @@ describe('key rotation', () => {
   });
 });
 
+/** A canonical 32-byte key, so every cell below varies only the version. */
+const KEY_B64 = Buffer.alloc(32, 1).toString('base64');
+
 describe('parseEncryptionKeys', () => {
   it('parses a single version:base64key pair', () => {
     const key = Buffer.alloc(32, 7);
@@ -170,16 +175,42 @@ describe('parseEncryptionKeys', () => {
   });
 
   it.each([
-    ['a version above 2^32-1', () => `4294967296:${Buffer.alloc(32, 1).toString('base64')}`],
-    [
-      'a version beyond safe-integer range',
-      () => `99999999999999999999:${Buffer.alloc(32, 1).toString('base64')}`,
-    ],
+    // 2^31, the first value the COLUMN cannot hold. The first version of this
+    // bound came from the AAD's `writeUInt32BE` (2^32-1), so this range booted
+    // cleanly and failed at the first credential write with `integer out of
+    // range` — the case that made the check narrower than it read.
+    ['the first version the column cannot hold', () => `2147483648:${KEY_B64}`],
+    ['a version above 2^32-1', () => `4294967296:${KEY_B64}`],
+    ['a version beyond safe-integer range', () => `99999999999999999999:${KEY_B64}`],
   ])('rejects %s', (_label, spell) => {
-    // `buildAad` writes the version with `writeUInt32BE`, which throws — but at
-    // the first ENCRYPT, long after boot accepted the value. Refused where it is
-    // read instead.
-    expect(() => parseEncryptionKeys(spell())).toThrow(/0\.\.2\^32-1/);
+    expect(() => parseEncryptionKeys(spell())).toThrow(/outside 0\.\./);
+  });
+
+  it('bounds the version at the column, and reds if the column changes', () => {
+    // THE DERIVATION, not the number. This bound was first taken from the AAD's
+    // `writeUInt32BE` (2^32-1) while the binding constraint was the signed
+    // `int` column, so a whole range booted and failed at the first write. If
+    // the column is ever widened to `bigint`, this cell reds and the constant
+    // above is revisited deliberately rather than left narrower than the schema.
+    const migration = readFileSync(
+      path.join(import.meta.dirname, '..', '..', 'schema', 'migrations', '0001_init.sql'),
+      'utf8',
+    );
+    const column = /credentials_key_version\s+(\w+)/.exec(migration);
+
+    // Non-vacuity: the migration really was read and the column really is there.
+    expect(column, 'credentials_key_version not found in 0001_init.sql').not.toBeNull();
+    expect(column?.[1]).toBe('int');
+    // PostgreSQL `int` is signed 4-byte.
+    expect(parseEncryptionKeys(`2147483647:${KEY_B64}`).size).toBe(1);
+    expect(() => parseEncryptionKeys(`2147483648:${KEY_B64}`)).toThrow();
+  });
+
+  it('accepts the largest version the column can hold', () => {
+    // The allow side, boundary-adjacent (RT10): without it the bound above is
+    // satisfiable by a check that refuses every version, and the failure would
+    // be an operator who cannot roll a key at all.
+    expect(parseEncryptionKeys(`2147483647:${KEY_B64}`).has(2147483647)).toBe(true);
   });
 
   it('rejects a key whose base64 is not canonical', () => {

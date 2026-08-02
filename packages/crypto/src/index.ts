@@ -4,6 +4,17 @@ const NONCE_LENGTH = 12;
 const TAG_LENGTH = 16;
 const KEY_LENGTH = 32;
 
+/**
+ * The largest key version that can be STORED.
+ *
+ * `saas_apps.credentials_key_version` is a PostgreSQL signed `int`
+ * (`0001_init.sql`), so this is 2^31-1 and not the 2^32-1 the AAD's
+ * `writeUInt32BE` would accept. The column is the binding constraint; the AAD's
+ * is looser and checking only it left a range that boots and then fails at the
+ * first write.
+ */
+const MAX_KEY_VERSION = 0x7fff_ffff;
+
 export interface CredentialContext {
   tenantId: string;
   saasAppId: string;
@@ -48,13 +59,16 @@ export function parseEncryptionKeys(env: string): Map<number, Buffer> {
       );
     }
     const version = Number.parseInt(versionText, 10);
-    // BOUNDED. `buildAad` writes the version with `writeUInt32BE`, which throws
-    // above 2^32-1 — but only at the first encrypt, long after a bad value has
-    // been accepted at boot. A version outside the range the AAD can represent
-    // is a configuration error, so it is refused where it is read.
-    if (!Number.isSafeInteger(version) || version < 0 || version > 0xffff_ffff) {
+    // BOUNDED BY THE COLUMN, which is the tighter of the two constraints and the
+    // one the first version of this check missed. `buildAad` writes the version
+    // with `writeUInt32BE` and throws above 2^32-1, so that is where the bound
+    // was derived from — but `saas_apps.credentials_key_version` is a PostgreSQL
+    // signed `int`, so 2147483648..4294967295 passed boot and failed later with
+    // `integer out of range` at the first credential WRITE. Deriving a bound
+    // from the wrong constraint is how a check ends up narrower than it reads.
+    if (!Number.isSafeInteger(version) || version < 0 || version > MAX_KEY_VERSION) {
       throw new Error(
-        `Invalid ENCRYPTION_KEYS entry at index ${index}: version is outside 0..2^32-1`,
+        `Invalid ENCRYPTION_KEYS entry at index ${index}: version is outside 0..${MAX_KEY_VERSION}`,
       );
     }
 
