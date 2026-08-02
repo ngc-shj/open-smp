@@ -249,6 +249,9 @@ describe('C5 runSync acceptance', () => {
         },
         { tenantId: tenantA, saasAppId },
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/aborted/);
+    // Matched on the message, not bare. A bare `.toThrow()` was satisfied by a
+    // nonexistent saasAppId — a run that never built a connector and never saw
+    // the signal at all.
   });
 });

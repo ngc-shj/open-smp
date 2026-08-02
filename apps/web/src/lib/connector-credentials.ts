@@ -167,5 +167,10 @@ function rejectBotToken(raw: string): CredentialRejection | null {
  * side, and no whitespace.
  */
 function rejectAdminEmail(raw: string): CredentialRejection | null {
-  return /^[^\s@]+@[^\s@]+$/.test(raw.trim()) ? null : 'invalidEmail';
+  // The RAW value, not `raw.trim()`. Both forms post what the field holds, so
+  // validating a trimmed copy accepted ' admin@corp.example ' and stored it —
+  // and it is then the JWT subject, failing at Google as the audit row this
+  // check exists to prevent. Its sibling `rejectBotToken` already refuses any
+  // whitespace; the two now agree on which string is judged.
+  return /^[^\s@]+@[^\s@]+$/.test(raw) ? null : 'invalidEmail';
 }

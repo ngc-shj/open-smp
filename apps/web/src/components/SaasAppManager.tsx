@@ -126,14 +126,20 @@ export function SaasAppManager({ app }: { app: SaasAppListItem }) {
     // form. A replace SENDS every declared field including blanks, so a required
     // one left empty stored an unusable credential whose failure reached the
     // operator as an audit row.
-    if (fields.some((field) => field.required && (values[field.name] ?? '').trim() === '')) {
-      setError('invalidBody');
-      return;
-    }
-
+    //
+    // Ordered AFTER the classifier deliberately. Review measured that with the
+    // guard first, its e2e spec was satisfied by `rejectCredentials` returning
+    // `invalidJson` for an empty service account — so the spec could not fail
+    // for the reason it named. Classifier first means the guard now answers only
+    // the case the classifier does not: a required field it does not inspect.
     const rejection = rejectCredentials(app.key, values);
     if (rejection) {
       setError(rejection);
+      return;
+    }
+
+    if (fields.some((field) => field.required && (values[field.name] ?? '').trim() === '')) {
+      setError('invalidBody');
       return;
     }
     // Every field the connector declares, including the ones left blank: a

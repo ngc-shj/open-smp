@@ -21,6 +21,8 @@ export interface TokenAuditDeps {
   connectorRegistry: ConnectorRegistry;
   encryptionKeys: Map<number, Buffer>;
   logger: Logger;
+  /** The run's deadline, injectable so it has an observer. See `SyncDeps.signal`. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -32,7 +34,7 @@ export interface TokenAuditDeps {
  * provider, which offers no domain-wide token endpoint — so an unbounded run on
  * a large tenant is thousands of sequential calls against a rate-limited API.
  */
-export /**
+/**
  * How long one audit may run.
  *
  * Longer than sync's, because the fan-out is per account and forced by the
@@ -170,17 +172,21 @@ export async function runTokenAudit(
         deps.encryptionKeys,
       );
 
-      // Ordered and bounded in SQL, so the cap selects a deterministic subset
-      // rather than whatever the planner happened to return first.
-      const { rows } = await tx.query<AccountRow>(
-        `SELECT external_id FROM saas_accounts
-         WHERE tenant_id = $1 AND saas_app_id = $2
-         ORDER BY external_id
-         LIMIT $3`,
-        [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
-      );
-
+      // The try opens HERE, immediately after the decrypt. It used to open
+      // after the query below, so a statement timeout or an RLS denial in
+      // between propagated with the plaintext key never zeroed — the exact path
+      // the fix claimed to close.
       try {
+        // Ordered and bounded in SQL, so the cap selects a deterministic subset
+        // rather than whatever the planner happened to return first.
+        const { rows } = await tx.query<AccountRow>(
+          `SELECT external_id FROM saas_accounts
+           WHERE tenant_id = $1 AND saas_app_id = $2
+           ORDER BY external_id
+           LIMIT $3`,
+          [job.tenantId, job.saasAppId, TOKEN_AUDIT_MAX_ACCOUNTS],
+        );
+
         return {
           credentials: JSON.parse(Buffer.from(decrypted).toString('utf8')) as Record<string, string>,
           appKey: app.key,
@@ -232,7 +238,12 @@ export async function runTokenAudit(
     // connectors' own abort guards inert on the path that makes up to
     // TOKEN_AUDIT_MAX_ACCOUNTS sequential requests. R3: the class had two
     // members and only one was fixed.
-    signal: AbortSignal.timeout(TOKEN_AUDIT_DEADLINE_MS),
+    // Injectable AND unremovable, the same shape sync uses — the sibling got
+    // an observer one round before this one did, which is the asymmetry review
+    // kept finding.
+    signal: deps.signal
+      ? AbortSignal.any([deps.signal, AbortSignal.timeout(TOKEN_AUDIT_DEADLINE_MS)])
+      : AbortSignal.timeout(TOKEN_AUDIT_DEADLINE_MS),
   };
 
   const grants: RawToken[] = [];

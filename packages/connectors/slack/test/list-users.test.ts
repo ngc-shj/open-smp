@@ -325,6 +325,21 @@ describe('SlackConnector.listUsers', () => {
     expect(usersList).toHaveBeenCalledTimes(1);
   });
 
+  it('never begins a wait once the run is over', async () => {
+    // The pre-check. The abort test below aborts DURING the wait, so it
+    // exercises only the other half — deleting this branch left the file green.
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('Internal Error'), { statusCode: 500 });
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+    const ctx = { ...makeContext(), signal: AbortSignal.abort() };
+
+    await expect(collect(connector.listUsers(ctx))).rejects.toMatchObject({ kind: 'fatal' });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it('classifies a rate limit as a rate limit, and waits as long as the provider asked', async () => {
     // Both halves were unasserted. Forcing `kind` to 'transient' passed 13/13,
     // and `sleep(0)` passed 13/13 because sleep was checked by call count only —
@@ -401,6 +416,7 @@ describe('SlackConnector.listUsers', () => {
       kind: 'rate_limit',
     });
 
+    expect(sleep.mock.calls.length, 'no wait happened, so the clamp was not exercised').toBe(4);
     for (const call of sleep.mock.calls) {
       expect(call[0]).toBeLessThanOrEqual(60_000);
     }
@@ -445,6 +461,29 @@ describe('SlackConnector.listUsers', () => {
 
     expect(usersList).toHaveBeenCalledTimes(2);
     expect(accounts.map((a) => a.externalId)).toEqual(['U0000000005']);
+  });
+
+  it.each([
+    ['an aborted fetch', { name: 'AbortError' }, true],
+    ['a request timeout', { name: 'TimeoutError' }, true],
+    ['a request error', { code: 'slack_webapi_request_error' }, true],
+    // The deny side: a platform error is a decision the provider made, and
+    // retrying it spends attempts on a state that cannot change.
+    ['a platform error', { code: 'slack_webapi_request_error', data: { error: 'invalid_arguments' } }, false],
+    ['an error carrying a status', { code: 'slack_webapi_request_error', statusCode: 400 }, false],
+  ])('treats %s as retryable=%s', async (_label, shape, retryable) => {
+    // Three of the four decisions in isTransportError had no case at all —
+    // including the AbortError/TimeoutError arm, which is the reason the
+    // function exists (the 30-second request timeout produces exactly that).
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error('transport'), shape);
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    const connector = new SlackConnector({ botToken: BOT_TOKEN }, { usersList, sleep });
+    await expect(collect(connector.listUsers(makeContext()))).rejects.toBeInstanceOf(ConnectorError);
+
+    expect(usersList).toHaveBeenCalledTimes(retryable ? 5 : 1);
   });
 
   it('does not wait out a retry after the run is over', async () => {

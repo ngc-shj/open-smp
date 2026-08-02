@@ -34,6 +34,22 @@ const WORKER_CONNECTORS = path.join(
   'connectors.ts',
 );
 
+/** The body of the factory the registry binds to `key`, located through the map. */
+async function factoryBody(key: string): Promise<string> {
+  const source = await readFile(WORKER_CONNECTORS, 'utf8');
+  const builders = new Map(
+    [...source.matchAll(/\[\s*'([^']+)'\s*,\s*(\w+)\s*\]/g)].map((m) => [m[1]!, m[2]!] as const),
+  );
+  const builder = builders.get(key);
+  expect(builder, `no registry entry for ${key}`).toBeDefined();
+
+  const start = source.indexOf(`function ${builder}(`);
+  expect(start, `no body for ${builder}`).toBeGreaterThan(-1);
+  const end = source.indexOf('\n}', start);
+  expect(end, `no closing brace for ${builder}`).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe('every connector declares the credentials its factory reads', () => {
   it('covers the whole key set', () => {
     // `Record<ConnectorAppKey, …>` makes this a compile error too. Asserted
@@ -43,39 +59,20 @@ describe('every connector declares the credentials its factory reads', () => {
   });
 
   it.each([...CONNECTOR_APP_KEYS])('declares every credential %s\'s factory reads', async (key) => {
-    // PER CONNECTOR, both directions. The previous form flattened every
-    // connector's field names into one set and applied a single global
-    // anti-vacuity floor — so moving `botToken` into the Google array and
-    // leaving `slack: []` passed all fourteen tests while the Slack form
-    // rendered no inputs and posted `credentials: {}`, and a routine
-    // `const { botToken } = credentials` refactor in the worker left the Slack
-    // side of the detector matching nothing with the floor still satisfied by
-    // Google's three. Both measured in review.
-    const source = await readFile(WORKER_CONNECTORS, 'utf8');
-
-    // The factory body for this key, located through the REGISTRY ENTRY rather
-    // than by a name convention: the map is what binds a key to a builder.
-    const builderName = /\[\s*'([^']+)'\s*,\s*(\w+)\s*\]/g;
-    const builders = new Map(
-      [...source.matchAll(builderName)].map((m) => [m[1]!, m[2]!] as const),
-    );
-    const builder = builders.get(key);
-    expect(builder, `no registry entry for ${key}`).toBeDefined();
-
-    const bodyStart = source.indexOf(`function ${builder}(`);
-    expect(bodyStart, `no body for ${builder}`).toBeGreaterThan(-1);
-    const body = source.slice(bodyStart, source.indexOf('\n}', bodyStart));
-
+    // Both directions are now per connector and share one locator. The previous
+    // form flattened the declared names across connectors and applied a single
+    // global anti-vacuity floor, so moving `botToken` into the Google array —
+    // or a routine `const { botToken } = credentials` refactor in the worker —
+    // passed every test.
+    const body = await factoryBody(key);
     const read = [...body.matchAll(/credentials\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!);
-    expect(
-      read.length,
-      `no credential reads found in ${builder} — the detector stopped matching`,
-    ).toBeGreaterThan(0);
+
+    expect(read.length, `no credential reads found for ${key}`).toBeGreaterThan(0);
 
     const declared = new Set(CREDENTIAL_FIELDS[key].map((f) => f.name));
     expect(
       [...new Set(read)].filter((name) => !declared.has(name)),
-      `read by ${builder}, offered by no field of ${key}`,
+      `read by ${key}'s factory, offered by no field of ${key}`,
     ).toEqual([]);
   });
 
@@ -165,28 +162,19 @@ describe('rejectCredentials keeps a wrong paste from being sent', () => {
     expect(rejectCredentials('notion', { serviceAccountJson: 'anything' })).toBeNull();
   });
 
-  it('declares no field its own factory does not read', () => {
-    // The OTHER direction. The reads ⊆ declared check above passes when a
-    // connector declares a field nothing reads — and since the replace flow now
-    // blocks Save on any blank declared REQUIRED field, such a field becomes an
-    // input that gates the flow and can never be satisfied by anything the
-    // worker looks at.
-    return (async () => {
-      const source = await readFile(WORKER_CONNECTORS, 'utf8');
-      for (const key of CONNECTOR_APP_KEYS) {
-        const read = new Set(
-          [...source.matchAll(/credentials\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!),
-        );
-        const declaredRequired = CREDENTIAL_FIELDS[key]
-          .filter((f) => f.required)
-          .map((f) => f.name);
+  it.each([...CONNECTOR_APP_KEYS])('%s requires no field its own factory ignores', async (key) => {
+    // Scoped to THIS connector's factory. The first version swept the whole
+    // worker module, so `botToken` declared required on google-workspace passed
+    // — which is the failure the name describes: a required input that gates
+    // the replace flow and that no factory ever reads.
+    const body = await factoryBody(key);
+    const read = new Set([...body.matchAll(/credentials\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!));
 
-        expect(
-          declaredRequired.filter((name) => !read.has(name)),
-          `${key} requires a field no factory reads`,
-        ).toEqual([]);
-      }
-    })();
+    expect(read.size, `no credential reads found for ${key}`).toBeGreaterThan(0);
+    expect(
+      CREDENTIAL_FIELDS[key].filter((f) => f.required && !read.has(f.name)).map((f) => f.name),
+      `${key} requires a field its factory ignores`,
+    ).toEqual([]);
   });
 
   it('does not accept one connector by supplying the other one\'s field', () => {

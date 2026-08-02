@@ -2,6 +2,7 @@ import { google, admin_directory_v1 } from 'googleapis';
 import {
   ConnectorError,
   diagnose,
+  waitUnlessAborted,
   type ConnectorContext,
   type RawAccount,
   type RawToken,
@@ -118,7 +119,7 @@ async function withRetry<T>(
   ctx: ConnectorContext,
   sleep: (ms: number) => Promise<void>,
   operation: string,
-  this_secret: string,
+  secret: string,
 ): Promise<T> {
   let attempt = 0;
 
@@ -136,7 +137,7 @@ async function withRetry<T>(
         // third-party default this repository neither pins nor asserts, and the
         // config URL it does NOT redact carries an employee address.
         throw new ConnectorError('auth', false, 'Google Workspace authentication failed', {
-          cause: diagnose(error, this_secret),
+          cause: diagnose(error, secret),
         });
       }
 
@@ -144,7 +145,7 @@ async function withRetry<T>(
       if (!isRetryableStatus || attempt >= MAX_ATTEMPTS) {
         const kind = status === 429 ? 'rate_limit' : 'transient';
         throw new ConnectorError(kind, true, `Google Workspace ${operation} failed after retries`, {
-          cause: diagnose(error, this_secret),
+          cause: diagnose(error, secret),
         });
       }
 
@@ -155,7 +156,15 @@ async function withRetry<T>(
         status,
         delayMs: Math.round(backoffMs + jitterMs),
       });
-      await sleep(backoffMs + jitterMs);
+      // The same abort-aware wait Slack uses. This connector had none, in the
+      // same transaction, which is the class-with-two-members shape this cycle
+      // has now paid for three times.
+      await waitUnlessAborted(
+        backoffMs + jitterMs,
+        ctx.signal,
+        sleep,
+        () => new ConnectorError('fatal', false, `Google Workspace ${operation} aborted`),
+      );
     }
   }
 }
@@ -173,6 +182,28 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
   constructor(cfg: GoogleWorkspaceConnectorConfig, deps?: GoogleWorkspaceConnectorDeps) {
     this.cfg = cfg;
     this.deps = deps ?? {};
+  }
+
+  /**
+   * The secret handed to `diagnose`.
+   *
+   * The PEM, not the document containing it. Passing `serviceAccountJson` made
+   * the scrub a guaranteed no-op — an exact-substring replace whose needle is a
+   * whole JSON blob matches nothing an error message ever carries, while the
+   * material that could appear is the key inside it. Found in review, and it is
+   * the reason the field allowlist rather than the scrub was doing the work on
+   * this path.
+   */
+  private privateKey(): string {
+    try {
+      const parsed = JSON.parse(this.cfg.serviceAccountJson) as { private_key?: unknown };
+      return typeof parsed.private_key === 'string' ? parsed.private_key : '';
+    } catch {
+      // An unparseable document has no key to leak, and `diagnose` treats an
+      // empty secret as "nothing to scrub" rather than splitting on every
+      // character.
+      return '';
+    }
   }
 
   private async getUsersList(): Promise<NonNullable<GoogleWorkspaceConnectorDeps['usersList']>> {
@@ -255,7 +286,7 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
     // One request, no loop: `Schema$Tokens` carries `{kind, etag, items}` and no
     // `nextPageToken`, and `Params$Resource$Tokens$List` accepts `userKey`
     // alone. Measured from the installed googleapis types, not assumed.
-    const response = await withRetry(() => tokensList({ userKey }), ctx, sleep, 'tokens.list', this.cfg.serviceAccountJson);
+    const response = await withRetry(() => tokensList({ userKey }), ctx, sleep, 'tokens.list', this.privateKey());
 
     return (response.data.items ?? []).map((token) => toRawToken(token, userKey));
   }
@@ -276,7 +307,7 @@ export class GoogleWorkspaceConnector implements SaaSConnector {
         ...(pageToken ? { pageToken } : {}),
       };
 
-      const response = await withRetry(() => usersList(params), ctx, sleep, 'users.list', this.cfg.serviceAccountJson);
+      const response = await withRetry(() => usersList(params), ctx, sleep, 'users.list', this.privateKey());
       const users = response.data.users ?? [];
 
       for (const user of users) {

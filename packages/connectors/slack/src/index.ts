@@ -3,6 +3,7 @@ import type { UsersListResponse } from '@slack/web-api';
 import {
   ConnectorError,
   diagnose,
+  waitUnlessAborted,
   type ConnectorContext,
   type RawAccount,
   type SaaSConnector,
@@ -60,10 +61,7 @@ const MAX_RETRY_AFTER_MS = 60_000;
  * configured `attempts: 1`. A single slow response became a terminal sync
  * failure. Found in review.
  */
-const REQUEST_ERROR_CODES: ReadonlySet<string> = new Set([
-  'slack_webapi_request_error',
-  'slack_webapi_platform_error',
-]);
+const REQUEST_ERROR_CODES: ReadonlySet<string> = new Set(['slack_webapi_request_error']);
 
 function isTransportError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
@@ -96,29 +94,6 @@ export interface SlackConnectorConfig {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Waits, unless the run is already over.
- *
- * `defaultSleep` is a bare `setTimeout` and the paging loop polls
- * `ctx.signal.aborted` only between pages, so a long wait was unreachable by
- * the deadline the caller supplies. Checked before and after, which is the most
- * a caller-supplied `sleep` can offer without changing the injection surface.
- */
-async function waitUnlessAborted(
-  ms: number,
-  ctx: ConnectorContext,
-  sleep: (ms: number) => Promise<void>,
-  operation: string,
-): Promise<void> {
-  if (ctx.signal.aborted) {
-    throw new ConnectorError('fatal', false, `Slack ${operation} aborted`);
-  }
-  await sleep(ms);
-  if (ctx.signal.aborted) {
-    throw new ConnectorError('fatal', false, `Slack ${operation} aborted`);
-  }
 }
 
 /**
@@ -297,7 +272,12 @@ async function withRetry<T>(
         ...(code === undefined ? {} : { code }),
         delayMs: Math.round(delayMs),
       });
-      await waitUnlessAborted(delayMs, ctx, sleep, operation);
+      await waitUnlessAborted(
+        delayMs,
+        ctx.signal,
+        sleep,
+        () => new ConnectorError('fatal', false, `Slack ${operation} aborted`),
+      );
     }
   }
 }

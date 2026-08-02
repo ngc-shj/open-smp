@@ -148,4 +148,47 @@ describe('GoogleWorkspaceConnector.listUsers', () => {
     expect(connector.tokenCapability).toBe('per-user-grants');
     expect(typeof connector.listTokens).toBe('function');
   });
+
+  it('keeps the private key out of the error it propagates', async () => {
+    // The half of the diagnose hoist that had none: reverting both call sites
+    // to `cause: error` left this package 13/13 green, which is the regression
+    // the hoist existed to prevent. gaxios redacts Authorization by default —
+    // a third-party default this repository neither pins nor asserts — so what
+    // is pinned here is the projection and the scrub, which are ours.
+    const PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nDEMO\n-----END PRIVATE KEY-----\n';
+    const usersList = vi.fn(async () => {
+      throw Object.assign(new Error(`request signed with ${PRIVATE_KEY} failed`), {
+        code: 403,
+        config: { headers: { Authorization: 'Bearer ya29.secret' } },
+      });
+    });
+
+    const connector = new GoogleWorkspaceConnector(
+      {
+        serviceAccountJson: JSON.stringify({
+          client_email: 'a@b.iam.gserviceaccount.com',
+          private_key: PRIVATE_KEY,
+        }),
+        impersonateAdminEmail: 'admin@corp.example',
+      },
+      { usersList, sleep: async () => {} },
+    );
+
+    let caught: unknown;
+    try {
+      await collect(connector.listUsers(makeContext()));
+    } catch (error) {
+      caught = error;
+    }
+
+    const serialized = JSON.stringify((caught as Error).cause);
+    expect((caught as Error).message).not.toContain(PRIVATE_KEY);
+    expect(serialized).not.toContain(PRIVATE_KEY);
+    // The whole request is gone, not merely the key: the projection is a
+    // whitelist and the Authorization header is not on it.
+    expect(serialized).not.toContain('ya29.secret');
+    // And the diagnosis survived, or the assertions above would be satisfied by
+    // discarding it.
+    expect(serialized).toContain('[redacted]');
+  });
 });

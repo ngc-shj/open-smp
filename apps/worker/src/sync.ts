@@ -103,7 +103,7 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
   const runId = randomUUID();
   const runStartedAt = new Date();
 
-  let decrypted: Buffer | null = null;
+  let decrypted: Uint8Array | null = null;
   // Resolved once the app row is loaded, so the failure-path audit event
   // (CF2) can record which source failed even when the main transaction
   // rolls back.
@@ -117,16 +117,20 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
         throw new Error(`saas_apps row ${job.saasAppId} has no stored credentials`);
       }
 
-      decrypted = Buffer.from(
-        decryptCredentials(
-          app.credentials_enc,
-          app.credentials_key_version,
-          { tenantId: job.tenantId, saasAppId: job.saasAppId },
-          deps.encryptionKeys,
-        ),
+      // The RETURNED buffer, not a copy of it. `Buffer.from(...)` allocated a
+      // second buffer and the `finally` below zeroed only that one, leaving the
+      // plaintext service-account document that `decryptCredentials` produced
+      // untouched — for the life of the process. Review found it by following
+      // this function's own claim to be the correct sibling of a fix made
+      // elsewhere.
+      decrypted = decryptCredentials(
+        app.credentials_enc,
+        app.credentials_key_version,
+        { tenantId: job.tenantId, saasAppId: job.saasAppId },
+        deps.encryptionKeys,
       );
 
-      const credentials = JSON.parse(decrypted.toString('utf8')) as Record<string, string>;
+      const credentials = JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, string>;
 
       const buildConnector = deps.connectorRegistry.get(app.key);
       if (!buildConnector) {
@@ -142,7 +146,13 @@ export async function runSync(deps: SyncDeps, job: SyncJobData): Promise<SyncJob
       const ctx: ConnectorContext = {
         credentials,
         logger: deps.logger,
-        signal: deps.signal ?? AbortSignal.timeout(SYNC_DEADLINE_MS),
+        // `any`, not `??`. Injectable so a test can observe it, and the
+        // deadline still cannot be removed by a caller — review flagged the
+        // `??` form as answering a coverage finding by widening the boundary
+        // (R43).
+        signal: deps.signal
+          ? AbortSignal.any([deps.signal, AbortSignal.timeout(SYNC_DEADLINE_MS)])
+          : AbortSignal.timeout(SYNC_DEADLINE_MS),
       };
 
       let count = 0;

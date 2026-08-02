@@ -273,8 +273,16 @@ describe('every message key has a reader', () => {
       return out;
     }
 
-    const files = await sources(SRC);
+    // The DICTIONARY IS EXCLUDED, and forgetting that is what made the first
+    // version of this detector a tautology: every key appears in messages.ts as
+    // a quoted literal, so `code.includes("'key'")` was true by construction and
+    // `orphans` was always empty. Measured by all three reviewers — an injected
+    // `'zzz.orphan'` left the suite green. It was written to close exactly the
+    // class it then failed to detect.
+    const DICTIONARY = path.join(SRC, 'lib', 'i18n', 'messages.ts');
+    const files = (await sources(SRC)).filter((f) => f !== DICTIONARY);
     expect(files.length).toBeGreaterThan(0);
+    expect(files, 'the dictionary is still in the scanned set').not.toContain(DICTIONARY);
     const code = (await Promise.all(files.map((f) => readFile(f, 'utf8')))).join('\n');
 
     // A key is read when its literal appears anywhere outside the dictionary

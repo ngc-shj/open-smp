@@ -105,17 +105,77 @@ export function diagnose(error: unknown, secret: string): Record<string, unknown
     string,
     unknown
   >;
-  const status = typeof source.statusCode === 'number' ? source.statusCode : undefined;
+  const response = source.response as { status?: unknown; data?: { error?: unknown } } | undefined;
+
+  // BOTH SHAPES. The first version read `statusCode` and `data.error`, which are
+  // Slack's spellings — a `GaxiosError` carries `status` and
+  // `response.data.error`, so hoisting the function without widening it made
+  // every Google diagnosis `{statusCode: undefined, platformError: undefined}`.
+  // Propagating a helper is not copying it (R3).
+  const status =
+    typeof source.statusCode === 'number'
+      ? source.statusCode
+      : typeof source.status === 'number'
+        ? source.status
+        : typeof response?.status === 'number'
+          ? response.status
+          : undefined;
   const data = source.data as { error?: unknown } | undefined;
+  const platformError =
+    typeof data?.error === 'string'
+      ? data.error
+      : typeof response?.data?.error === 'string'
+        ? response.data.error
+        : undefined;
 
   return {
     name: typeof source.name === 'string' ? scrub(source.name) : undefined,
     message: typeof source.message === 'string' ? scrub(source.message) : undefined,
     code: typeof source.code === 'string' ? source.code : undefined,
     statusCode: status,
-    platformError: typeof data?.error === 'string' ? data.error : undefined,
+    platformError,
     retryAfter: typeof source.retryAfter === 'number' ? source.retryAfter : undefined,
   };
+}
+
+/**
+ * Waits, and stops waiting when the run is over.
+ *
+ * `Promise.race`, not a check either side of the sleep. The first version
+ * checked before and after and claimed that was "the most a caller-supplied
+ * sleep can offer" — false: an abort one millisecond into a clamped 60-second
+ * wait still held `runSync`'s open transaction, its pooled connection and its
+ * decrypted credential buffer for the remaining 60 seconds. It ended the run one
+ * full wait later rather than shortening it.
+ *
+ * In `connectors-core` because the class has one member per connector, which is
+ * the lesson `diagnose` above was moved here for.
+ */
+export function waitUnlessAborted(
+  ms: number,
+  signal: AbortSignal,
+  sleep: (ms: number) => Promise<void>,
+  onAborted: () => Error,
+): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(onAborted());
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => reject(onAborted());
+    signal.addEventListener('abort', abort, { once: true });
+    void sleep(ms).then(
+      () => {
+        signal.removeEventListener('abort', abort);
+        if (signal.aborted) reject(onAborted());
+        else resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
 
 export class ConnectorError extends Error {

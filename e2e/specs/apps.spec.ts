@@ -237,7 +237,7 @@ test.describe('apps management (C22)', () => {
     await expect(contractOnly.getByRole('button', { name: 'Replace credentials' })).toHaveCount(0);
   });
 
-  test('refuses a replacement with a required field left blank, without a request', async ({ page }) => {
+  test('refuses an empty replacement without sending anything', async ({ page }) => {
     await page.goto('/apps');
 
     const requests: string[] = [];
@@ -247,7 +247,10 @@ test.describe('apps management (C22)', () => {
 
     const row = page.getByRole('row', { name: new RegExp(SAAS_APP_KEY) });
     await row.getByRole('button', { name: 'Replace credentials' }).click();
-    // The panel opens empty, so Save with nothing typed is the blank case.
+    // What this pins, named honestly after review measured it: the panel opens
+    // empty and Save is refused BEFORE any request. It does NOT single out the
+    // required-blank guard — the classifier rejects an empty service account
+    // first, and a spec claiming otherwise was satisfied by that.
     await row.getByRole('button', { name: 'Replace', exact: true }).click();
 
     await expect(row.getByRole('alert')).toBeVisible();

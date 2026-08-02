@@ -4,7 +4,9 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runMigrations, withTenant } from '@open-smp/schema';
 import { encryptCredentials } from '@open-smp/crypto';
-import { ConnectorError, type RawToken, type SaaSConnector } from '@open-smp/connectors-core';
+import { ConnectorError, type RawToken, type SaaSConnector ,
+  type ConnectorContext,
+} from '@open-smp/connectors-core';
 import { TOKEN_AUDIT_EVENT_SOURCE } from '@open-smp/api-types';
 import { runTokenAudit, TOKEN_AUDIT_MAX_ACCOUNTS } from '../src/token-audit.js';
 import type { ConnectorRegistry } from '../src/connectors.js';
@@ -43,7 +45,19 @@ function fakeConnector(
     listUsers: () => {
       throw new Error('listUsers must not be called by the token audit');
     },
-    ...(listTokens ? { listTokens } : {}),
+    ...(listTokens
+      ? {
+          // The signal IS observed, as both real connectors observe it. A fake
+          // that ignored it made the audit deadline unobservable at this tier —
+          // the same RT1 gap the sync fake had.
+          listTokens: async (ctx: ConnectorContext, userKey: string) => {
+            if (ctx.signal.aborted) {
+              throw new ConnectorError('fatal', false, 'fake connector: run aborted');
+            }
+            return listTokens(ctx, userKey);
+          },
+        }
+      : {}),
   };
 }
 
@@ -306,5 +320,28 @@ describe('SC3/C2: the audit reads what sync already inventoried', () => {
     const events = await eventsFor(tenantId);
     expect(events[0]!.kind).toBe('token_audit_unsupported');
     expect(events[0]!.payload.capability).toBe(capability);
+  });
+
+  it('stops when the run deadline has passed', async () => {
+    // The sibling got this one round earlier; this path did not, so reverting
+    // its signal to a never-aborting controller stayed green — the exact
+    // asymmetry review kept finding.
+    const saasAppId = await seedApp(tenantId, 2);
+    const listTokens = vi.fn(async () => []);
+
+    await expect(
+      runTokenAudit(
+        {
+          pool,
+          connectorRegistry: registryFor(fakeConnector(listTokens)),
+          encryptionKeys,
+          logger,
+          signal: AbortSignal.abort(),
+        },
+        { tenantId, saasAppId },
+      ),
+    ).rejects.toThrow(/aborted/);
+
+    expect(listTokens, 'the audit asked the provider after the run was over').not.toHaveBeenCalled();
   });
 });
