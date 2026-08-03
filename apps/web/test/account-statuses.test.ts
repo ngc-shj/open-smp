@@ -100,7 +100,7 @@ describe('I6.11: the E2E account-status fixture matches the dictionary it mirror
     // from every entry gives 0 pairs, which the `> 0` guard below reds on its
     // own; removing them from four of five gives 1 pair against 5 `email:`,
     // which `> 0` PASSES and only this equality reds. That is the case the
-    // model records having paid for (link-statuses.test.ts:203-210 — "four
+    // model records having paid for (link-statuses.test.ts:213-220 — "four
     // ordinary fixture edits left one pair matched and four entries
     // unchecked").
     // Non-empty on its own account too: a denominator that itself went to zero

@@ -274,7 +274,7 @@ node -e "const {z}=require('zod');const a=['active','suspended','archived'];cons
 with a parse before the push printing `false`, and `Object.freeze(a)` making the push throw.
 So the freeze **is** load-bearing on the connector-ingest validator, and an unfrozen array would
 widen that validator rather than merely fail the C39 gate. The pre-existing comment at
-`packages/api-types/src/index.ts:18-20` carries the same error.
+`packages/api-types/src/index.ts:18-23` carries the same error.
 
 ### M12 — Minor (Security F5). C2/C3/C5's forbidden patterns are order-sensitive tripwires presented as an acceptance criterion (R47).
 
@@ -415,7 +415,7 @@ Preserved verbatim per expert. Not deduplicated — these are the evidence that 
 - R37 (Internal jargon in user-facing strings): Checked — no issue
 - R38 (Async/persisted state machine): N/A
 - R39 (Lifecycle secret zeroization): N/A
-- R40 (Cross-boundary serialization vs strict consumer): Checked — no issue (wire type stays string; the rationale at plan:93-111 verified against apps/api/src/routes/accounts.ts:48-50 and apps/api/src/routes/identities.ts:136)
+- R40 (Cross-boundary serialization vs strict consumer): Checked — no issue (wire type stays string; the rationale at plan:93-111 verified against apps/api/src/routes/accounts.ts:48-51 and apps/api/src/routes/identities.ts:136)
 - R41 (Declared capability without backing path): Finding F1
 - R42 (Class-membership derivation): Finding F4 (the direct 11-member set reproduces exactly; the single-value subclass does not)
 - R43 (Fix-induced security-boundary widening): N/A — Security expert's scope
@@ -438,7 +438,7 @@ Preserved verbatim per expert. Not deduplicated — these are the evidence that 
 
 - R1 (Shared utility reimplementation): Checked — no issue. C3's third copy of the three-line key-lookup is an explicit, reasoned R1 acceptance (plan 310-320); the withdrawn-extraction precedent it cites is real.
 - R2 (Constants hardcoded): Checked — no issue. C2 removes 10 of 11 hardcoded spellings; the 11th is the shipped migration, correctly excluded.
-- R3 (Pattern propagation): Finding F2 — the incorrect z.enum claim would be copied from packages/api-types/src/index.ts:18-20 into a second site.
+- R3 (Pattern propagation): Finding F2 — the incorrect z.enum claim would be copied from packages/api-types/src/index.ts:18-23 into a second site.
 - R4 (Event dispatch gaps): N/A — no event path touched.
 - R5 (Missing transactions): N/A — no write path added.
 - R6 (Cascade delete orphans): N/A.
@@ -519,7 +519,7 @@ Preserved verbatim per expert. Not deduplicated — these are the evidence that 
 - R15 (Hardcoded env values in migrations): N/A — no migration
 - R16 (Dev/CI environment parity): Finding F3 (I1.1's only surviving observer needs a local Docker daemon)
 - R17 (Helper adoption coverage): Finding F1
-- R18 (Allowlist/safelist sync): Checked — no issue (NOT_COPY untouched; pinned by exact equality at apps/web/test/untranslated-literals.test.ts:93-97)
+- R18 (Allowlist/safelist sync): Checked — no issue (NOT_COPY untouched; pinned by exact equality at apps/web/test/untranslated-literals.test.ts:93-99)
 - R19 (Test mock alignment): N/A — no mocks in scope
 - R20 (Multi-statement preservation): N/A
 - R21 (Subagent completion vs verification): N/A
@@ -779,7 +779,7 @@ through `ROLLUP_SQL:49-66`.
 
 ### N11 — Minor (Security F4). The corrective comment edit fixes half of what is wrong, and the plan's blanket phrasing invites a symmetric "fix" of a comment that is already right.
 
-`packages/api-types/src/index.ts:16-20` carries two errors. Revision 2 named the `z.enum` one.
+`packages/api-types/src/index.ts:16-23` carries two errors. Revision 2 named the `z.enum` one.
 The other: the comment sits on `LINK_STATUSES`, presents the freeze as speculative ("if one is
 added here later"), and cites `isAccountLabelKind` — a guard over a **different** array — as its
 model, while `LINK_STATUSES` has a live consumer today at `apps/api/src/routes/accounts.ts:21`.
@@ -830,7 +830,7 @@ as correct and untouched.
   stronger: the render site is one member-agnostic expression, so pinning one member exercises it
   for all three. Fixed as worded.
 - **N21** (Testing F9) — I6.4's "renamed or given a second `describe`" left three citations at
-  risk (`tables.test.ts:26-28`, SC3, SC5), and the I6.1 row said "(unchanged)" while requiring a
+  risk (`tables.test.ts:26-30`, SC3, SC5), and the I6.1 row said "(unchanged)" while requiring a
   comment. Fixed: filename kept, second `describe`, row corrected to "comment added".
 
 ## Adjacent Findings

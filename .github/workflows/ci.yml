@@ -28,6 +28,11 @@ jobs:
           # No job pushes; leaving the token in .git/config only exposes it
           # to the install scripts pnpm-workspace.yaml permits.
           persist-credentials: false
+          # check:citations needs a merge base. A depth-1 checkout has none, and
+          # the script exits 2 on an unresolvable ref rather than passing
+          # vacuously — so a shallow checkout reds this job loudly instead of
+          # skipping the gate in silence.
+          fetch-depth: 0
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -37,6 +42,14 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test:unit
+      - name: Citations in the diff point where they say
+        # Three review rounds found the same mechanism nine expert passes could
+        # not: a commit edits a file and, in the same commit, invalidates a
+        # `file:line` range into it — including ranges it wrote itself. Nineteen
+        # instances, every one mechanically detectable. Scoped to the diff, not
+        # the tree: the archived review corpus carries older decayed ranges, and
+        # a gate nobody can keep green gets switched off.
+        run: pnpm check:citations
 
       - name: Every assigned test file is inside a typecheck program
         # `pnpm typecheck` is `tsc --noEmit` per member, and each member's

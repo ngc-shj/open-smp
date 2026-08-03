@@ -19,7 +19,7 @@ naming precisely because the obvious one is wrong: it is **not** the orphan set.
 status, and `e2e/specs/accounts.spec.ts:72-80` derives both its by-name loop and
 its `toHaveCount` from that same list — the fixture's own docstring says an added
 account "joins this set rather than breaking a count". What binds is what
-`seed-facts.ts:98-102` already records — `e2e/specs/apps.spec.ts:213` hardcodes
+`seed-facts.ts:98-106` already records — `e2e/specs/apps.spec.ts:213` hardcodes
 `Cannot delete — 4 accounts still attributed`, and a non-`active` account drops
 out of `ROLLUP_SQL`'s `seat` CTE, moving the figures
 `e2e/scripts/assert-seed-preserved.sh` pins.
@@ -107,9 +107,13 @@ docker compose up -d --build
 pedantry.** `saas_accounts` carries `FORCE ROW LEVEL SECURITY` with
 `USING (tenant_id = current_tenant_id())`. That is the **shipped** predicate —
 `packages/schema/migrations/0007_tenant_context.sql:98-120` swept every
-`tenant_isolation` policy off the old `app.tenant_id` GUC, and `:122-135` makes
-the migration raise if any policy still reads `current_setting`, so the
-`0001_init.sql:114-116` form is superseded and cannot come back. Ask the engine,
+`tenant_isolation` policy off the old `app.tenant_id` GUC, and `:122-135` made that
+migration raise if any policy still read `current_setting` — a point-in-time
+assertion, not a standing one, since a `DO` block cannot constrain migration
+0008. What keeps the form from coming back is
+`packages/schema/test/rls.integration.test.ts:509-526`, which derives the same
+check from `pg_policies` on every CI run and floors it against an empty policy
+set. So `0001_init.sql:114-116` is superseded and stays that way. Ask the engine,
 not a migration file:
 
 ```sh

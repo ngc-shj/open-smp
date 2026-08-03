@@ -201,7 +201,14 @@ describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
     // inserted-field case. Reordering the two, or switching to double quotes,
     // still drops the entry — this sentence used to claim all three. What makes
     // a drop loud rather than silent is the derived count below, not the span.
-    const pairs = [...source.matchAll(/status:\s*'([^']+)'[^}]*?chip:\s*'([^']+)'/g)];
+    //
+    // `[^']*`, not `[^']+`, on both captures: with `+` an emptied `chip: ''`
+    // produces NO match rather than an empty capture, so it surfaces as a count
+    // mismatch instead of naming the entry. Measured — 4 pairs against 5
+    // `chip:` either way, so nothing was vacuous; `*` only improves the
+    // diagnosis. Carried over from account-statuses.test.ts, which made this
+    // argument first.
+    const pairs = [...source.matchAll(/status:\s*'([^']*)'[^}]*?chip:\s*'([^']*)'/g)];
 
     // DERIVED, not floored. `> 0` proved the parse was non-empty and nothing
     // else: four ordinary fixture edits left one pair matched and four entries

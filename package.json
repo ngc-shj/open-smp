@@ -13,7 +13,8 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:e2e": "pnpm -C e2e test",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "check:citations": "node scripts/check-citations.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

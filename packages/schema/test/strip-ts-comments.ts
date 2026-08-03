@@ -17,9 +17,10 @@
  * direction for a negative literal check, and tables.ts is dense with sql`…`
  * templates.
  *
- * Not handled, all in the false-GREEN direction — real code silently deleted,
- * which for a NEGATIVE literal check means the gate passes on a file that
- * should red. (Writing a block-comment terminator literally in this docstring
+ * Not handled. Symptoms 1 and 2 delete real code, which for a NEGATIVE literal
+ * check means the gate passes on a file that should red. Symptom 3 runs the
+ * other way first — it leaves genuine comments unstripped, redding an intact
+ * file — and reaches false green only via a second construct downstream. (Writing a block-comment terminator literally in this docstring
  * would close THIS comment, which is the same class one level up. It did once.)
  *
  *   1. **Regex literals are not recognised at all.** The scanner knows `'`,
@@ -34,6 +35,13 @@
  *      real. The third has the widest blast radius.
  *   2. A template literal whose `${…}` interpolation nests a backtick ends the
  *      string region early, so the rest of the real string is scanned as code.
+ *
+ * The amplifier both share: the `'` and `"` scan is NOT newline-terminated —
+ * it runs to the next matching quote anywhere in the file, or to EOF. TypeScript
+ * forbids those strings spanning a newline, so a stray quote from any source
+ * turns into a file-wide phase offset rather than a one-line one. That is the
+ * property with the bounded fix (stop the scan at a newline), and it is why
+ * symptom 3 has the widest blast radius.
  *
  * Both are unreachable in the file this copy scans: tables.ts carries eleven
  * `sql` templates, ten with interpolations, none nesting a backtick, and no

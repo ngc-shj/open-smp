@@ -85,7 +85,7 @@ describe('C41: link_status in the deployed database matches the domain', () => {
 
 // I6.4 — the same three questions asked of account_status, on the same
 // container boot. The FILENAME stays link-status-enum.integration.test.ts:
-// tables.test.ts:26-28 and the plan's SC3 and SC5 all cite it by name, and a
+// tables.test.ts:26-30 and the plan's SC3 and SC5 all cite it by name, and a
 // rename stales three citations to save nothing. Two enums, one boot, is why
 // this is a second describe rather than a second file.
 //

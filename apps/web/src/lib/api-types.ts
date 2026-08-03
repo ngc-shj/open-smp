@@ -14,7 +14,7 @@
 // what the accounts filter bar derives its options from instead of re-listing
 // them.
 //
-// LINK_STATUSES has no runtime consumer in apps/web yet — the chip-class map is
+// LINK_STATUSES has no PRODUCTION consumer in apps/web yet — the chip-class map is
 // keyed by the `LinkStatus` *type*, which crosses in the type block below. It is
 // re-exported here anyway, because the policy above is that a shared value
 // crosses at this one place: a guard like isAccountLabelKind is the consumer

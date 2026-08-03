@@ -138,7 +138,7 @@ with its trigger.
 
 All three found by the Step 2-5 self-check; all three are the R29 class, and none changes behaviour.
 
-- **The freeze-liveness claim was unbounded** (`packages/api-types/src/index.ts:18-20`). The
+- **The freeze-liveness claim was unbounded** (`packages/api-types/src/index.ts:18-23`). The
   corrective edit C1 made in Batch A replaced an overstatement in one direction ("the freeze does
   NOT protect z.enum()") with an overstatement in the other. The plan's own Risks section measured
   the bound — the window closes at the first **string-valued** parse — and the sibling comment
@@ -163,7 +163,7 @@ Recording them together because the pattern is the point.
   `SEEDED_ORPHAN_EMAILS` (`e2e/fixtures/seed-facts.ts:91-93`) filters on the **link** status, and
   `accounts.spec.ts:72-80` derives both its by-name loop and its `toHaveCount` from that same list.
   The fixture's docstring says outright that an added account "joins this set rather than breaking a
-  count". What binds is what `seed-facts.ts:98-102` already recorded: `apps.spec.ts:213` hardcodes
+  count". What binds is what `seed-facts.ts:98-106` already recorded: `apps.spec.ts:213` hardcodes
   `Cannot delete — 4 accounts still attributed`, and a non-`active` account leaves `ROLLUP_SQL`'s
   `seat` CTE. The correct reason was in the repo and VE6 used a plausible other one. Corrected in
   both the plan and the manual-test doc.
@@ -220,7 +220,7 @@ running `--numstat` rather than reading the record. **A Resolution Status entry 
 tree and has to be checked against the tree**, which is R50 again in the shape the review process
 itself takes.
 
-**A citation that excluded its own refutation.** The F-01 correction cited `seed-facts.ts:97-101` as
+**A citation that excluded its own refutation.** The F-01 correction cited `seed-facts.ts:97-106` as
 the record of what really binds. Line 97 is blank, the comment runs to 102, and 101 is where the
 sentence breaks — so the range stopped exactly one line before the clause asserting the very thing
 F-01 had refuted. Not deliberate; the effect is that a reader following the citation sees only the
@@ -238,3 +238,35 @@ instance, a comment crediting `[^}]*?` with surviving a field reorder it measura
 defect, and the rate has not fallen — it has moved. Round 1 corrected reasons in the code; Round 2
 corrected reasons in Round 1's corrections. The i18n review recorded the same shape and named the
 exit: the loop stops when the changes stop, not when the findings do.
+
+## D10 — Phase 3 Round 3: the loop was closed by a gate, not by a round
+
+Round 3 found Critical 0 / Major 4 / Minor 15, all against Round 2's fixes, all of character (b).
+Three of the four Majors were one mechanism: **a commit that edits a file and, in the same commit,
+invalidates a `file:line` range into it — including ranges it wrote itself.** N-2's own fix
+committed N-2 from the other end; T4's fix left the range reconciled in that commit three lines
+short; two documents denied a claim the same commit had written into the tree.
+
+Nine expert passes over three rounds missed these by reading. All were decidable by a script.
+
+**`scripts/check-citations.mjs`** is the round's real output. It resolves every `path:N-M` citation
+in the diff and reports the ones out of bounds or stopping mid-sentence while the subject continues.
+The first version also flagged legitimate sub-range citations; that was narrowed, because a gate
+that over-fires is a gate that gets switched off. Over this branch it found **19** stale ranges —
+including every one two experts had flagged, and several nobody had — all re-derived mechanically.
+It is red-proven by its own exit status (1 broken / 0 restored, no residue), wired into
+`package.json` and CI's `checks` job rather than merely authored (RT7 shape b), given
+`fetch-depth: 0` because it exits 2 on an unresolvable base ref rather than passing vacuously, and
+scoped to the diff because the archived review corpus carries 46 older decayed ranges that would
+make it unkeepable.
+
+What it does not do is stated in the file: it cannot tell whether the cited lines *say* what the
+citing text claims. It removes the class where the reader is looking at the wrong lines, and
+nothing more (R49).
+
+**The lesson, which is the one worth carrying out of this branch.** Three code-review rounds
+produced zero behaviour defects and thirty-five findings about the prose describing the behaviour.
+The verification apparatus a review builds is itself reviewable surface, and past a point the
+cheapest way to close a class is to stop reading for it and start checking for it. The signal that
+the point has arrived: every instance of the class is mechanically decidable, and the reviewers say
+so unprompted.

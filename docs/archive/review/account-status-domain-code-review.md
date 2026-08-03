@@ -1,6 +1,6 @@
 # Code Review: account-status-domain
 Date: 2026-08-04
-Review round: 2
+Review round: 1
 
 ## Changes from Previous Round
 
@@ -24,7 +24,7 @@ status, not the account status — and `accounts.spec.ts:72-80` derives *both* i
 its `toHaveCount` from that same list. The fixture's own docstring states the intent: an added
 account "joins this set rather than breaking a count."
 
-What actually binds was already recorded 40 lines below, at `seed-facts.ts:98-102`:
+What actually binds was already recorded a few lines below, at `seed-facts.ts:98-106`:
 `e2e/specs/apps.spec.ts:213` hardcodes `Cannot delete — 4 accounts still attributed`, and a
 non-`active` account drops out of `ROLLUP_SQL`'s `seat` CTE, moving figures
 `e2e/scripts/assert-seed-preserved.sh` pins.
@@ -102,7 +102,7 @@ the file rather than quietly repaired.
   to `matched` in the seeded database and reds `accounts.spec.ts:41-43`, `identity.spec.ts:32-34`
   and `licenses.spec.ts:90-91`. Conservative (it understates the case for I6.9) but the table's
   stated contract is completeness. *Fixed.*
-- **Q4**: the cited `206-210` missed the sentence entirely; the landed citation is `203-210`, which covers the quoted comment (`:203-207`) and the assertion it justifies (`:208-210`). Mine,
+- **Q4**: the cited `206-210` missed the sentence entirely; the landed citation is `213-220`, which covers the quoted comment (`:213-217`) and the assertion it justifies (`:218-220`). The first attempt at this reconciliation computed the range against the pre-edit file, in the commit that moved the lines — which is the mechanism `scripts/check-citations.mjs` now checks for. Mine,
   from the D7 fix. *Fixed.*
 
 ### F-04 — Minor (Functionality). A fifth member of the render class, recorded nowhere.
@@ -225,9 +225,9 @@ The Q3 enumeration was correct (both experts re-verified it independently). It s
 
 ### N-2 / T5 — Major (Functionality + Testing). A third copy of the refuted claim, inside the line range the correction cites as its authority.
 
-`e2e/fixtures/seed-facts.ts:101-102` said "a new unmatched account reds the tenant-scoped orphan
+`e2e/fixtures/seed-facts.ts:101-106` said "a new unmatched account reds the tenant-scoped orphan
 count in accounts.spec.ts" — precisely what F-01 refuted. Worse, all three corrected texts cited
-`seed-facts.ts:97-101`: line 97 is **blank**, the comment runs 98-102, and the range **stops one
+`seed-facts.ts:97-106`: line 97 is **blank**, the comment runs 98-102, and the range **stops one
 line short — cutting off exactly the clause that contradicts it.** A reader following the citation
 sees only the corroborating half.
 
@@ -246,7 +246,7 @@ seat-CTE effect is derived here and now says so.
 - **T4** — the parse comment credited `[^}]*?` with surviving a field reorder. Measured: inserting a
   field is absorbed (5 pairs), **reordering drops the entry** (4). The conclusion holds — the
   `email:` denominator makes it loud — but the mechanism was misattributed. Corrected here *and* at
-  `link-statuses.test.ts:197-200`, which is where the overstatement was inherited from.
+  `link-statuses.test.ts:197-203`, which is where the overstatement was inherited from.
 - **SEC-4** — the two-entry limitation list was itself overstated. The root cause is that the
   scanner has no regex-literal awareness at all; the three symptoms are a phantom block comment, a
   phantom line comment from `//` in a character class (`/[//]/` is valid — an unescaped `/` is legal
@@ -277,3 +277,123 @@ copies.
 ## Resolution Status
 
 All thirteen Round-2 findings fixed. Details in `account-status-domain-deviation.md` **D9**.
+
+---
+
+# Round 3 (incremental) — and the exit
+
+Date: 2026-08-04
+Review round: 3
+
+## Changes from Previous Round
+
+Round 2's fixes (`966e782`, eleven files) reviewed by the same three experts.
+**Critical 0 / Major 4 / Minor 15, every one against Round 2's fixes, and every one of character
+(b) — a claim false about the world — except one weak (a).**
+
+All three experts, independently and without being asked to conclude anything, reached the same
+verdict about the loop itself:
+
+> **Functionality**: "A Round 4 that only re-reads prose will find Round 3's prose defects. A Round
+> 4 pays only if the citations are checked by a script rather than a reader. Every finding above is
+> mechanically detectable."
+>
+> **Security**: "A round that only re-verifies the six figures above, mechanically, would close this
+> out; a round that re-reads the prose will find more prose."
+>
+> **Testing**: "That is a batch of edits, not a round of review: the findings have stopped being
+> about the tests and are now entirely about the prose describing them."
+
+## The mechanism, finally named
+
+Three of Round 3's four Majors are one defect wearing three faces:
+
+**A commit edits a file and, in the same commit, invalidates a `file:line` range into that file —
+including ranges the same commit wrote.**
+
+- The N-2 fix re-pointed four documents to `seed-facts.ts:98-102` *and* grew that comment from five
+  lines to twelve. The new range cut mid-sentence at "…leaves ROLLUP_SQL's seat CTE **and**", and
+  excluded `:103-106` — the correction the round had just landed. **N-2 recurring inside the commit
+  that fixed N-2.**
+- The T4 fix added three lines to `link-statuses.test.ts` and left the range reconciled in that same
+  commit pointing three lines short.
+- Two documents asserted the seat-CTE effect was "not recorded in the tree" while the same commit
+  wrote it there.
+
+Nine expert passes across three rounds did not catch these by reading. Every one is decidable by a
+script in milliseconds.
+
+## The exit: a gate, not a round
+
+Phase 3's termination check prescribes exactly this for a class that keeps expanding — the
+convergence artifact is a **mutation-verified guard wired into the authoritative gate**, not another
+round. So Round 3's fix is `scripts/check-citations.mjs`:
+
+- it resolves every `path:N-M` citation in the diff, including short-form ones, and reports any that
+  is out of bounds or **stops mid-sentence while its subject continues** — the precise shape of the
+  defect, narrowed from a first version that also flagged legitimate sub-range citations, because a
+  gate that over-fires gets switched off;
+- run over this branch it found **19** stale ranges, including every instance two experts had
+  flagged and several nobody had. All 19 re-derived mechanically;
+- **red-proven by its own exit status**: shortening one range four lines gives exit 1; restoring
+  gives exit 0, with no residue;
+- **wired**, not merely authored (RT7 shape b): `pnpm check:citations` in `package.json`, and a step
+  in CI's `checks` job with `fetch-depth: 0`, because the script exits 2 on an unresolvable base ref
+  rather than passing vacuously;
+- **scoped to the diff.** Repo-wide the tree carries 46, almost all in archived reviews from
+  finished cycles. Redding CI on those would make the gate unkeepable, and an unkeepable gate is a
+  disabled gate. Stated in the script rather than left to be discovered.
+
+It cannot tell whether the cited lines *say* what the citing text claims. That is declared in the
+file (R49) — it removes the class where the reader is looking at the wrong lines, and nothing more.
+
+## The other findings, all fixed
+
+- **SEC-6** — "cannot come back" was credited to `0007:122-135`, a one-shot migration `DO` block
+  that cannot constrain migration 0008. The standing property lives at
+  `packages/schema/test/rls.integration.test.ts:509-526`, which derives the check from `pg_policies`
+  every CI run with an anti-vacuity floor. Re-cited.
+- **SEC-7** — "all in the false-GREEN direction" was false for symptom 3: an odd quote count leaves
+  genuine comments *unstripped*, redding an intact file. That is false-RED, the failure the helper
+  exists to prevent. Split.
+- **SEC-8** — a second root cause, unnamed: the `'`/`"` scan is not newline-terminated, so a stray
+  quote becomes a file-wide phase offset rather than a line-local one. Added, with its bounded fix.
+- **SEC-9 / R3-3 / F-R3-01** — the propagated note told the `apps/worker` copy that its scanned file
+  carries an interpolating template. Measured: `apps/worker/src/match.ts` has **zero** `${`. The
+  propagation kept the `apps/api` copy's conclusion and deleted the only thing that made it
+  checkable. Corrected with each copy's real profile.
+- **SEC-10** — "seven interpolating templates" was six, and "the two skipped ones" was one.
+- **R3-7** — the barrel still said `LINK_STATUSES` had no runtime consumer; T1 had given it one.
+- **F-R3-05** — the sibling parser kept `[^']+` where its twin had been widened, so an emptied
+  `chip` degraded to a count mismatch instead of naming the entry. Widened, measured either way.
+- **R3-5, R3-6, R3-8** — an unanchored "40 lines below", a stale regex form in the plan, and a
+  duplicated round header.
+
+## Environment Verification Report
+
+lint 0 · typecheck 0 · build 0 · unit 742 · integration 254 · **check:citations 0** · E2E 65 ·
+`assert-seed-preserved.sh` 0. No `blocked-deferred` path.
+
+## Termination
+
+**Stopping here.** Not because the findings stopped — they did not, and the count rose across all
+three rounds — but because their *character* settled and the mechanism behind them is now checked by
+a script rather than by a reader.
+
+| | R1 | R2 | R3 |
+|---|---|---|---|
+| Critical | 0 | 0 | 0 |
+| Major | 1 | 3 | 4 |
+| Minor | 9 | 10 | 15 |
+| **(a) behaviour defects** | **0** | **0** | **0** |
+| (b) claims false about the world | 6 | 11 | 18 |
+| (c) wording | 4 | 2 | 1 |
+
+Zero behaviour defects in three rounds. The code has been stable since Phase 2: every gate green at
+every round, 996 tests, E2E 65, and every observer red-proven. What kept generating findings was the
+prose describing the code — and three rounds of adding prose to fix prose is the loop the i18n
+review already named: **the fix rate feeds the finding rate, so it converges when the changes stop,
+not when the findings do.**
+
+The one thing that changed the game was mechanizing the check. That is the artifact this round
+produced, and it is what a fourth round would otherwise have spent itself discovering.
