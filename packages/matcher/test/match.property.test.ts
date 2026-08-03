@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACCOUNT_STATUSES } from '@open-smp/api-types';
+import { ACCOUNT_STATUSES, type AccountStatus } from '@open-smp/api-types';
 import { matchAccounts } from '../src/match.js';
 import { defaultRules } from '../src/rules.js';
 import type { AccountView, IdentityView } from '../src/types.js';
@@ -107,5 +107,64 @@ describe('matchAccounts properties', () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.identityId).toBeNull();
     expect(results[0]?.status).toBe('ambiguous');
+  });
+
+  // I6.9. The decision `packages/matcher/src/match.ts:16` makes about a departed
+  // identity's account, per member of the domain, recorded TOTALLY.
+  //
+  // A Record keyed by AccountStatus, so adding a fourth member to
+  // ACCOUNT_STATUSES without deciding whether it means the seat is still live
+  // is a COMPILE error, not a silent default. That is the leg the cells above
+  // cannot supply: deriving the generator from the domain does not red on a
+  // fourth member, because deriveStatus runs only after a rule hit, so a new
+  // status yields `matched` with a non-null identityId — which satisfies the
+  // "identityId is null iff orphan or ambiguous" cell, and the other two are a
+  // length check and a determinism check.
+  //
+  // Two outcomes over three inputs, so the runtime assertion is not carried by
+  // the compile error either: inverting the comparison at match.ts:16 flips
+  // `active` and both of the others in opposite directions.
+  const DEPARTED_IDENTITY_OUTCOME: Record<AccountStatus, 'ghost' | 'matched'> = {
+    // Still able to sign in after the person left — the seat this product exists
+    // to surface.
+    active: 'ghost',
+    // Provider access is already gone, so the link is history rather than risk.
+    suspended: 'matched',
+    archived: 'matched',
+  };
+
+  it('decides ghost or matched for every account status under a departed identity', () => {
+    // Through matchAccounts, the exported primitive — deriveStatus is
+    // module-private (packages/matcher/src/index.ts exports matchAccounts and
+    // the rules, not it), and reaching around the production call path would
+    // observe a helper rather than the behaviour.
+    const identity: IdentityView = {
+      id: 'departed-1',
+      primaryEmail: 'departed@example.com',
+      secondaryEmails: [],
+      displayName: 'Departed Person',
+      status: 'left',
+      leftAt: '2026-01-01',
+    };
+    // One account per member, every one on the identity's PRIMARY email, so
+    // every one takes the rule-hit path through exact-email. matchAccount
+    // accumulates hits over identities rather than accounts, so a single
+    // identity gives hits.length === 1 each time and the ambiguous branch —
+    // which needs two matching identities — never fires.
+    const accounts: AccountView[] = ACCOUNT_STATUSES.map((accountStatus) => ({
+      id: `account-${accountStatus}`,
+      email: identity.primaryEmail,
+      displayName: identity.displayName,
+      accountStatus,
+    }));
+
+    const results = matchAccounts([identity], accounts, defaultRules);
+
+    expect(results).toHaveLength(ACCOUNT_STATUSES.length);
+    for (const accountStatus of ACCOUNT_STATUSES) {
+      const result = results.find((r) => r.saasAccountId === `account-${accountStatus}`);
+      expect(result?.identityId, accountStatus).toBe(identity.id);
+      expect(result?.status, accountStatus).toBe(DEPARTED_IDENTITY_OUTCOME[accountStatus]);
+    }
   });
 });

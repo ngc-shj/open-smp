@@ -13,10 +13,24 @@ import type { MessageKey } from './i18n/messages';
  *
  * A third copy of the same three-line shape `LINK_STATUS_KEYS` /
  * `linkStatusKeyFor` and `IDENTITY_STATUS_KEYS` / `identityStatusKeyFor`
- * already have, not extracted into a shared helper. The obvious extraction —
- * `messageKeyFor(keys, value)` — takes the map and the value as independent
- * arguments, so a call site can pair the wrong two; the i18n review withdrew
- * an extraction with exactly this failure mode.
+ * already have, not extracted into a shared helper.
+ *
+ * The reason is NOT "an extraction was withdrawn once" — that is what this
+ * comment said until the Phase 2 self-check, and it does not reach the
+ * conclusion. What was withdrawn (i18n-code-review.md:123-130) is the
+ * POSITIONAL form, `messageKeyFor(keys, value)`, where map and value are
+ * independent arguments and a call site can pair the wrong two. A CLOSURE form
+ * has no such failure mode: `keyLookup(ACCOUNT_STATUS_KEYS)` binds the map at
+ * construction and leaves nothing to mis-pair.
+ *
+ * Why the closure form is not taken HERE — a smaller claim, and the true one:
+ * bound to this one map it has a single consumer, which is indirection rather
+ * than reuse. Reaching the other two means editing link-statuses.ts, a shipped
+ * module carrying two vocabularies and their observers, which this change's
+ * plan does not cover. And `chipClassFor` there is a fourth near-twin that
+ * returns a non-null fallback rather than `null`, so a shared read would cover
+ * three of four and leave the fourth as the exception. SC8 carries the trigger:
+ * the next vocabulary, or any change that already has link-statuses.ts open.
  */
 export const ACCOUNT_STATUS_KEYS: Record<AccountStatus, MessageKey> = {
   active: 'accountStatus.active',

@@ -180,7 +180,7 @@ describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
   it('every seeded chip is the en copy for its status', async () => {
     // THE SECOND DECLARATION. `chip` in e2e/fixtures/seed-facts.ts is
     // apps/web's `en` copy, kept there because a spec cannot import the
-    // dictionary — e2e/package.json declares only @playwright/test. Duplicating
+    // dictionary — e2e/package.json declares only @playwright/test and @types/node. Duplicating
     // at the outermost tier is right (deriving the expectation from the same
     // dictionary the page renders from asserts nothing), but nothing bound the
     // two, so a copy change reddened only the E2E behind a full compose boot.

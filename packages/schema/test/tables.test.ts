@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ACCOUNT_LABEL_KINDS, LINK_STATUSES } from '@open-smp/api-types';
 import {
@@ -7,6 +8,7 @@ import {
   linkStatusEnum,
   tenantScopedTables,
 } from '../src/tables.js';
+import { stripTsComments } from './strip-ts-comments.js';
 import * as schema from '../src/tables.js';
 
 
@@ -30,6 +32,23 @@ describe('enum value sets', () => {
     expect([...linkStatusEnum.enumValues]).toEqual([...LINK_STATUSES]);
   });
 
+  // I6.1. The literal STAYS, deliberately, where its link_status sibling above
+  // derives. It is an independent TRANSCRIPTION of
+  // packages/schema/migrations/0001_init.sql:8 — the shipped migration whose
+  // declaration order IS the Postgres enum's sort order, and which
+  // ACCOUNT_STATUSES is required to match.
+  //
+  // Deriving it from ACCOUNT_STATUSES would be tautological: pgEnum at
+  // drizzle-orm@0.45.2 is `pgEnumWithSchema(name, [...input])` with
+  // `enumValues: values`, a verbatim order-preserving copy, so the comparison
+  // would be `[...[...X]]` against `[...X]` and could not fail. Transcribing
+  // the authority instead makes this a check ON the domain rather than a copy
+  // OF it — and it needs no Docker, so it is the only signal on the order
+  // invariant for a developer who cannot run
+  // link-status-enum.integration.test.ts (I6.4).
+  //
+  // This cell is unchanged from before ACCOUNT_STATUSES existed, which is what
+  // makes the transcription genuinely independent.
   it('account_status matches the C1 contract', () => {
     expect(accountStatusEnum.enumValues).toEqual(['active', 'suspended', 'archived']);
   });
@@ -67,5 +86,34 @@ describe('tenant-scoped table member set', () => {
     // that stopped matching anything would satisfy it silently.
     expect(carriesTenantId.length).toBeGreaterThan(0);
     expect(Object.keys(tenantScopedTables).sort()).toEqual(carriesTenantId);
+  });
+});
+
+
+// I6.8 / C2-I2.2. I6.1 above compares VALUES, so it cannot see the failure this
+// cell exists for: re-inlining an identical literal produces identical
+// enumValues and leaves every behavioural gate green while the single-source
+// property is gone. The derivation is observable only in the source text.
+// apps/api/test/accounts-query-domain.test.ts:21-34 is the in-repo precedent.
+describe('I6.8: account_status derives from the domain in the SOURCE, not only in its values', () => {
+  const source = readFileSync(new URL('../src/tables.ts', import.meta.url), 'utf8');
+
+  it('builds the pgEnum from ACCOUNT_STATUSES, not a local literal', () => {
+    // Tolerant of anything a formatter does: whitespace between every token and
+    // a trailing comma, which prettier emits when it breaks the argument list.
+    expect(source).toMatch(/pgEnum\(\s*'account_status'\s*,\s*ACCOUNT_STATUSES\s*,?\s*\)/);
+  });
+
+  it('re-spells no member of the account-status domain in code', () => {
+    // 'suspended' and 'archived' ONLY. 'active' is deliberately not forbidden:
+    // identityStatusEnum at ../src/tables.ts:38 is
+    // `pgEnum('identity_status', ['active', 'left'])` — a different domain that
+    // legitimately carries 'active' in code, so forbidding it would red an
+    // intact file. The other two appear nowhere else in tables.ts, so together
+    // with the positive match above they pin the derivation with no false red.
+    //
+    // Comments stripped: a note mentioning 'archived' is not a second
+    // declaration, and redding on one would be a false red on an intact file.
+    expect(stripTsComments(source)).not.toMatch(/'(suspended|archived)'/);
   });
 });

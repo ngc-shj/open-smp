@@ -1,7 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { LINK_STATUSES } from '@open-smp/api-types';
+import { ACCOUNT_STATUSES, LINK_STATUSES } from '@open-smp/api-types';
 import { runMigrations } from '../src/migrate.js';
 
 // C41/I41.2 — the domain agrees with the deployed enum, in order.
@@ -79,6 +79,60 @@ describe('C41: link_status in the deployed database matches the domain', () => {
     // insertable, which is what makes the enum a boundary rather than a label.
     await expect(pool.query(`SELECT 'not_a_status'::link_status`)).rejects.toThrow(
       /invalid input value for enum link_status/,
+    );
+  });
+});
+
+// I6.4 — the same three questions asked of account_status, on the same
+// container boot. The FILENAME stays link-status-enum.integration.test.ts:
+// tables.test.ts:26-28 and the plan's SC3 and SC5 all cite it by name, and a
+// rename stales three citations to save nothing. Two enums, one boot, is why
+// this is a second describe rather than a second file.
+//
+// This is the tier that answers what I6.1 cannot: I6.1 pins the drizzle mirror
+// against a transcription of migrations/0001_init.sql:8, and this pins the
+// DEPLOYED type against the domain. A migration that adds a label without
+// touching ACCOUNT_STATUSES reds here and nowhere else — the case
+// apps/web/src/lib/account-statuses.ts's guarded read exists to survive.
+describe('C2/I2.3: account_status in the deployed database matches the domain', () => {
+  it('has exactly the domain members, in the domain order', async () => {
+    // enumsortorder, and schema-qualified, for the reasons the link_status
+    // twin above states: it is the property the declaration order claims, and
+    // a same-named enum in another schema would otherwise interleave its
+    // labels into this ordered result.
+    const { rows } = await pool.query<{ enumlabel: string }>(
+      `SELECT enumlabel
+         FROM pg_enum e
+         JOIN pg_type t ON t.oid = e.enumtypid
+         JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'account_status' AND n.nspname = 'public'
+        ORDER BY e.enumsortorder`,
+    );
+
+    expect(rows.map((row) => row.enumlabel)).toEqual([...ACCOUNT_STATUSES]);
+  });
+
+  it('is the type the saas_accounts.account_status column actually uses', async () => {
+    // Without this, the assertion above would still pass if the column were
+    // switched to some other enum that happens to carry the same labels.
+    const { rows } = await pool.query<{ udt_name: string }>(
+      `SELECT udt_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'saas_accounts'
+          AND column_name = 'account_status'`,
+    );
+
+    expect(rows.map((row) => row.udt_name)).toEqual(['account_status']);
+  });
+
+  it('rejects a value outside the domain', async () => {
+    // Also the PROOF of Requirement 8's first stated exception: the render
+    // site's out-of-domain fallback has no observer at any tier, because the
+    // column is an enum and the engine will not let the value exist. This cell
+    // is that unreachability executed, not a substitute observer for it.
+    await expect(pool.query(`SELECT 'not_a_status'::account_status`)).rejects.toThrow(
+      /invalid input value for enum account_status/,
     );
   });
 });

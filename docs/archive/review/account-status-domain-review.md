@@ -485,7 +485,7 @@ Preserved verbatim per expert. Not deduplicated — these are the evidence that 
 - R47 (Surface-form adjudication): Finding F5.
 - R48 (Parallel adjudicators): Checked — no issue. I6.1 (drizzle vs domain) and I6.5 (engine vs domain) are deliberately paired and the plan states the resolution if I6.1 proves tautological (plan 495-497).
 - R49 (Undeclared control class / overstated claim): Finding F1; F2 is the rarer inverse (an understated control).
-- R50 (Verification preconditions unverified): Checked — no issue. Requirement 6's "every package already declares @open-smp/api-types" verified independently for schema, connectors-core, matcher, worker, api, web.
+- R50 (Verification preconditions unverified): Checked — no issue. Requirement 6's "every package already declares `@open-smp/api-types`" verified independently for schema, connectors-core, matcher, worker, api, web.
 - R51 (Decision bound to a name): Checked — no issue.
 - R52 (Control reach extended without re-audit): Checked — no issue.
 - R53 (Threshold without headroom): N/A.

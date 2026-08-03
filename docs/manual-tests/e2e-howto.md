@@ -47,7 +47,7 @@ failed spec left stray `account_labels` rows, the **preferred, targeted**
 reset is a scoped delete rather than a volume wipe:
 
 ```sh
-docker compose exec postgres psql -U postgres -d open_smp \
+docker compose exec postgres psql -U opensmp -d opensmp \
   -c "DELETE FROM account_labels;"
 ```
 
