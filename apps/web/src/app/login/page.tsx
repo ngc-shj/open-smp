@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
+import { LanguageControl } from '@/components/LanguageControl';
 
 type LoginError = 'tooManyAttempts' | 'invalidCredentials' | 'failed' | 'network';
 
@@ -60,6 +61,18 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
+        {/*
+          C3's control, on the one page NavBar does not cover. The login copy
+          was translated and unreachable: LanguageControl lives only in NavBar,
+          NavBar is mounted by seven pages, and /login is not one of them — so a
+          first-time visitor has no locale cookie, gets DEFAULT_LOCALE, and no
+          way to change it. The ja login strings were reachable only by signing
+          in on an English page and switching from a page that has a NavBar.
+        */}
+        <div className="mb-4 flex justify-end">
+          <LanguageControl />
+        </div>
+
         <h1 className="mb-6 text-xl font-semibold text-neutral-900">{t('login.title')}</h1>
 
         <form onSubmit={handleSubmit} className="space-y-4">

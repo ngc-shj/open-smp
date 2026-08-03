@@ -411,10 +411,21 @@ export type ContractImportResponse = {
 
 // SC37. Both import routes bound the multipart body at this size, and the
 // upload form refuses a larger file before sending it — three sites that were
-// hand-synced comments until C39's gate was widened to admit a scalar. The
-// user-facing "max 10MB" strings are still literals: they are asserted by an
-// E2E spec and by the manual-test doc, so deriving them is a separate change.
+// hand-synced comments until C39's gate was widened to admit a scalar.
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The cap as a person reads it, derived from the cap the code enforces.
+ *
+ * "the user-facing strings are still literals … deriving them is a separate
+ * change" stood here for two contracts, and the i18n contract then added two
+ * MORE members to the class — one per locale — one line below a key that
+ * parameterises its own cap and a comment explaining why. This is that separate
+ * change: both API routes interpolate this into their over-limit error, both
+ * web error maps key off the same interpolation, and both dictionaries take it
+ * as `{max}`. Moving MAX_UPLOAD_BYTES now moves all six together.
+ */
+export const MAX_UPLOAD_LABEL = `${MAX_UPLOAD_BYTES / (1024 * 1024)}MB`;
 
 // The row caps cross for the same reason the byte cap does, and for one more:
 // each route's over-limit error message INTERPOLATES its cap, and the upload

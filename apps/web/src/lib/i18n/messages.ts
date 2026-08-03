@@ -57,6 +57,7 @@ const en = {
 
   // Column headings shared by the accounts list and the identity detail table.
   'table.select': 'Select',
+  'table.selectAccount': 'Select {account}',
   'table.app': 'App',
   'table.email': 'Email',
   'table.name': 'Name',
@@ -116,7 +117,7 @@ const en = {
   'upload.notUtf8': 'This file is not UTF-8 encoded. Save it as UTF-8 and try again.',
   'upload.malformedCsv': 'This file could not be parsed as CSV.',
   'upload.tooManyRows': 'This file has too many rows (max {max}).',
-  'upload.tooLarge': 'This file is too large (max 10MB).',
+  'upload.tooLarge': 'This file is too large (max {max}).',
 
   'accounts.title': 'Accounts',
   'accounts.empty': 'No accounts in this filter.',
@@ -295,6 +296,7 @@ const ja: Record<MessageKey, string> = {
   'evidence.matched': '一致:',
 
   'table.select': '選択',
+  'table.selectAccount': '{account} を選択',
   'table.app': 'アプリ',
   'table.email': 'メールアドレス',
   'table.name': '氏名',
@@ -350,7 +352,7 @@ const ja: Record<MessageKey, string> = {
   'upload.notUtf8': 'このファイルは UTF-8 ではありません。UTF-8 で保存し直してください。',
   'upload.malformedCsv': 'このファイルは CSV として解釈できませんでした。',
   'upload.tooManyRows': 'このファイルは行数が多すぎます（上限 {max} 行）。',
-  'upload.tooLarge': 'このファイルは大きすぎます（上限 10MB）。',
+  'upload.tooLarge': 'このファイルは大きすぎます（上限 {max}）。',
 
   'accounts.title': 'アカウント',
   'accounts.empty': 'この絞り込みに該当するアカウントはありません。',

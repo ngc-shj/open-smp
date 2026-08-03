@@ -7,6 +7,7 @@ import type { MessageKey } from '@/lib/i18n/messages';
 import {
   CONTRACT_IMPORT_MAX_ROWS,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
   type ContractImportResponse,
   type ImportRowIssue,
 } from '@/lib/api-types';
@@ -26,7 +27,10 @@ const UPLOAD_ERROR_KEYS: Record<string, MessageKey> = {
   'file must be UTF-8 encoded': 'upload.notUtf8',
   'malformed CSV': 'upload.malformedCsv',
   [`too many rows (max ${CONTRACT_IMPORT_MAX_ROWS})`]: 'upload.tooManyRows',
-  'file exceeds 10MB limit': 'upload.tooLarge',
+  // Keyed off the constant for the same reason the row cap above is: the
+  // hand-written form stopped matching the moment the cap moved, and this map
+  // then fell through to the generic copy.
+  [`file exceeds ${MAX_UPLOAD_LABEL} limit`]: 'upload.tooLarge',
 };
 
 const COLUMNS =
@@ -143,12 +147,17 @@ export function ContractImportForm() {
           <p>
             {(() => {
               const key = UPLOAD_ERROR_KEYS[state.rawMessage];
+              // PER KEY; see the sibling in app/import/page.tsx. One `max` for
+              // both keys renders the row limit into the byte message.
+              //
               // `en-US` stays pinned so the rendered cap does not depend on where the
               // browser runs (VE3). Making it follow the locale is a separate change,
               // because formatMoney's tests pin the same decision.
-              return key
-                ? t(key, { max: CONTRACT_IMPORT_MAX_ROWS.toLocaleString('en-US') })
-                : t('upload.failed');
+              const max =
+                key === 'upload.tooLarge'
+                  ? MAX_UPLOAD_LABEL
+                  : CONTRACT_IMPORT_MAX_ROWS.toLocaleString('en-US');
+              return key ? t(key, { max }) : t('upload.failed');
             })()}
           </p>
           <p className="text-xs text-neutral-400">{state.rawMessage}</p>
