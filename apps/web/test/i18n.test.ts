@@ -85,11 +85,23 @@ describe('translate', () => {
       // same defect `chipClassFor` records as a paid-for lesson, in the helper
       // whose contract is "a placeholder nobody supplied is marked where it
       // stands".
-      const rendered = translate('en', 'table.selectAccount', {} as Record<string, string>);
-      expect(rendered).toContain(missingMarker('account'));
-
-      const withOther = translate('en', 'table.selectAccount', { [name]: 'x' });
-      expect(withOther, name).toContain(missingMarker('account'));
+      // The placeholder NAME has to be the prototype member — passing
+      // `{toString: 'x'}` for a `{account}` message proves nothing, because
+      // `'account' in {toString:'x'}` is false either way. Measured: the first
+      // version of this cell survived its own mutation for exactly that reason.
+      //
+      // No dictionary key has such a placeholder and none should, so one is
+      // injected the way the unresolvable-key cell below injects a key, and
+      // restored in a `finally`.
+      const dictionary = MESSAGES.en as unknown as Record<string, string>;
+      const probeKey = 'test.prototypePlaceholder';
+      dictionary[probeKey] = `value {${name}}`;
+      try {
+        const rendered = translate('en', probeKey as MessageKey, {});
+        expect(rendered, name).toBe(`value ${missingMarker(name)}`);
+      } finally {
+        Reflect.deleteProperty(dictionary, probeKey);
+      }
     },
   );
 
@@ -264,10 +276,16 @@ describe('i18n/C3: what the switch writes', () => {
     // result straight into a cookie GRAMMAR. Closed by construction today, but
     // the module's obvious next step — negotiation from Accept-Language, or a
     // `?lang=` parameter — makes an attribute injection out of it.
-    const attacked = localeCookie('en; max-age=0' as never);
+    // `domain`, not `max-age`. Duplicate attributes resolve last-wins — in the
+    // parser here AND in a browser per RFC 6265 §5.2 — so injecting an
+    // attribute the writer also emits is overridden by the real one and proves
+    // nothing. Measured: the first version of this cell survived its own
+    // mutation. An attribute the writer never emits is the one that takes
+    // effect, and rescoping the cookie to a parent domain is the reason to care.
+    const attacked = localeCookie('en; domain=evil.example' as never);
 
-    expect(attributes(attacked).get(LOCALE_COOKIE)).toBe('en');
-    expect(attributes(attacked).get('max-age')).toBe(String(LOCALE_COOKIE_MAX_AGE));
+    expect(attributes(attacked).get(LOCALE_COOKIE)).toBe(DEFAULT_LOCALE);
+    expect(attributes(attacked).has('domain'), 'an injected attribute survived').toBe(false);
     // The allow side: a guard that rewrote everything to the default would
     // satisfy the assertions above and break the control.
     expect(attributes(localeCookie('ja')).get(LOCALE_COOKIE)).toBe('ja');
