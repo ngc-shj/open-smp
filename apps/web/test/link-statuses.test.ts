@@ -5,6 +5,7 @@ import {
   ACCOUNT_TABS,
   CHIP_CLASSES,
   CHIP_CLASS_FALLBACK,
+  IDENTITY_STATUS_KEYS,
   LINK_STATUS_KEYS,
   chipClassFor,
   linkStatusKeyFor,
@@ -132,5 +133,56 @@ describe('i18n: the link-status vocabulary reaches the dictionary', () => {
     }
     // The allow side, or a helper that returned null for everything would pass.
     expect(linkStatusKeyFor('matched')).toBe('linkStatus.matched');
+  });
+});
+
+describe('i18n: the identity-status vocabulary reaches the dictionary', () => {
+  it('covers both members and translates each', () => {
+    // This was an inline ternary until review round 2. It was exhaustive, so
+    // nothing was wrong — but inverting it to always-`left` reddened NOTHING,
+    // and a page telling an operator an active employee has left is the failure
+    // that direction produces. A Record makes a third member a compile error;
+    // the loop makes an untranslated one a red.
+    expect(Object.keys(IDENTITY_STATUS_KEYS).sort()).toEqual(['active', 'left']);
+
+    for (const status of ['active', 'left'] as const) {
+      const ja = translate('ja', IDENTITY_STATUS_KEYS[status]);
+      expect(ja, status).not.toContain('⟨');
+      expect(ja, status).not.toBe(translate('en', IDENTITY_STATUS_KEYS[status]));
+    }
+    // Distinct from each other, or one key mapped to both would satisfy the loop.
+    expect(translate('en', IDENTITY_STATUS_KEYS.active)).not.toBe(
+      translate('en', IDENTITY_STATUS_KEYS.left),
+    );
+  });
+});
+
+describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
+  it('every seeded chip is the en copy for its status', async () => {
+    // THE SECOND DECLARATION. `chip` in e2e/fixtures/seed-facts.ts is
+    // apps/web's `en` copy, kept there because a spec cannot import the
+    // dictionary — e2e/package.json declares only @playwright/test. Duplicating
+    // at the outermost tier is right (deriving the expectation from the same
+    // dictionary the page renders from asserts nothing), but nothing bound the
+    // two, so a copy change reddened only the E2E behind a full compose boot.
+    //
+    // Read as text, the way seed-gate-agreement.test.ts reads this same file for
+    // its other fields.
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const source = await readFile(
+      path.join(import.meta.dirname, '..', '..', '..', 'e2e', 'fixtures', 'seed-facts.ts'),
+      'utf8',
+    );
+
+    const pairs = [...source.matchAll(/status:\s*'([^']+)',\s*\n?\s*chip:\s*'([^']+)'/g)];
+    // Non-vacuity: the fixture really was parsed, and it really carries pairs.
+    expect(pairs.length, 'no status/chip pairs parsed from the fixture').toBeGreaterThan(0);
+
+    for (const [, status, chip] of pairs) {
+      const key = LINK_STATUS_KEYS[status as keyof typeof LINK_STATUS_KEYS];
+      expect(key, `fixture status ${status} is not a link status`).toBeDefined();
+      expect(chip, `fixture chip for ${status}`).toBe(translate('en', key));
+    }
   });
 });

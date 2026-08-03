@@ -1,7 +1,7 @@
 // Relative imports, not the `@/` alias: this module is unit-tested and the root
 // vitest project resolves no alias. Same reason as label-filters.ts and
 // label-kinds.ts.
-import type { LinkStatus } from './api-types';
+import type { IdentityDetailResponse, LinkStatus } from './api-types';
 import type { MessageKey } from './i18n/messages';
 
 /**
@@ -15,6 +15,23 @@ import type { MessageKey } from './i18n/messages';
  * and is compile-checked as `LinkStatus[]` instead.
  */
 export const ACCOUNT_TABS: readonly LinkStatus[] = ['orphan', 'ghost', 'ambiguous', 'matched'];
+
+/**
+ * Display key per identity status, keyed by the domain.
+ *
+ * A `Record`, not the inline ternary this replaced. `identity.status` is a
+ * two-member union today, so the ternary was exhaustive — but a third member
+ * added to the union rendered as "Active", a silent wrong answer on the field
+ * rather than a marker or a build failure. `packages/schema` declares this as a
+ * real pgEnum, so a third member is a migration away.
+ *
+ * Beside LINK_STATUS_KEYS because it is the same shape and the same argument:
+ * a status with no copy is a compile error.
+ */
+export const IDENTITY_STATUS_KEYS: Record<IdentityDetailResponse['status'], MessageKey> = {
+  active: 'identityStatus.active',
+  left: 'identityStatus.left',
+};
 
 /**
  * Display key per link status, keyed by the domain.

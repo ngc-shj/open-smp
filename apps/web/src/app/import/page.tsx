@@ -7,12 +7,8 @@ import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
-import {
-  HR_IMPORT_MAX_ROWS,
-  MAX_UPLOAD_BYTES,
-  MAX_UPLOAD_LABEL,
-  type HrImportResponse,
-} from '@/lib/api-types';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, type HrImportResponse } from '@/lib/api-types';
+import { HR_ROW_CAP, uploadFailure } from '@/lib/upload-failure';
 
 // Checked client-side because an over-limit upload aborted mid-stream by the
 // server does not reliably deliver its 400 through the Next proxy. The value is
@@ -22,20 +18,6 @@ import {
 // Maps known API error strings (hr-import.ts) to the key of friendlier copy;
 // the raw string is always shown alongside in smaller print for support
 // purposes.
-const UPLOAD_ERROR_KEYS: Record<string, MessageKey> = {
-  'file is required': 'upload.fileRequired',
-  'file must be UTF-8 encoded': 'upload.notUtf8',
-  'malformed CSV': 'upload.malformedCsv',
-  // Keyed off the constant the route interpolates rather than typed out: a
-  // hand-written key stops matching the moment the cap moves, and this map
-  // silently falls through to the generic copy.
-  [`too many rows (max ${HR_IMPORT_MAX_ROWS})`]: 'upload.tooManyRows',
-  // Keyed off the constant for the same reason the row cap above is: the
-  // hand-written form stopped matching the moment the cap moved, and this map
-  // then fell through to the generic copy.
-  [`file exceeds ${MAX_UPLOAD_LABEL} limit`]: 'upload.tooLarge',
-};
-
 type State =
   | { phase: 'idle' }
   | { phase: 'uploading' }
@@ -155,27 +137,8 @@ export default function ImportPage() {
             <div className="mt-2 text-sm text-red-700">
               <p>
                 {(() => {
-                  // `Object.hasOwn`: `rawMessage` is a key built from DATA — it is
-              // `body.error` verbatim — and a bare index on an object literal
-              // returns a truthy function for `constructor`/`toString`, which the
-              // `key ? …` guard below admits. The same lesson `chipClassFor` and
-              // `linkStatusKeyFor` record; this read was rewritten in the commit
-              // that applied it three lines away and did not take it.
-              const key = Object.hasOwn(UPLOAD_ERROR_KEYS, state.rawMessage)
-                ? UPLOAD_ERROR_KEYS[state.rawMessage]
-                : undefined;
-                  // PER KEY. Both `upload.tooManyRows` and `upload.tooLarge`
-                  // take `{max}` and they take DIFFERENT caps — one `max` for
-                  // the pair renders the row limit into the byte message.
-                  //
-                  // `en-US` stays pinned so the rendered cap does not depend on where the
-                  // browser runs (VE3). Making it follow the locale is a separate change,
-                  // because formatMoney's tests pin the same decision.
-                  const max =
-                    key === 'upload.tooLarge'
-                      ? MAX_UPLOAD_LABEL
-                      : HR_IMPORT_MAX_ROWS.toLocaleString('en-US');
-                  return key ? t(key, { max }) : t('upload.failed');
+                  const failure = uploadFailure(state.rawMessage, HR_ROW_CAP);
+                  return t(failure.key, failure.max === undefined ? undefined : { max: failure.max });
                 })()}
               </p>
               <p className="text-xs text-neutral-400">{state.rawMessage}</p>

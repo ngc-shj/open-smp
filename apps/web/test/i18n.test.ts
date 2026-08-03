@@ -64,16 +64,25 @@ describe('the dictionaries', () => {
       'nav.brand',
     ]);
 
-    const identical = Object.keys(MESSAGES.en).filter(
-      (key) => MESSAGES.en[key as MessageKey] === MESSAGES.ja[key as MessageKey],
-    );
+    // OVER LOCALES, not over `en` and `ja`. Every sibling cell in this describe
+    // derives its subject from the domain; the first version of this one named
+    // the pair. A third locale added with the English pasted through — which is
+    // what LOCALE_LABELS, the endonym rule and the picker exist for — would have
+    // been green here while satisfying every sibling too.
+    const others = LOCALES.filter((locale) => locale !== DEFAULT_LOCALE);
+    expect(others.length, 'no locale to compare the default against').toBeGreaterThan(0);
+    expect(Object.keys(MESSAGES[DEFAULT_LOCALE]).length).toBeGreaterThan(100);
 
-    // Non-vacuity: the dictionary is really populated, so an empty `identical`
-    // is a translated dictionary rather than an empty comparison.
-    expect(Object.keys(MESSAGES.en).length).toBeGreaterThan(100);
-    expect(identical.sort(), 'a ja value is identical to its en value').toEqual(
-      [...INTENTIONALLY_IDENTICAL].sort(),
-    );
+    for (const locale of others) {
+      const identical = Object.keys(MESSAGES[DEFAULT_LOCALE]).filter(
+        (key) =>
+          MESSAGES[DEFAULT_LOCALE][key as MessageKey] === MESSAGES[locale][key as MessageKey],
+      );
+
+      expect(identical.sort(), `${locale}: a value is identical to its ${DEFAULT_LOCALE} value`).toEqual(
+        [...INTENTIONALLY_IDENTICAL].sort(),
+      );
+    }
   });
 });
 
@@ -322,12 +331,16 @@ describe('i18n/C3: what the switch writes', () => {
     // the module's obvious next step — negotiation from Accept-Language, or a
     // `?lang=` parameter — makes an attribute injection out of it.
     // `domain`, not `max-age`. Duplicate attributes resolve last-wins — in the
-    // parser here AND in a browser per RFC 6265 §5.2 — so injecting an
+    // parser here AND in a browser per RFC 6265 §5.3 — so injecting an
     // attribute the writer also emits is overridden by the real one and proves
     // nothing. Measured: the first version of this cell survived its own
     // mutation. An attribute the writer never emits is the one that takes
     // effect, and rescoping the cookie to a parent domain is the reason to care.
-    const attacked = localeCookie('en; domain=evil.example' as never);
+    // `de`, not `en`. The payload's locale token used to equal DEFAULT_LOCALE,
+    // so with the guard removed the emitted value was still `en` and the value
+    // assertion below passed — only the attribute half was load-bearing, which
+    // is the same shape as the two observers this round already repaired.
+    const attacked = localeCookie('de; domain=evil.example' as never);
 
     expect(attributes(attacked).get(LOCALE_COOKIE)).toBe(DEFAULT_LOCALE);
     expect(attributes(attacked).has('domain'), 'an injected attribute survived').toBe(false);

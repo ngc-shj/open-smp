@@ -5,7 +5,7 @@ import { NavBar } from '@/components/NavBar';
 import { StatusChip } from '@/components/StatusChip';
 import { LABEL_KIND_KEYS } from '@/lib/label-kinds';
 import { getTranslator } from '@/lib/i18n/server';
-import { linkStatusKeyFor } from '@/lib/link-statuses';
+import { IDENTITY_STATUS_KEYS, linkStatusKeyFor } from '@/lib/link-statuses';
 
 async function fetchIdentity(identityId: string): Promise<IdentityDetailResponse | null> {
   const res = await apiFetch(`/api/identities/${encodeURIComponent(identityId)}`);
@@ -55,9 +55,7 @@ export default async function IdentityDetailPage({
         <dl className="mb-6 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-neutral-500">{t('identity.status')}</dt>
-            <dd className="text-neutral-900">
-              {t(identity.status === 'left' ? 'identityStatus.left' : 'identityStatus.active')}
-            </dd>
+            <dd className="text-neutral-900">{t(IDENTITY_STATUS_KEYS[identity.status])}</dd>
           </div>
           <div>
             <dt className="text-neutral-500">{t('identity.leftAt')}</dt>
