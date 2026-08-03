@@ -152,3 +152,44 @@ All three found by the Step 2-5 self-check; all three are the R29 class, and non
   on its own. What the denominator actually closes is **partial** deletion — four of five entries
   gives 1 pair against 5 `email:`, which `> 0` passes and only the equality reds. That is the case
   the model's own comment records paying for. The assertions were right; the reason was not.
+
+## D8 — Phase 3 Round 1: five reasons corrected, none of them behaviour
+
+Every Round-1 finding was a rationale defect. The code was not wrong; what was written about it was.
+Recording them together because the pattern is the point.
+
+- **VE6 named the gate that adapts and omitted the ones that bind** (functionality F-01, Major).
+  "Seeding a fourth state would join the orphan set and red `accounts.spec.ts`" — but
+  `SEEDED_ORPHAN_EMAILS` (`e2e/fixtures/seed-facts.ts:91-93`) filters on the **link** status, and
+  `accounts.spec.ts:72-80` derives both its by-name loop and its `toHaveCount` from that same list.
+  The fixture's docstring says outright that an added account "joins this set rather than breaking a
+  count". What binds is what `seed-facts.ts:97-101` already recorded: `apps.spec.ts:213` hardcodes
+  `Cannot delete — 4 accounts still attributed`, and a non-`active` account leaves `ROLLUP_SQL`'s
+  `seat` CTE. The correct reason was in the repo and VE6 used a plausible other one. Corrected in
+  both the plan and the manual-test doc.
+- **The RLS predicate was paraphrased without `missing_ok`** (security SEC-1). The doc cited
+  `tenant_id = current_setting('app.tenant_id')` to explain a silent `UPDATE 0`. Measured against
+  the running stack, the cited form RAISES (`ERROR: unrecognized configuration parameter`) and only
+  the shipped form — `NULLIF(current_setting('app.tenant_id', true), '')::uuid` — returns NULL and
+  yields 0 rows silently. The mechanism cited was the opposite of the behaviour asserted, and the
+  plan had it right. A reader "verifying" the doc would have deleted the guard.
+- **The import-path reason ruled out a shape nobody proposed** (testing Q2). The new test justified
+  importing `@open-smp/api-types` directly with "the root vitest project resolves no `@/` alias" —
+  but a relative import reaches the barrel too, and `label-filters.test.ts:2` already does exactly
+  that. This is D6's inference defect recurring one file from its own fix. It had a consequence:
+  `ACCOUNT_STATUSES` in the web barrel had **no observer**, and deleting it reddened nothing. Routing
+  the import through the barrel fixes the reason and gives the re-export its only observer — proven
+  by deleting the line (3 tests red) and restoring it.
+- **An assertion that could not fail** (testing Q1). `expect(display).not.toBe('')` was unreachable:
+  the capture was `[^']+`, so an emptied field produced no match rather than an empty capture. Widened
+  to `[^']*`, which turns an emptied field from a count mismatch into a named diagnosis.
+- **Two copied clauses and two off-by-N citations** (functionality F-02, F-03; testing Q3, Q4).
+  `ACCOUNT_STATUSES`' docstring carried `LINK_STATUSES`' "not the accounts page's tab order" contrast,
+  which has no referent for this domain; the I6.11 rationale D7 rewrote had lost its sentence tail;
+  the quoted line range was `203-210`, not `206-210`; and mutation row 6 omitted the three E2E specs
+  the `match.ts:16` cut also reds through the seed's own `matchAccounts` call.
+- **`stripTsComments`' limitation list stopped at one gap** (security SEC-2), omitting nested-backtick
+  interpolation in a file carrying eleven `sql` templates. Extended — and the first attempt at the
+  extension **closed its own block comment** by writing the terminator literally, which lint caught.
+  A note about a comment-stripper's blind spot, defeated by a comment-stripping blind spot. It is
+  recorded in the file.

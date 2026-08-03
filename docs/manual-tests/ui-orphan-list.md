@@ -13,9 +13,16 @@ retracted, not extended.** The account-status section below is manual-only, and
 naming another spec does not repair that: the seed writes `accountStatus:
 'active'` for all five accounts (`apps/api/src/seed.ts`) and nothing at any tier
 — unit, integration or E2E — reaches `suspended` or `archived` in a render.
-Seeding a fourth state was considered and rejected: it would join the orphan set
-derived in `e2e/fixtures/seed-facts.ts` and red `accounts.spec.ts`'s by-name
-orphan assertions.
+Seeding a fourth state was considered and rejected, and the reason is worth
+naming precisely because the obvious one is wrong: it is **not** the orphan set.
+`SEEDED_ORPHAN_EMAILS` (`e2e/fixtures/seed-facts.ts:91-93`) filters on the *link*
+status, and `e2e/specs/accounts.spec.ts:72-80` derives both its by-name loop and
+its `toHaveCount` from that same list — the fixture's own docstring says an added
+account "joins this set rather than breaking a count". What binds is what
+`seed-facts.ts:97-101` already records: `e2e/specs/apps.spec.ts:213` hardcodes
+`Cannot delete — 4 accounts still attributed`, and a non-`active` account drops
+out of `ROLLUP_SQL`'s `seat` CTE, moving the figures
+`e2e/scripts/assert-seed-preserved.sh` pins.
 
 ## Pre-conditions
 
@@ -97,11 +104,15 @@ docker compose up -d --build
 ```
 
 **`UPDATE 1` is the expected output of BOTH directions, and checking it is not
-pedantry.** `saas_accounts` carries `FORCE ROW LEVEL SECURITY` with a
-`tenant_id = current_setting('app.tenant_id')` predicate, and the application
-role is never granted a bypass. From an app-role session with `app.tenant_id`
-unset the predicate is NULL and the statement reports **`UPDATE 0` with no
-error** — which in the forward direction reads as a broken render, and in the
+pedantry.** `saas_accounts` carries `FORCE ROW LEVEL SECURITY` with
+`USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)`
+(`packages/schema/migrations/0001_init.sql:114-116`), and the application role is
+never granted a bypass. The `true` is `missing_ok`, and it is the whole
+mechanism: without it `current_setting` RAISES on an unset GUC (measured:
+`ERROR: unrecognized configuration parameter "app.tenant_id"`), which would fail
+loudly and need no guard. With it, an app-role session with `app.tenant_id`
+unset gets NULL, the predicate is NULL, and the statement reports **`UPDATE 0`
+with no error** — which in the forward direction reads as a broken render, and in the
 inverse direction leaves the row perturbed while the operator believes it was
 restored. `opensmp` is the bootstrap superuser — `docker-compose.yml:8-10` sets
 `POSTGRES_USER`/`POSTGRES_DB` to `opensmp`, so `initdb` creates that role and

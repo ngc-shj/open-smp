@@ -17,11 +17,22 @@
  * direction for a negative literal check, and tables.ts is dense with sql`…`
  * templates.
  *
- * Not handled: a regex literal containing `/*`, which would open a phantom
- * block comment. Unreachable in tables.ts today — it contains no regex literal
- * — but stated rather than assumed, since the next regex added to the scanned
- * file is what would turn this note into a false green.
- */
+ * Not handled, both in the false-GREEN direction — a phantom block comment
+ * that swallows to the next terminator and takes real code with it.
+ * (Writing that terminator literally here would close THIS comment, which
+ * is the same class of defect one level up, and it did once.)
+ *
+ *   1. a regex literal containing `/*`;
+ *   2. a template literal whose `${…}` interpolation nests a backtick,
+ *      which ends the string region early so the rest of the real string
+ *      is scanned as code. tables.ts carries eleven `sql` templates, ten
+ *      with interpolations, so this is the construct the scanner is
+ *      pointed at — unreachable today only because none of them nests.
+ *
+ * Stated rather than assumed: what turns either note into a false green is
+ * the next such construct added to the scanned file, and a limitation list
+ * that stops at one is the same overstatement in miniature.
+*/
 export function stripTsComments(source: string): string {
   let out = '';
   let i = 0;

@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { ACCOUNT_STATUSES } from '@open-smp/api-types';
+import { ACCOUNT_STATUSES } from '../src/lib/api-types';
 import { ACCOUNT_STATUS_KEYS, accountStatusKeyFor } from '../src/lib/account-statuses';
 import { translate } from '../src/lib/i18n/translate';
 
 // C3/C6. Modelled on link-statuses.test.ts, which covers the sibling
-// vocabulary. The domain comes from @open-smp/api-types directly rather than
-// through src/lib/api-types: this file is outside src, and the root vitest
-// project resolves no `@/` alias.
+// vocabulary.
+//
+// The domain comes through ../src/lib/api-types — the web barrel — and the
+// reason is NOT the `@/` alias. A relative import reaches either module, and
+// label-filters.test.ts:2 already imports the barrel exactly this way, so the
+// alias rules out a shape nobody proposed. The reason is that C1 adds
+// ACCOUNT_STATUSES to that barrel's value block on a stated policy ("a shared
+// value crosses at this one place"), and nothing else in apps/web reads it —
+// so without this import the re-export has no observer at all and deleting it
+// would red nothing.
 
 describe('I6.2: the account-status vocabulary covers the domain exactly', () => {
   it('has a key for every member and no key that is not one', () => {
@@ -74,7 +81,7 @@ describe('I6.11: the E2E account-status fixture matches the dictionary it mirror
 
     // `[^}]*?` between the fields rather than requiring adjacency, so inserting
     // a field between them or reordering them does not drop an entry silently.
-    const pairs = [...source.matchAll(/accountStatus:\s*'([^']+)'[^}]*?accountStatusText:\s*'([^']+)'/g)];
+    const pairs = [...source.matchAll(/accountStatus:\s*'([^']+)'[^}]*?accountStatusText:\s*'([^']*)'/g)];
 
     // FLOORED AGAINST THE FIXTURE'S OWN ENTRY COUNT. The model derives its
     // count from `chip:` occurrences and then asserts set-coverage of the whole
@@ -82,11 +89,13 @@ describe('I6.11: the E2E account-status fixture matches the dictionary it mirror
     // VE6 the seed only ever writes `active` — a three-member set comparison
     // would red on arrival and stay red. `email:` is the denominator instead:
     // it occurs exactly once per seeded account and nowhere else in the file,
+    // so it is a faithful entry count.
+    //
     // The case this closes is PARTIAL deletion, not total. Removing the fields
     // from every entry gives 0 pairs, which the `> 0` guard below reds on its
     // own; removing them from four of five gives 1 pair against 5 `email:`,
     // which `> 0` PASSES and only this equality reds. That is the case the
-    // model records having paid for (link-statuses.test.ts:206-210 — "four
+    // model records having paid for (link-statuses.test.ts:203-210 — "four
     // ordinary fixture edits left one pair matched and four entries
     // unchecked").
     // Non-empty on its own account too: a denominator that itself went to zero
@@ -100,6 +109,11 @@ describe('I6.11: the E2E account-status fixture matches the dictionary it mirror
       expect(ACCOUNT_STATUSES, `fixture accountStatus ${status} is not a domain member`).toContain(
         status,
       );
+      // Reachable: the display capture is `[^']*`, not `[^']+`, deliberately —
+      // with `+` an emptied `accountStatusText: ''` produces NO match rather
+      // than an empty capture, so this line could never red and the emptied
+      // field would surface only as a count mismatch. `*` turns it into a
+      // named diagnosis.
       expect(display, `fixture accountStatusText for ${status}`).not.toBe('');
       // `ja`, not `en`. The fixture's display copy is Japanese because the two
       // specs that consume it assert under the ja cookie — see the RT9 note in
