@@ -46,14 +46,33 @@ describe('the dictionaries', () => {
   });
 
   it('actually translates, rather than carrying the English through', () => {
-    // Non-vacuity for everything above: two dictionaries with identical values
-    // satisfy every assertion here and translate nothing. `nav.brand` is
-    // deliberately excluded — a product name is not translated.
-    const differing = Object.keys(MESSAGES.en).filter(
-      (key) => MESSAGES.en[key as MessageKey] !== MESSAGES.ja[key as MessageKey],
+    // C1'S RATCHET, which C2 had and this did not.
+    //
+    // The first version asserted `differing.length > 0` under the name "actually
+    // translates". Measured: 187 keys, 186 of them differ, and the floor was 1 —
+    // so the dominant regression for a dictionary contract, a key added to both
+    // locales with the English pasted into `ja`, was invisible. Every sibling
+    // assertion is satisfied by that shape too: the key sets match, neither
+    // value is empty, and identical strings carry identical placeholders. The
+    // 185 other keys held the floor up.
+    //
+    // A named exemption set instead, so a copied value reds WITH THE KEY NAMED
+    // and an intentional identity has to be argued in the diff that adds it.
+    const INTENTIONALLY_IDENTICAL: ReadonlySet<MessageKey> = new Set<MessageKey>([
+      // A product name, not translated.
+      'nav.brand',
+    ]);
+
+    const identical = Object.keys(MESSAGES.en).filter(
+      (key) => MESSAGES.en[key as MessageKey] === MESSAGES.ja[key as MessageKey],
     );
 
-    expect(differing.length).toBeGreaterThan(0);
+    // Non-vacuity: the dictionary is really populated, so an empty `identical`
+    // is a translated dictionary rather than an empty comparison.
+    expect(Object.keys(MESSAGES.en).length).toBeGreaterThan(100);
+    expect(identical.sort(), 'a ja value is identical to its en value').toEqual(
+      [...INTENTIONALLY_IDENTICAL].sort(),
+    );
   });
 });
 

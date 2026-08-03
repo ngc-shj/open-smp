@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { findUntranslatedLiterals } from './untranslated-literals';
+import { NOT_COPY, findUntranslatedLiterals } from './untranslated-literals';
 
 // i18n/C2. The plan named the hard part, and it is not the string count: it is
 // that a PARTIAL migration looks finished. A page half-extracted renders
@@ -45,7 +45,11 @@ async function tsxFiles(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...(await tsxFiles(full)));
-    else if (entry.name.endsWith('.tsx')) files.push(full);
+    // `.ts` as well as `.tsx`: this contract MOVED user-facing English out of
+    // three `.ts` modules (label-kinds, label-filters, audit-transition), so a
+    // `.ts` file under apps/web/src demonstrably holds copy and can again. The
+    // attribute scan then also covers a `.ts` file that builds one.
+    else if (/\.tsx?$/.test(entry.name)) files.push(full);
   }
   return files;
 }
@@ -75,6 +79,22 @@ describe('i18n/C2: the untranslated remainder only shrinks', () => {
 
     expect(overBudget, 'untranslated copy added').toEqual([]);
     expect(stale, 'budget no longer tight').toEqual([]);
+  });
+
+  it('the not-copy allowlist is exactly what review agreed to', () => {
+    // T3: once the remainder reached zero, adding ANY string to `NOT_COPY` left
+    // both assertions above untouched — the allowlist became a free widening of
+    // the gate, keyed by text so one entry exempts that string across all of
+    // apps/web. That is how `google-workspace` outlived its own subject and had
+    // to be removed by hand a contract later.
+    //
+    // Pinned by exact equality, the way CONTROL_FILES is pinned in
+    // package-test-parity.test.ts, so an addition reds and has to carry its
+    // reason in the diff that makes it. That is what the set's own docstring —
+    // "each needs a reason" — is trying to buy.
+    expect([...NOT_COPY].sort(), 'the not-copy allowlist changed').toEqual(
+      ['CSV', 'open-smp', 'saasAppId'].sort(),
+    );
   });
 
   it('every budgeted file still exists', async () => {
