@@ -89,15 +89,19 @@ describe('uploadFailure', () => {
     );
   });
 
-  it.each([undefined, null, 42, { error: 'x' }, ['a']])(
-    'falls back for a non-string body.error (%s)',
-    (rawMessage) => {
-      // `rawMessage` is `body.error` with no runtime check. An object reaching
-      // the raw-message line throws "Objects are not valid as a React child" and
-      // takes down the panel that exists to explain the refusal.
-      expect(hrUploadFailure(rawMessage as unknown as string)).toEqual({ key: 'upload.failed' });
-    },
-  );
+  it.each([
+    // Inputs that COERCE to a real key, which is the only shape the type guard
+    // changes: `undefined` and `{}` miss the map either way, so a cell built
+    // from them was green with the guard removed. A one-element array
+    // stringifies to its element.
+    ['an array stringifying to a key', ['file is required']],
+    ['an object whose toString is a key', { toString: (): string => 'malformed CSV' }],
+  ])('falls back for %s rather than coercing it', (_label, rawMessage) => {
+    // `rawMessage` is `body.error` with no runtime check. A non-string reaching
+    // the raw-message line throws "Objects are not valid as a React child" and
+    // takes down the panel that exists to explain the refusal.
+    expect(hrUploadFailure(rawMessage as unknown as string)).toEqual({ key: 'upload.failed' });
+  });
 
   it('falls back to the generic message for an error it does not know', () => {
     expect(hrUploadFailure('something the API grew last week')).toEqual({

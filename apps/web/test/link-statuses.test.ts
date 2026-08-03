@@ -7,6 +7,7 @@ import {
   CHIP_CLASS_FALLBACK,
   IDENTITY_STATUS_KEYS,
   LINK_STATUS_KEYS,
+  identityStatusKeyFor,
   chipClassFor,
   linkStatusKeyFor,
 } from '../src/lib/link-statuses';
@@ -154,6 +155,24 @@ describe('i18n: the identity-status vocabulary reaches the dictionary', () => {
     expect(translate('en', IDENTITY_STATUS_KEYS.active)).not.toBe(
       translate('en', IDENTITY_STATUS_KEYS.left),
     );
+  });
+
+  it.each(['constructor', 'toString', 'valueOf', 'suspended'])(
+    'returns null for the out-of-domain status %s rather than reaching the prototype',
+    (outside) => {
+      // The deny case its link-status twin has had since round 1 and this one
+      // did not — so the guard added in round 3 was revertible to `?? null`,
+      // which returns a FUNCTION for the first three, with every gate green.
+      // `suspended` is the fourth: the pgEnum here is a hand-written second
+      // declaration, so a migration adding a member reaches this read without
+      // touching the union, and the page must render it rather than `⟨undefined⟩`.
+      expect(identityStatusKeyFor(outside)).toBeNull();
+    },
+  );
+
+  it('resolves a member of the domain', () => {
+    // The allow side, or a helper returning null for everything would pass.
+    expect(identityStatusKeyFor('left')).toBe('identityStatus.left');
   });
 });
 
