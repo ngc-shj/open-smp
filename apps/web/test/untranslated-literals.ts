@@ -69,13 +69,20 @@ export const NOT_COPY = new Set([
 export type Finding = { file: string; text: string };
 
 function stripComments(source: string): string {
-  // The `//` pass is deliberately anchored to a line whose first non-space
-  // character starts the comment. Applied to raw source it also deleted the
-  // remainder of any line containing `//` INSIDE a string — a docs link, a
-  // support URL — and with it the `<` or `>` that would have bounded a real copy
-  // literal, so the detector under-reported. No such string exists today; the
-  // anchor is what keeps it that way.
-  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[^\S\n]*\/\/[^\n]*/gm, ' ');
+  // A `//` that does not follow a quote or a colon.
+  //
+  // The unanchored form deleted the remainder of any line containing `//` INSIDE
+  // a string — a docs link, a support URL — and with it the `<` or `>` that
+  // would have bounded a real copy literal, so the detector under-reported. The
+  // first fix anchored to the line start, which over-corrected the other way: a
+  // TRAILING comment stopped being stripped, so `const x = 1; // <span>Accounts
+  // </span>` reported `Accounts` as untranslated copy. Measured both.
+  //
+  // The lookbehind-free form: a `//` preceded by a quote, a backtick or a colon
+  // is inside a string or a URL and is left alone; anything else is a comment.
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1 ');
 }
 
 /**
@@ -128,12 +135,20 @@ export function findUntranslatedLiterals(file: string, source: string): Finding[
   }
 
   for (const attribute of COPY_ATTRIBUTES) {
-    // BOTH QUOTE FORMS. The double-quoted-only regex was a one-character
-    // bypass: JSX permits single quotes and nothing in this repo enforces the
-    // style — there is no Prettier config, and the eslint config carries
-    // neither `jsx-quotes` nor the React plugin.
-    for (const match of code.matchAll(new RegExp(`\\b${attribute}=(["'])([^"']+)\\1`, 'g'))) {
-      const text = match[2]!.trim();
+    // BOTH QUOTE FORMS, ALTERNATED — not one class shared by both.
+    //
+    // The first version of this fix wrote `=(["'])([^"']+)\\1`, which closed the
+    // single-quote bypass and opened a worse one: the body class excludes BOTH
+    // quotes, so `aria-label="Owner's name"` went from FOUND to missed. English
+    // UI copy carries apostrophes routinely, and the form that was closed has no
+    // subject in this repository while the one that was opened is the common
+    // case. Measured on all three shapes before and after.
+    //
+    // Alternating whole quoted runs keeps each body class to its own quote.
+    for (const match of code.matchAll(
+      new RegExp(`\\b${attribute}=(?:"([^"]+)"|'([^']+)')`, 'g'),
+    )) {
+      const text = (match[1] ?? match[2])!.trim();
       if (text === '' || !/\p{L}/u.test(text)) continue;
       if (NOT_COPY.has(text)) continue;
       findings.push({ file, text });

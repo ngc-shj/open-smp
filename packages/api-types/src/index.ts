@@ -421,11 +421,21 @@ export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
  * change" stood here for two contracts, and the i18n contract then added two
  * MORE members to the class — one per locale — one line below a key that
  * parameterises its own cap and a comment explaining why. This is that separate
- * change: both API routes interpolate this into their over-limit error, both
- * web error maps key off the same interpolation, and both dictionaries take it
- * as `{max}`. Moving MAX_UPLOAD_BYTES now moves all six together.
+ * change. It reaches EIGHT sites, and the first version of this docstring said
+ * six — the two it omitted were the client-side pre-checks that PRODUCE the
+ * string, which both files' comments identify as the dominant path (a server
+ * 400 on an aborted upload does not reliably survive the Next proxy). So the
+ * map key derived while its producer stayed literal, and they agreed only
+ * because the cap happened to be 10MB. Raising it broke the lookup and fell
+ * through to the generic copy — verbatim the failure the derivation was made to
+ * prevent.
+ *
+ * The eight: two API route errors, two client pre-check messages, two web error
+ * map keys, and both dictionaries' `{max}`. Three test and doc sites assert the
+ * rendered figure and are listed in the i18n plan's residue rather than derived,
+ * because an assertion that computes its own expectation asserts nothing.
  */
-export const MAX_UPLOAD_LABEL = `${MAX_UPLOAD_BYTES / (1024 * 1024)}MB`;
+export const MAX_UPLOAD_LABEL = `${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB`;
 
 // The row caps cross for the same reason the byte cap does, and for one more:
 // each route's over-limit error message INTERPOLATES its cap, and the upload

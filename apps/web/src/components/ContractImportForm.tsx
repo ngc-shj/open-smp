@@ -81,7 +81,7 @@ export function ContractImportForm() {
     // Checked client-side because an over-limit upload aborted mid-stream by
     // the server does not reliably deliver its 400 through the Next proxy.
     if (file.size > MAX_UPLOAD_BYTES) {
-      setState({ phase: 'failed', rawMessage: 'file exceeds 10MB limit' });
+      setState({ phase: 'failed', rawMessage: `file exceeds ${MAX_UPLOAD_LABEL} limit` });
       return;
     }
 
@@ -146,7 +146,15 @@ export function ContractImportForm() {
         <div className="mt-2 text-sm text-red-700">
           <p>
             {(() => {
-              const key = UPLOAD_ERROR_KEYS[state.rawMessage];
+              // `Object.hasOwn`: `rawMessage` is a key built from DATA — it is
+              // `body.error` verbatim — and a bare index on an object literal
+              // returns a truthy function for `constructor`/`toString`, which the
+              // `key ? …` guard below admits. The same lesson `chipClassFor` and
+              // `linkStatusKeyFor` record; this read was rewritten in the commit
+              // that applied it three lines away and did not take it.
+              const key = Object.hasOwn(UPLOAD_ERROR_KEYS, state.rawMessage)
+                ? UPLOAD_ERROR_KEYS[state.rawMessage]
+                : undefined;
               // PER KEY; see the sibling in app/import/page.tsx. One `max` for
               // both keys renders the row limit into the byte message.
               //

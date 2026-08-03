@@ -58,7 +58,7 @@ export default function ImportPage() {
     if (!file) return;
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      setState({ phase: 'upload-failed', rawMessage: 'file exceeds 10MB limit' });
+      setState({ phase: 'upload-failed', rawMessage: `file exceeds ${MAX_UPLOAD_LABEL} limit` });
       return;
     }
 
@@ -155,7 +155,15 @@ export default function ImportPage() {
             <div className="mt-2 text-sm text-red-700">
               <p>
                 {(() => {
-                  const key = UPLOAD_ERROR_KEYS[state.rawMessage];
+                  // `Object.hasOwn`: `rawMessage` is a key built from DATA — it is
+              // `body.error` verbatim — and a bare index on an object literal
+              // returns a truthy function for `constructor`/`toString`, which the
+              // `key ? …` guard below admits. The same lesson `chipClassFor` and
+              // `linkStatusKeyFor` record; this read was rewritten in the commit
+              // that applied it three lines away and did not take it.
+              const key = Object.hasOwn(UPLOAD_ERROR_KEYS, state.rawMessage)
+                ? UPLOAD_ERROR_KEYS[state.rawMessage]
+                : undefined;
                   // PER KEY. Both `upload.tooManyRows` and `upload.tooLarge`
                   // take `{max}` and they take DIFFERENT caps — one `max` for
                   // the pair renders the row limit into the byte message.

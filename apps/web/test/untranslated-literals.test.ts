@@ -114,8 +114,49 @@ describe('the detector itself', () => {
     ]);
   });
 
-  it('reports a copy attribute', () => {
-    expect(findUntranslatedLiterals('f.tsx', '<input aria-label="Contract CSV" />')).toHaveLength(1);
+  it.each([
+    ['double-quoted', '<input aria-label="Contract CSV" />', 'Contract CSV'],
+    // The one-character bypass review round 1 closed. JSX permits single quotes
+    // and nothing in this repo enforces the style — no Prettier config, and the
+    // eslint config carries neither `jsx-quotes` nor the React plugin.
+    ['single-quoted', "<input aria-label='Contract CSV' />", 'Contract CSV'],
+    // The hole that CLOSING it opened, which is the larger of the two: the first
+    // fix shared one body class between both quote forms, so an apostrophe — the
+    // common case in English UI copy — went from found to missed.
+    ['an apostrophe inside double quotes', `<input aria-label="Owner's name" />`, "Owner's name"],
+    ['a double quote inside single quotes', `<input aria-label='He said "no"' />`, 'He said "no"'],
+  ])('reports a %s copy attribute', (_label, source, expected) => {
+    expect(findUntranslatedLiterals('f.tsx', source)).toEqual([{ file: 'f.tsx', text: expected }]);
+  });
+
+  it('scans copy attributes in a .ts module, where this contract found copy before', () => {
+    // The widening's own subject, which nothing in `src` supplies today — so
+    // reverting the file set to `.tsx` left the suite green and the change had
+    // no observer at all.
+    expect(findUntranslatedLiterals('lib/x.ts', '<input placeholder="Search apps" />')).toEqual([
+      { file: 'lib/x.ts', text: 'Search apps' },
+    ]);
+  });
+
+  it('does not run the JSX text scan on a .ts module', () => {
+    // The other side of the same branch. Generics and comparisons are constant
+    // in `.ts` and rare in `.tsx`, so running the text scan there reported
+    // `(path: string): Promise` as copy on the first widened run.
+    expect(findUntranslatedLiterals('lib/x.ts', 'function f(p: string): Promise<void> {}')).toEqual(
+      [],
+    );
+    // The allow side: the same source in a .tsx file is still scanned.
+    expect(findUntranslatedLiterals('f.tsx', '<span>Accounts</span>')).toHaveLength(1);
+  });
+
+  it.each([
+    ['a trailing comment', 'const x = 1; // <span>Accounts</span>', 0],
+    ['a whole-line comment', '  // <span>Accounts</span>', 0],
+    // The bug the anchor was added for: a `//` inside a string used to delete the
+    // rest of its line, taking the bounding `<` with it.
+    ['a URL inside a string', `const u = 'http://x.example/docs';\n<span>Accounts</span>`, 1],
+  ])('handles %s', (_label, source, expected) => {
+    expect(findUntranslatedLiterals('f.tsx', source)).toHaveLength(expected);
   });
 
   it('leaves a translated node alone', () => {

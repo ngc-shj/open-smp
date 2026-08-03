@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LOCALE_COOKIE, LOCALE_COOKIE_MAX_AGE, localeCookie } from '../src/lib/i18n/cookie';
+import { MAX_UPLOAD_LABEL } from '../src/lib/api-types';
 import { LOCALE_LABELS, LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
 import {
   DEFAULT_LOCALE,
@@ -73,6 +74,46 @@ describe('the dictionaries', () => {
     expect(identical.sort(), 'a ja value is identical to its en value').toEqual(
       [...INTENTIONALLY_IDENTICAL].sort(),
     );
+  });
+});
+
+describe('the upload-cap round trip', () => {
+  // THE ROUND TRIP, which nothing observed. `MAX_UPLOAD_LABEL` reaches eight
+  // sites: two API errors, two client pre-checks, two map keys, two dictionary
+  // messages. Review round 1 derived six and left the two PRODUCERS literal, so
+  // the key moved with the constant and the message did not — they agreed only
+  // while the cap was 10MB.
+  //
+  // Both web modules are `.tsx` and there is no jsdom project, so the map itself
+  // cannot be imported here. Read as TEXT, the way connector-credentials.test.ts
+  // reads the worker's factory, because nothing in the type system connects a
+  // string a component emits to a string another component uses as a key.
+  const SITES = [
+    'apps/web/src/app/import/page.tsx',
+    'apps/web/src/components/ContractImportForm.tsx',
+  ];
+
+  it.each(SITES)('%s derives both the pre-check message and the map key', async (site) => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const source = await readFile(path.join(import.meta.dirname, '..', '..', '..', site), 'utf8');
+
+    // Non-vacuity: the file really was read and really carries both halves.
+    expect(source.length).toBeGreaterThan(0);
+    expect(source, `${site} has no over-limit pre-check`).toContain('file exceeds');
+
+    // Every mention of the over-limit string interpolates the constant. A
+    // hand-written figure here is the desynchronisation, in either direction.
+    for (const match of source.matchAll(/file exceeds ([^`'"]*) limit/g)) {
+      expect(match[1], `${site} hand-writes the cap`).toBe('${MAX_UPLOAD_LABEL}');
+    }
+  });
+
+  it('states the cap in whole units, so the sentence a reader sees stays short', () => {
+    // `10 * 1000 * 1000` divided by 1024^2 is 9.5367431640625, which would land
+    // verbatim in the copy AND in the map key. Rounded, and the unit named for
+    // what the divisor actually is.
+    expect(MAX_UPLOAD_LABEL).toMatch(/^\d+MB$/);
   });
 });
 
