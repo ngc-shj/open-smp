@@ -1,6 +1,6 @@
 # Code Review: account-status-domain
 Date: 2026-08-04
-Review round: 1
+Review round: 2
 
 ## Changes from Previous Round
 
@@ -24,7 +24,7 @@ status, not the account status — and `accounts.spec.ts:72-80` derives *both* i
 its `toHaveCount` from that same list. The fixture's own docstring states the intent: an added
 account "joins this set rather than breaking a count."
 
-What actually binds was already recorded 40 lines below, at `seed-facts.ts:97-101`:
+What actually binds was already recorded 40 lines below, at `seed-facts.ts:98-102`:
 `e2e/specs/apps.spec.ts:213` hardcodes `Cannot delete — 4 accounts still attributed`, and a
 non-`active` account drops out of `ROLLUP_SQL`'s `seat` CTE, moving figures
 `e2e/scripts/assert-seed-preserved.sh` pins.
@@ -102,7 +102,7 @@ the file rather than quietly repaired.
   to `matched` in the seeded database and reds `accounts.spec.ts:41-43`, `identity.spec.ts:32-34`
   and `licenses.spec.ts:90-91`. Conservative (it understates the case for I6.9) but the table's
   stated contract is completeness. *Fixed.*
-- **Q4**: the quoted sentence is at `link-statuses.test.ts:203-205`, not the cited `206-210`. Mine,
+- **Q4**: the cited `206-210` missed the sentence entirely; the landed citation is `203-210`, which covers the quoted comment (`:203-207`) and the assertion it justifies (`:208-210`). Mine,
   from the D7 fix. *Fixed.*
 
 ### F-04 — Minor (Functionality). A fifth member of the render class, recorded nowhere.
@@ -171,3 +171,109 @@ thirteen mutation rows, red-set width for all thirteen, and the precision arithm
 All ten findings fixed in Round 1. Details in `account-status-domain-deviation.md` **D8**.
 Gates after fixes: lint 0, typecheck 0, build 0, unit 742, integration 254, E2E 65,
 `assert-seed-preserved.sh` 0.
+
+
+---
+
+# Round 2 (incremental)
+
+Date: 2026-08-04
+Review round: 2
+
+## Changes from Previous Round
+
+Round 1's fixes (`5d04f15`, seven files, +275/−22 — six prose, one test) reviewed by the same three
+experts. **Critical 0 / Major 3 / Minor 10, and every one is against Round 1's own fixes.** Two of
+the three Majors are defects *inside* a fix written to correct the same class.
+
+## Merged Findings
+
+### SEC-3 — Major (Security). The SEC-1 fix quotes, verbatim and with a file:line, a predicate that has not shipped since migration 0007.
+
+Round 1 corrected a vague RLS paraphrase into a precise one — and the precise one is **superseded**.
+`packages/schema/migrations/0007_tenant_context.sql:98-120` swept every `tenant_isolation` policy
+off the `app.tenant_id` GUC, and `:122-135` makes the migration raise if any policy still reads
+`current_setting`. Measured against the running engine, which is the authority:
+
+```
+select policyname, qual from pg_policies where tablename='saas_accounts';
+ tenant_isolation | (tenant_id = current_tenant_id())
+```
+
+So `missing_ok` is not the mechanism — it is not in the code path. The mechanism is
+`current_tenant_id()` (`0007:77-85`) returning NULL when the transaction claimed no tenant, and a
+NULL comparison being false for every row. Measured as `opensmp_app`: `<NULL>|0`.
+
+**The contributing defect is R50, and it is mine.** Round 1's "measured against the running stack"
+block measured a **bare SQL expression** and then attributed a `count(*) = 0` to it. Both readings
+were real; the attribution was not. That is proxy-signal verification — the exact failure this
+review has been asking sub-agents to check for all session.
+
+*Fixed*: all three documents now quote the shipped clause, cite `0007`, name `current_tenant_id()`
+as the mechanism, label the `0001` form superseded, and give the `pg_policies` query as the way to
+check — asking the engine rather than a migration file.
+
+### N-1 / T2 — Major (Functionality + Testing). A Round-1 finding was recorded as fixed and the edit was never made.
+
+Q3 asked for three E2E specs to be added to mutation table row 6. `code-review.md` recorded it
+"*Fixed*" and asserted "All ten findings fixed in Round 1". `git show 5d04f15 --numstat` shows the
+plan received **+2/−1** — entirely the VE6 row and SC9. Row 6 was untouched.
+
+The Q3 enumeration was correct (both experts re-verified it independently). It simply never landed.
+*Fixed*: row 6 now names `accounts.spec.ts:41-43`, `identity.spec.ts:32-34` and
+`licenses.spec.ts:90-91` with the `seed.ts:671` mechanism, marked not harness-runnable per VE4.
+
+### N-2 / T5 — Major (Functionality + Testing). A third copy of the refuted claim, inside the line range the correction cites as its authority.
+
+`e2e/fixtures/seed-facts.ts:101-102` said "a new unmatched account reds the tenant-scoped orphan
+count in accounts.spec.ts" — precisely what F-01 refuted. Worse, all three corrected texts cited
+`seed-facts.ts:97-101`: line 97 is **blank**, the comment runs 98-102, and the range **stops one
+line short — cutting off exactly the clause that contradicts it.** A reader following the citation
+sees only the corroborating half.
+
+The branch had already written the policy for this at `deviation.md`: "leaving the source is what
+produces the third copy (R34)". It was applied to the `e2e/package.json` claim and not to this one.
+
+*Fixed*: the stale clause corrected with its premise stated, ranges re-pointed to `98-102` in all
+four documents, and the attribution split — the comment records the `apps.spec.ts` binder; the
+seat-CTE effect is derived here and now says so.
+
+### Minor, all fixed
+
+- **T1** — Q2 gave `ACCOUNT_STATUSES`' barrel re-export an observer and left `LINK_STATUSES`', one
+  line away in the same block, with none. Enumerating the barrel's nine runtime exports showed it
+  was the last unobserved one. Fixed by routing `link-statuses.test.ts:3` through the barrel.
+- **T4** — the parse comment credited `[^}]*?` with surviving a field reorder. Measured: inserting a
+  field is absorbed (5 pairs), **reordering drops the entry** (4). The conclusion holds — the
+  `email:` denominator makes it loud — but the mechanism was misattributed. Corrected here *and* at
+  `link-statuses.test.ts:197-200`, which is where the overstatement was inherited from.
+- **SEC-4** — the two-entry limitation list was itself overstated. The root cause is that the
+  scanner has no regex-literal awareness at all; the three symptoms are a phantom block comment, a
+  phantom line comment from `//` in a character class (`/[//]/` is valid — an unescaped `/` is legal
+  there, which is why the old `/a/*b/` dismissal was the wrong example), and an odd quote count
+  flipping string/code phase for the rest of the file. Rewritten to name the cause.
+- **SEC-5 / N-4 / T3** — the extension landed in one of three byte-identical copies, and the two
+  skipped ones sit next to the *stronger* instance (`accounts.ts` has seven interpolating
+  templates). Propagated to both, each naming its own scanned file.
+- **N-3** — the F-02 fix narrated the clause it removed and made a `packages/api-types` comment name
+  an `apps/web` symbol, in a package whose C8 rule forbids that direction. Reduced to the
+  `BILLING_CYCLES` form its own record had prescribed.
+- **N-5 / T6** — two records of one fix gave two different line ranges, in the round whose subject
+  is citation accuracy. Reconciled on `203-210`, and "40 lines below" was anchored to the citation
+  the same finding had just refuted.
+- **N-6** — the regex widening was one-sided; both captures are now `[^']*`.
+
+## Environment Verification Report
+
+Unchanged from Round 1 and re-run after the fixes: lint 0, typecheck 0, build 0, unit 742,
+integration 254, E2E 65, `assert-seed-preserved.sh` 0. No `blocked-deferred` path.
+
+## Quality Warnings
+
+None. The two claims that could not be settled by reading — SEC-3's predicate and T4's reorder
+behaviour — were settled by querying `pg_policies` and by running the parse against mutated fixture
+copies.
+
+## Resolution Status
+
+All thirteen Round-2 findings fixed. Details in `account-status-domain-deviation.md` **D9**.

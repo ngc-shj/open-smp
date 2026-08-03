@@ -97,9 +97,16 @@ export const SAAS_APP_DISPLAY_NAME = 'Google Workspace';
 
 // C6. The seed writes CONTRACTS and no new accounts, which is what makes the
 // licences cases reachable at all: every constraint behind round 2's
-// "not jointly reachable" finding is about accounts (this app's count is pinned
-// at 4 by apps.spec.ts, and a new unmatched account reds the tenant-scoped
-// orphan count in accounts.spec.ts). Nothing pins the number of applications.
+// "not jointly reachable" finding is about accounts: this app's count is pinned
+// at 4 by apps.spec.ts:213's hardcoded "Cannot delete — 4 accounts still
+// attributed", and a non-`active` account leaves ROLLUP_SQL's seat CTE and
+// moves the figures assert-seed-preserved.sh:116-117 pins. It is NOT the orphan
+// count — SEEDED_ORPHAN_EMAILS above is derived from this same fixture and
+// accounts.spec.ts:72-80 derives both its loop and its toHaveCount from it, so
+// an added orphan-linked account joins the set rather than breaking a count.
+// (That clause said the opposite until Phase 3 round 2; it was stale from
+// before SC2/C5 converted the assertion off toHaveCount(1).)
+// Nothing pins the number of applications.
 //
 // Three seats against four assigned, so the demo opens on an over-allocation —
 // and two of those four seats are reclaimable, so it is actionable from the

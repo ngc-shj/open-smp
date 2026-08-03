@@ -163,7 +163,7 @@ Recording them together because the pattern is the point.
   `SEEDED_ORPHAN_EMAILS` (`e2e/fixtures/seed-facts.ts:91-93`) filters on the **link** status, and
   `accounts.spec.ts:72-80` derives both its by-name loop and its `toHaveCount` from that same list.
   The fixture's docstring says outright that an added account "joins this set rather than breaking a
-  count". What binds is what `seed-facts.ts:97-101` already recorded: `apps.spec.ts:213` hardcodes
+  count". What binds is what `seed-facts.ts:98-102` already recorded: `apps.spec.ts:213` hardcodes
   `Cannot delete — 4 accounts still attributed`, and a non-`active` account leaves `ROLLUP_SQL`'s
   `seat` CTE. The correct reason was in the repo and VE6 used a plausible other one. Corrected in
   both the plan and the manual-test doc.
@@ -193,3 +193,48 @@ Recording them together because the pattern is the point.
   extension **closed its own block comment** by writing the terminator literally, which lint caught.
   A note about a comment-stripper's blind spot, defeated by a comment-stripping blind spot. It is
   recorded in the file.
+
+## D9 — Phase 3 Round 2: the fixes were the defect source, twice inside their own class
+
+Round 2 found Critical 0 / Major 3 / Minor 10, every one against Round 1's fixes. Two of the three
+Majors are the most instructive entries on this branch.
+
+**A correction that made a superseded claim precise.** SEC-1 asked for the RLS predicate to be
+quoted rather than paraphrased. The quote came from `0001_init.sql:114-116` — and
+`0007_tenant_context.sql:98-120`, which predates this branch's base, swept every `tenant_isolation`
+policy to `USING (tenant_id = current_tenant_id())` and then asserts its own work by raising if any
+policy still reads `current_setting`. The engine says `(tenant_id = current_tenant_id())`. So the
+fix took a vague-but-harmless paraphrase and turned it into a precise, authoritative, wrong one.
+**Precision is not accuracy, and a file:line lends authority the claim did not earn.**
+
+The contributing defect is R50 and it is the orchestrator's: the "measured against the running
+stack" evidence measured a bare SQL expression and attributed a `count(*) = 0` to it. Both readings
+were real; the attribution was not. The correct instrument was `pg_policies` — ask the engine what
+policy it has, not a migration file what policy it wrote. That is now what the doc tells the reader
+to do.
+
+**A fix recorded as made and never made.** Q3's edit to mutation table row 6 was written up as
+"*Fixed*" in the review artifact and repeated in the deviation log, and the plan's diff for that
+commit was +2/−1 — the VE6 row and SC9, nothing else. Two experts caught it independently by
+running `--numstat` rather than reading the record. **A Resolution Status entry is a claim about the
+tree and has to be checked against the tree**, which is R50 again in the shape the review process
+itself takes.
+
+**A citation that excluded its own refutation.** The F-01 correction cited `seed-facts.ts:97-101` as
+the record of what really binds. Line 97 is blank, the comment runs to 102, and 101 is where the
+sentence breaks — so the range stopped exactly one line before the clause asserting the very thing
+F-01 had refuted. Not deliberate; the effect is that a reader following the citation sees only the
+half that agrees. Three documents carried it. The branch's own R34 policy — fix the source, not
+just the copy — had been written down one round earlier and applied to a different claim.
+
+The rest were the same class one size down: a limitation list that was itself overstated (the
+scanner has no regex-literal awareness at all — the two entries were symptoms of one cause), that
+list landing in one of three identical copies while the two skipped ones sit next to the stronger
+instance, a comment crediting `[^}]*?` with surviving a field reorder it measurably does not survive
+(5 pairs → 4), a fix that narrated the clause it removed and coupled `packages/api-types` to an
+`apps/web` symbol name, and two records of one fix giving two different line ranges.
+
+**What this round is evidence for.** Every finding since Phase 1 Round 2 has been a rationale
+defect, and the rate has not fallen — it has moved. Round 1 corrected reasons in the code; Round 2
+corrected reasons in Round 1's corrections. The i18n review recorded the same shape and named the
+exit: the loop stops when the changes stop, not when the findings do.

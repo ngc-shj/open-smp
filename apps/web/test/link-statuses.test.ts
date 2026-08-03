@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { LINK_STATUSES } from '@open-smp/api-types';
+import { LINK_STATUSES } from '../src/lib/api-types';
 import {
   ACCOUNT_TABS,
   CHIP_CLASSES,
@@ -196,8 +196,11 @@ describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
 
     // `[^}]*` between the fields, the way seed-gate-agreement.test.ts parses this
     // same file — the first version required `chip` to be the IMMEDIATELY next
-    // property, so inserting a field between them, reordering them, or switching
-    // to double quotes dropped that entry silently.
+    // property, so inserting a field between them dropped that entry silently.
+    // Measured (account-status branch, Phase 3 round 2): the span buys ONLY the
+    // inserted-field case. Reordering the two, or switching to double quotes,
+    // still drops the entry — this sentence used to claim all three. What makes
+    // a drop loud rather than silent is the derived count below, not the span.
     const pairs = [...source.matchAll(/status:\s*'([^']+)'[^}]*?chip:\s*'([^']+)'/g)];
 
     // DERIVED, not floored. `> 0` proved the parse was non-empty and nothing

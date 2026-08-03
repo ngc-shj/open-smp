@@ -17,22 +17,28 @@
  * direction for a negative literal check, and tables.ts is dense with sql`…`
  * templates.
  *
- * Not handled, both in the false-GREEN direction — a phantom block comment
- * that swallows to the next terminator and takes real code with it.
- * (Writing that terminator literally here would close THIS comment, which
- * is the same class of defect one level up, and it did once.)
+ * Not handled, all in the false-GREEN direction — real code silently deleted,
+ * which for a NEGATIVE literal check means the gate passes on a file that
+ * should red. (Writing a block-comment terminator literally in this docstring
+ * would close THIS comment, which is the same class one level up. It did once.)
  *
- *   1. a regex literal containing `/*`;
- *   2. a template literal whose `${…}` interpolation nests a backtick,
- *      which ends the string region early so the rest of the real string
- *      is scanned as code. tables.ts carries eleven `sql` templates, ten
- *      with interpolations, so this is the construct the scanner is
- *      pointed at — unreachable today only because none of them nests.
+ *   1. **Regex literals are not recognised at all.** The scanner knows `'`,
+ *      `"`, backtick, `//` and the block-comment opener, and nothing else, so a
+ *      `/…/` body is scanned as code. One cause, three symptoms: an opener
+ *      inside it starts a phantom block comment; a `//` inside a character
+ *      class starts a phantom line comment (`/[//]/` is valid — an unescaped
+ *      `/` is legal in a class, which is why the earlier note's `/a/*b/`
+ *      dismissal was the wrong example); and an ODD number of quote characters
+ *      inside it flips the string/code phase for the whole remainder of the
+ *      file, after which an opener sitting in a genuine string is treated as
+ *      real. The third has the widest blast radius.
+ *   2. A template literal whose `${…}` interpolation nests a backtick ends the
+ *      string region early, so the rest of the real string is scanned as code.
  *
- * Stated rather than assumed: what turns either note into a false green is
- * the next such construct added to the scanned file, and a limitation list
- * that stops at one is the same overstatement in miniature.
-*/
+ * Both are unreachable in the file this copy scans: tables.ts carries eleven
+ * `sql` templates, ten with interpolations, none nesting a backtick, and no
+ * regex literal at all. That is a measurement, not a property.
+ */
 export function stripTsComments(source: string): string {
   let out = '';
   let i = 0;

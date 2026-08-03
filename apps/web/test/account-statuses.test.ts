@@ -79,9 +79,14 @@ describe('I6.11: the E2E account-status fixture matches the dictionary it mirror
       'utf8',
     );
 
-    // `[^}]*?` between the fields rather than requiring adjacency, so inserting
-    // a field between them or reordering them does not drop an entry silently.
-    const pairs = [...source.matchAll(/accountStatus:\s*'([^']+)'[^}]*?accountStatusText:\s*'([^']*)'/g)];
+    // `[^}]*?` between the fields rather than requiring adjacency. Measured, it
+    // buys exactly one of the two things the sibling comment claims: inserting a
+    // field between them is ABSORBED (5 pairs), and reordering them is NOT — the
+    // entry drops out of the parse (4 pairs), because the span only runs forward
+    // from `accountStatus:`. A quote-style change drops it too. What makes any
+    // of those loud rather than silent is the independent `email:` denominator
+    // below, which is a different mechanism from the one the span provides.
+    const pairs = [...source.matchAll(/accountStatus:\s*'([^']*)'[^}]*?accountStatusText:\s*'([^']*)'/g)];
 
     // FLOORED AGAINST THE FIXTURE'S OWN ENTRY COUNT. The model derives its
     // count from `chip:` occurrences and then asserts set-coverage of the whole

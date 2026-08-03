@@ -32,9 +32,6 @@ export type LinkStatus = (typeof LINK_STATUSES)[number];
 
 // Frozen for the same reason as LINK_STATUSES. Declaration order is the
 // Postgres enum's order (migration 0001_init.sql:8), which has shipped.
-// No "not the tab order" caveat here, unlike LINK_STATUSES above: that one is
-// load-bearing because ACCOUNT_TABS really does reorder the same members, and
-// this domain has no second ordering anywhere in apps/web.
 export const ACCOUNT_STATUSES = Object.freeze([
   'active',
   'suspended',
