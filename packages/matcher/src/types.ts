@@ -1,4 +1,4 @@
-import type { LinkStatus } from '@open-smp/api-types';
+import type { AccountStatus, LinkStatus } from '@open-smp/api-types';
 
 export type IdentityView = {
   id: string;
@@ -13,7 +13,7 @@ export type AccountView = {
   id: string;
   email: string;
   displayName: string;
-  accountStatus: 'active' | 'suspended' | 'archived';
+  accountStatus: AccountStatus;
 };
 
 export type MatchRule = {

@@ -22,6 +22,7 @@
 // importing @open-smp/api-types directly.
 export {
   ACCOUNT_LABEL_KINDS,
+  ACCOUNT_STATUSES,
   CONNECTOR_APP_KEYS,
   CONTRACT_IMPORT_MAX_ROWS,
   HR_IMPORT_MAX_ROWS,
@@ -46,6 +47,7 @@ export type {
   AccountLabelResponse,
   AccountListItem,
   AccountListResponse,
+  AccountStatus,
   IdentityAccountItem,
   IdentityDetailResponse,
   DiscoveryEventPayload,

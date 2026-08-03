@@ -3,7 +3,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runMigrations, withTenant } from '@open-smp/schema';
-import type { LicenseRollupItem } from '@open-smp/api-types';
+import type { AccountStatus, LicenseRollupItem } from '@open-smp/api-types';
 import { ROLLUP_SQL, toItem } from '../src/routes/licenses.js';
 
 // C3 acceptance, against real Postgres 16. The test executes the SHIPPED
@@ -26,7 +26,7 @@ const tenantId = randomUUID();
 
 type AccountSpec = {
   externalId: string;
-  status: 'active' | 'suspended' | 'archived';
+  status: AccountStatus;
   link: 'matched' | 'ghost' | 'orphan' | 'ambiguous' | null;
   /** Minutes behind the application's newest sync stamp. 0 = seen in the latest run. */
   syncLagMinutes?: number;

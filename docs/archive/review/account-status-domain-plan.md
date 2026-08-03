@@ -307,14 +307,17 @@ spots listed under I2.1.
 
 - `pnpm typecheck` **and** `pnpm build` green (separate tsconfigs).
 - `pnpm test` green with no test edited except members 10–11 and the C6 additions.
-- *Review aid, not a gate*: the derivation command over the post-image returns **3 matches** —
-  the migration, the new `packages/api-types/src/index.ts` declaration (which matches its own
-  regex), and `tables.test.ts:34`. Count **matches, not output lines**: `rg -nU` prints one line per matched line, so a multi-line
-  frozen-array form inflates the output while the match count stays 1. Use `--count-matches`. (The
-  spelling is not fixed by anything — `BILLING_CYCLES` at `packages/api-types/src/index.ts:32` is
-  the one-line frozen idiom in the same file, and the repo has no prettier config — which is why
-  the criterion counts matches.) A fourth match is a second declaration. A grep
-  cannot establish the property it sits under, so this does not gate the contract.
+- *Review aid, not a gate, and it carries no expected count.* Run the derivation command over the
+  post-image and **classify every hit**; the number is not the signal. Measured at
+  implementation time: **6 matches across 5 files** — the migration (the authority), the new
+  `ACCOUNT_STATUSES` declaration, `tables.test.ts:34` (the transcription), **and three the regex
+  cannot distinguish from a declaration but which are not one**: `ACCOUNT_STATUS_KEYS` in
+  `account-statuses.ts` and the two dictionary blocks in `messages.ts`, whose message keys end in
+  the member names (`'accountStatus.active'`, …). Revisions 1–5 predicted 1, then 2, then 3; the
+  count was wrong every time, because it depends on the spelling of code the same plan adds. A
+  hit that is a *second declaration of the domain* is the finding; a hit that merely spells the
+  members is not. A grep cannot make that distinction, which is why this does not gate the
+  contract.
 
 ### C3 — the web vocabulary and its guarded read
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ACCOUNT_STATUSES } from '@open-smp/api-types';
 import { matchAccounts } from '../src/match.js';
 import { defaultRules } from '../src/rules.js';
 import type { AccountView, IdentityView } from '../src/types.js';
@@ -18,8 +19,7 @@ function makeIdentity(seed: number): IdentityView {
 function makeAccount(seed: number): AccountView {
   // Interleave patterns: exact match, aliased match, secondary-email match,
   // name-domain match, and pure orphans, across a range of seeds.
-  const statuses: AccountView['accountStatus'][] = ['active', 'suspended', 'archived'];
-  const accountStatus = statuses[seed % statuses.length] ?? 'active';
+  const accountStatus = ACCOUNT_STATUSES[seed % ACCOUNT_STATUSES.length] ?? 'active';
 
   if (seed % 5 === 0) {
     return {
