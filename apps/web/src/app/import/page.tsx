@@ -7,7 +7,8 @@ import { pollJob, SessionExpiredError } from '@/lib/polling';
 import { NavBar } from '@/components/NavBar';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
-import { HR_IMPORT_MAX_ROWS, MAX_UPLOAD_BYTES, type HrImportResponse } from '@/lib/api-types';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, type HrImportResponse } from '@/lib/api-types';
+import { hrUploadFailure } from '@/lib/upload-failure';
 
 // Checked client-side because an over-limit upload aborted mid-stream by the
 // server does not reliably deliver its 400 through the Next proxy. The value is
@@ -17,17 +18,6 @@ import { HR_IMPORT_MAX_ROWS, MAX_UPLOAD_BYTES, type HrImportResponse } from '@/l
 // Maps known API error strings (hr-import.ts) to the key of friendlier copy;
 // the raw string is always shown alongside in smaller print for support
 // purposes.
-const UPLOAD_ERROR_KEYS: Record<string, MessageKey> = {
-  'file is required': 'upload.fileRequired',
-  'file must be UTF-8 encoded': 'upload.notUtf8',
-  'malformed CSV': 'upload.malformedCsv',
-  // Keyed off the constant the route interpolates rather than typed out: a
-  // hand-written key stops matching the moment the cap moves, and this map
-  // silently falls through to the generic copy.
-  [`too many rows (max ${HR_IMPORT_MAX_ROWS})`]: 'upload.tooManyRows',
-  'file exceeds 10MB limit': 'upload.tooLarge',
-};
-
 type State =
   | { phase: 'idle' }
   | { phase: 'uploading' }
@@ -50,7 +40,7 @@ export default function ImportPage() {
     if (!file) return;
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      setState({ phase: 'upload-failed', rawMessage: 'file exceeds 10MB limit' });
+      setState({ phase: 'upload-failed', rawMessage: `file exceeds ${MAX_UPLOAD_LABEL} limit` });
       return;
     }
 
@@ -147,11 +137,8 @@ export default function ImportPage() {
             <div className="mt-2 text-sm text-red-700">
               <p>
                 {(() => {
-                  const key = UPLOAD_ERROR_KEYS[state.rawMessage];
-                  // `en-US` stays pinned so the rendered cap does not depend on where the
-                  // browser runs (VE3). Making it follow the locale is a separate change,
-                  // because formatMoney's tests pin the same decision.
-                  return key ? t(key, { max: HR_IMPORT_MAX_ROWS.toLocaleString('en-US') }) : t('upload.failed');
+                  const failure = hrUploadFailure(state.rawMessage);
+                  return t(failure.key, failure.max === undefined ? undefined : { max: failure.max });
                 })()}
               </p>
               <p className="text-xs text-neutral-400">{state.rawMessage}</p>

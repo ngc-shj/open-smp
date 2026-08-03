@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LOCALE_COOKIE, LOCALE_COOKIE_MAX_AGE, localeCookie } from '../src/lib/i18n/cookie';
+import { MAX_UPLOAD_LABEL } from '../src/lib/api-types';
 import { LOCALE_LABELS, LOCALES, MESSAGES, type MessageKey } from '../src/lib/i18n/messages';
 import {
   DEFAULT_LOCALE,
@@ -46,18 +47,137 @@ describe('the dictionaries', () => {
   });
 
   it('actually translates, rather than carrying the English through', () => {
-    // Non-vacuity for everything above: two dictionaries with identical values
-    // satisfy every assertion here and translate nothing. `nav.brand` is
-    // deliberately excluded — a product name is not translated.
-    const differing = Object.keys(MESSAGES.en).filter(
-      (key) => MESSAGES.en[key as MessageKey] !== MESSAGES.ja[key as MessageKey],
+    // C1'S RATCHET, which C2 had and this did not.
+    //
+    // The first version asserted `differing.length > 0` under the name "actually
+    // translates". Measured: 187 keys, 186 of them differ, and the floor was 1 —
+    // so the dominant regression for a dictionary contract, a key added to both
+    // locales with the English pasted into `ja`, was invisible. Every sibling
+    // assertion is satisfied by that shape too: the key sets match, neither
+    // value is empty, and identical strings carry identical placeholders. The
+    // 185 other keys held the floor up.
+    //
+    // A named exemption set instead, so a copied value reds WITH THE KEY NAMED
+    // and an intentional identity has to be argued in the diff that adds it.
+    const INTENTIONALLY_IDENTICAL: ReadonlySet<MessageKey> = new Set<MessageKey>([
+      // A product name, not translated.
+      'nav.brand',
+    ]);
+
+    // OVER LOCALES, not over `en` and `ja`. Every sibling cell in this describe
+    // derives its subject from the domain; the first version of this one named
+    // the pair. A third locale added with the English pasted through — which is
+    // what LOCALE_LABELS, the endonym rule and the picker exist for — would have
+    // been green here while satisfying every sibling too.
+    const others = LOCALES.filter((locale) => locale !== DEFAULT_LOCALE);
+    expect(others.length, 'no locale to compare the default against').toBeGreaterThan(0);
+    expect(Object.keys(MESSAGES[DEFAULT_LOCALE]).length).toBeGreaterThan(100);
+
+    for (const locale of others) {
+      const identical = Object.keys(MESSAGES[DEFAULT_LOCALE]).filter(
+        (key) =>
+          MESSAGES[DEFAULT_LOCALE][key as MessageKey] === MESSAGES[locale][key as MessageKey],
+      );
+
+      expect(identical.sort(), `${locale}: a value is identical to its ${DEFAULT_LOCALE} value`).toEqual(
+        [...INTENTIONALLY_IDENTICAL].sort(),
+      );
+    }
+  });
+});
+
+describe('the upload-cap round trip', () => {
+  // THE ROUND TRIP, which nothing observed. `MAX_UPLOAD_LABEL` reaches eight
+  // sites: two API errors, two client pre-checks, two map keys, two dictionary
+  // messages. Review round 1 derived six and left the two PRODUCERS literal, so
+  // the key moved with the constant and the message did not — they agreed only
+  // while the cap was 10MB.
+  //
+  // Both web modules are `.tsx` and there is no jsdom project, so the map itself
+  // cannot be imported here. Read as TEXT, the way connector-credentials.test.ts
+  // reads the worker's factory, because nothing in the type system connects a
+  // string a component emits to a string another component uses as a key.
+  // EVERY producer and the key, derived by grep rather than remembered. The
+  // first version listed the two forms — and the same round then extracted the
+  // map into upload-failure.ts, moving the key this gate exists for out from
+  // under it, while the two API routes were never in it at all.
+  const SITES = [
+    'apps/api/src/routes/hr-import.ts',
+    'apps/api/src/routes/contract-import.ts',
+    'apps/web/src/app/import/page.tsx',
+    'apps/web/src/components/ContractImportForm.tsx',
+    'apps/web/src/lib/upload-failure.ts',
+  ];
+
+  it.each(SITES)('%s takes the cap from the constant, never by hand', async (site) => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const source = await readFile(path.join(import.meta.dirname, '..', '..', '..', site), 'utf8');
+    expect(source.length, `${site} is empty or missing`).toBeGreaterThan(0);
+
+    // FLOORED. `toContain` proves the substring exists; it does not prove the
+    // regex matched, and a `for…of` over zero matches asserts nothing — so a
+    // reworded message (`… maximum`) or one assembled from parts passed the
+    // non-vacuity check and left the site unscanned.
+    const matches = [...source.matchAll(/file exceeds ([^`'"]*) limit/g)];
+    expect(matches.length, `${site} has no over-limit message this scan can see`).toBeGreaterThan(
+      0,
     );
 
-    expect(differing.length).toBeGreaterThan(0);
+    // Every mention of the over-limit string interpolates the constant. A
+    // hand-written figure here is the desynchronisation, in either direction.
+    for (const match of matches) {
+      expect(match[1], `${site} hand-writes the cap`).toBe('${MAX_UPLOAD_LABEL}');
+    }
+  });
+
+  it('states the cap in whole units, so the sentence a reader sees stays short', () => {
+    // A SHAPE GUARD on the shipped constant, and honest about what it is not.
+    // `10 * 1000 * 1000` over 1024^2 is 9.5367431640625, which would land
+    // verbatim in the copy and in the map key — but `Math.round`'s removal
+    // cannot be observed by a mutation, because the current cap divides exactly
+    // and the harness cuts one file at a time. What this DOES red on is the
+    // shape: a label hand-written as `10 MB`, `10MiB`, or with the figure typed
+    // out beside the constant.
+    expect(MAX_UPLOAD_LABEL).toMatch(/^\d+MB$/);
   });
 });
 
 describe('translate', () => {
+  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])(
+    'marks the unsupplied placeholder {%s} instead of reaching the prototype',
+    (name) => {
+      // `in` reaches the prototype, so these four resolved to inherited members
+      // and put `function toString() { [native code] }` into the sentence. The
+      // same defect `chipClassFor` records as a paid-for lesson, in the helper
+      // whose contract is "a placeholder nobody supplied is marked where it
+      // stands".
+      // The placeholder NAME has to be the prototype member — passing
+      // `{toString: 'x'}` for a `{account}` message proves nothing, because
+      // `'account' in {toString:'x'}` is false either way. Measured: the first
+      // version of this cell survived its own mutation for exactly that reason.
+      //
+      // No dictionary key has such a placeholder and none should, so one is
+      // injected the way the unresolvable-key cell below injects a key, and
+      // restored in a `finally`.
+      const dictionary = MESSAGES.en as unknown as Record<string, string>;
+      const probeKey = 'test.prototypePlaceholder';
+      dictionary[probeKey] = `value {${name}}`;
+      try {
+        const rendered = translate('en', probeKey as MessageKey, {});
+        expect(rendered, name).toBe(`value ${missingMarker(name)}`);
+      } finally {
+        Reflect.deleteProperty(dictionary, probeKey);
+      }
+    },
+  );
+
+  it('still substitutes an own property', () => {
+    // The allow side: a guard that marked everything would satisfy the cell
+    // above and break every parameterised message.
+    expect(translate('en', 'table.selectAccount', { account: 'a-1' })).toBe('Select a-1');
+  });
+
   it('returns the message for the locale asked for', () => {
     expect(translate('en', 'nav.accounts')).toBe('Accounts');
     expect(translate('ja', 'nav.accounts')).toBe('アカウント');
@@ -134,7 +254,13 @@ describe('interpolation', () => {
     //
     // What this does NOT cover, stated rather than implied: the selection at
     // the call sites (BulkLabelBar, SaasAppManager). There is no jsdom project
-    // here, so no unit test can render either one.
+    // here, so no unit test can render either one — but both ARE exercised end
+    // to end, which the earlier wording ("untested") understated:
+    // labeling.spec.ts pins the `.one` branch and apps.spec.ts the `.other`.
+    // What is genuinely unobserved is the SECOND branch at each site — one axis
+    // and one side each (RT10) — which is a narrower and more actionable
+    // statement than one that points a future cycle at a jsdom project it does
+    // not need.
     expect(MESSAGES.en['label.applied.one']).not.toBe(MESSAGES.en['label.applied.other']);
     expect(translate('en', 'label.applied.one', { count: 1 })).toBe('Labeled 1 account.');
     expect(translate('en', 'label.applied.other', { count: 3 })).toBe('Labeled 3 accounts.');
@@ -209,6 +335,62 @@ describe('i18n/C3: what the switch writes', () => {
 
     expect([...attributes_.keys()][0]).toBe(LOCALE_COOKIE);
     expect(attributes_.get(LOCALE_COOKIE)).toBe(locale);
+  });
+
+  it('refuses a value outside the locale set rather than interpolating it', () => {
+    // MEMBERSHIP AT BOTH ENDS. The reader decided by `LOCALES.includes`; the one
+    // caller decided by an `as Locale` cast, and this function interpolated the
+    // result straight into a cookie GRAMMAR. Closed by construction today, but
+    // the module's obvious next step — negotiation from Accept-Language, or a
+    // `?lang=` parameter — makes an attribute injection out of it.
+    // `domain`, not `max-age`. Duplicate attributes resolve last-wins — in the
+    // parser here AND in a browser per RFC 6265 §5.3 — so injecting an
+    // attribute the writer also emits is overridden by the real one and proves
+    // nothing. Measured: the first version of this cell survived its own
+    // mutation. An attribute the writer never emits is the one that takes
+    // effect, and rescoping the cookie to a parent domain is the reason to care.
+    // `de`, not `en`. The payload's locale token used to equal DEFAULT_LOCALE,
+    // so with the guard removed the emitted value was still `en` and the value
+    // assertion below passed — only the attribute half was load-bearing, which
+    // is the same shape as the two observers this round already repaired.
+    const attacked = localeCookie('de; domain=evil.example' as never);
+
+    expect(attributes(attacked).get(LOCALE_COOKIE)).toBe(DEFAULT_LOCALE);
+    expect(attributes(attacked).has('domain'), 'an injected attribute survived').toBe(false);
+    // The allow side: a guard that rewrote everything to the default would
+    // satisfy the assertions above and break the control.
+    expect(attributes(localeCookie('ja')).get(LOCALE_COOKIE)).toBe('ja');
+  });
+
+  it('adds Secure on https and omits it on plain http', () => {
+    // The first version declined `Secure` outright, reasoning the attribute
+    // "would make the control silently stop working on any plain-HTTP
+    // deployment". The session cookie in apps/api resolves the same constraint
+    // conditionally, from the deployment's scheme — the conditional form was
+    // already the house pattern, and this asserts both directions of it.
+    const original = globalThis.location;
+    try {
+      Object.defineProperty(globalThis, 'location', {
+        value: { protocol: 'https:' },
+        configurable: true,
+      });
+      expect(attributes(localeCookie('ja')).has('secure')).toBe(true);
+
+      Object.defineProperty(globalThis, 'location', {
+        value: { protocol: 'http:' },
+        configurable: true,
+      });
+      expect(attributes(localeCookie('ja')).has('secure')).toBe(false);
+    } finally {
+      if (original === undefined) {
+        Reflect.deleteProperty(globalThis, 'location');
+      } else {
+        Object.defineProperty(globalThis, 'location', {
+          value: original,
+          configurable: true,
+        });
+      }
+    }
   });
 
   it('scopes the choice to the whole site', () => {

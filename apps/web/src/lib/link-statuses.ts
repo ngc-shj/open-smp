@@ -1,7 +1,8 @@
 // Relative imports, not the `@/` alias: this module is unit-tested and the root
 // vitest project resolves no alias. Same reason as label-filters.ts and
 // label-kinds.ts.
-import type { LinkStatus } from './api-types';
+import type { IdentityDetailResponse, LinkStatus } from './api-types';
+import type { MessageKey } from './i18n/messages';
 
 /**
  * The accounts page's tab order, which is deliberately NOT the domain order.
@@ -14,6 +15,76 @@ import type { LinkStatus } from './api-types';
  * and is compile-checked as `LinkStatus[]` instead.
  */
 export const ACCOUNT_TABS: readonly LinkStatus[] = ['orphan', 'ghost', 'ambiguous', 'matched'];
+
+/**
+ * Display key per identity status, keyed by the domain.
+ *
+ * A `Record`, not the inline ternary this replaced — and read through a guard,
+ * which the first version was not.
+ *
+ * WHAT THIS DOES AND DOES NOT BUY, because the first version claimed more. A
+ * status added to `IdentityDetailResponse['status']` is a compile error here.
+ * A status added to the DATABASE is not: `identityStatusEnum` in
+ * packages/schema is a hand-written second declaration — unlike
+ * `linkStatusEnum`, which derives from LINK_STATUSES — and the API narrows the
+ * row's `string` to the union with a bare `as`. So the migration the first
+ * version named as the threat produces no compile error at all, and a bare
+ * index then rendered `⟨undefined⟩` where the ternary it replaced rendered the
+ * raw value.
+ *
+ * Hence `identityStatusKeyFor`, the same shape as `linkStatusKeyFor` below and
+ * for the same stated reason: an unexpected status is data worth seeing.
+ */
+export const IDENTITY_STATUS_KEYS: Record<IdentityDetailResponse['status'], MessageKey> = {
+  active: 'identityStatus.active',
+  left: 'identityStatus.left',
+};
+
+/**
+ * The string-indexed read of the identity vocabulary. See `linkStatusKeyFor`.
+ */
+export function identityStatusKeyFor(status: string): MessageKey | null {
+  return Object.hasOwn(IDENTITY_STATUS_KEYS, status)
+    ? (IDENTITY_STATUS_KEYS as Record<string, MessageKey>)[status]!
+    : null;
+}
+
+/**
+ * Display key per link status, keyed by the domain.
+ *
+ * The SAME shape `LABEL_KIND_KEYS` has, and it was missing for the same reason
+ * that map exists: this vocabulary reaches the reader in three places — the
+ * accounts tab strip, the accounts table's chip, and the identity page's chip —
+ * and none of them went through the dictionary, so `/accounts` under `ja` read
+ * 「アカウント状態」 over a column of English words beside a tab strip reading
+ * `orphan ghost ambiguous matched`. The plan diagnosed exactly this class and
+ * applied it to the label kinds; its twin in this file was left, and the residue
+ * list does not name it.
+ *
+ * Domain-keyed so a fifth status with no copy is a compile error, read through
+ * `linkStatusKeyFor` for the same reason `chipClassFor` exists: the wire type is
+ * a bare `string`.
+ */
+export const LINK_STATUS_KEYS: Record<LinkStatus, MessageKey> = {
+  matched: 'linkStatus.matched',
+  orphan: 'linkStatus.orphan',
+  ghost: 'linkStatus.ghost',
+  ambiguous: 'linkStatus.ambiguous',
+};
+
+/**
+ * The string-indexed read. A value outside the domain renders verbatim rather
+ * than as the untranslated-key marker — an unexpected status is data worth
+ * seeing, and `⟨linkStatus.whatever⟩` would hide it behind a translation bug.
+ *
+ * `Object.hasOwn` for the reason `chipClassFor` records below: a bare index
+ * reaches the prototype, and five inputs broke that helper's contract.
+ */
+export function linkStatusKeyFor(status: string): MessageKey | null {
+  return Object.hasOwn(LINK_STATUS_KEYS, status)
+    ? (LINK_STATUS_KEYS as Record<string, MessageKey>)[status]!
+    : null;
+}
 
 /**
  * Chip class per link status, keyed by the domain.

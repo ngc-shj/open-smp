@@ -5,11 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
 import {
-  CONTRACT_IMPORT_MAX_ROWS,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
   type ContractImportResponse,
   type ImportRowIssue,
 } from '@/lib/api-types';
+import { contractUploadFailure } from '@/lib/upload-failure';
 
 // Maps known API error strings (contract-import.ts) to the key of friendlier
 // copy; the raw string is always shown alongside in smaller print for support
@@ -21,14 +22,6 @@ import {
 // out. A hand-written key stops matching the moment the cap moves and this map
 // silently falls through to the generic copy — in the one place that exists to
 // explain a refusal.
-const UPLOAD_ERROR_KEYS: Record<string, MessageKey> = {
-  'file is required': 'upload.fileRequired',
-  'file must be UTF-8 encoded': 'upload.notUtf8',
-  'malformed CSV': 'upload.malformedCsv',
-  [`too many rows (max ${CONTRACT_IMPORT_MAX_ROWS})`]: 'upload.tooManyRows',
-  'file exceeds 10MB limit': 'upload.tooLarge',
-};
-
 const COLUMNS =
   'app_key, app_name, plan_name, seats, unit_price, currency, billing_cycle, term_start, term_end, note';
 
@@ -77,7 +70,7 @@ export function ContractImportForm() {
     // Checked client-side because an over-limit upload aborted mid-stream by
     // the server does not reliably deliver its 400 through the Next proxy.
     if (file.size > MAX_UPLOAD_BYTES) {
-      setState({ phase: 'failed', rawMessage: 'file exceeds 10MB limit' });
+      setState({ phase: 'failed', rawMessage: `file exceeds ${MAX_UPLOAD_LABEL} limit` });
       return;
     }
 
@@ -117,7 +110,9 @@ export function ContractImportForm() {
   return (
     <form onSubmit={handleUpload} className="rounded-lg border border-neutral-200 bg-white p-4">
       <h2 className="mb-1 text-sm font-semibold text-neutral-900">{t('contracts.upload')}</h2>
-      <p className="mb-2 text-xs text-neutral-500">{t('contracts.columnsHint', { columns: COLUMNS })}</p>
+      <p className="mb-2 text-xs text-neutral-500">
+        {t('contracts.columnsHint', { columns: COLUMNS })}
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <input
           ref={fileInputRef}
@@ -142,13 +137,8 @@ export function ContractImportForm() {
         <div className="mt-2 text-sm text-red-700">
           <p>
             {(() => {
-              const key = UPLOAD_ERROR_KEYS[state.rawMessage];
-              // `en-US` stays pinned so the rendered cap does not depend on where the
-              // browser runs (VE3). Making it follow the locale is a separate change,
-              // because formatMoney's tests pin the same decision.
-              return key
-                ? t(key, { max: CONTRACT_IMPORT_MAX_ROWS.toLocaleString('en-US') })
-                : t('upload.failed');
+              const failure = contractUploadFailure(state.rawMessage);
+              return t(failure.key, failure.max === undefined ? undefined : { max: failure.max });
             })()}
           </p>
           <p className="text-xs text-neutral-400">{state.rawMessage}</p>
@@ -169,7 +159,12 @@ export function ContractImportForm() {
             </p>
           )}
           {state.result.errors.length > 0 && (
-            <IssueTable t={t} title={t('issue.errors')} issues={state.result.errors} tone="text-red-700" />
+            <IssueTable
+              t={t}
+              title={t('issue.errors')}
+              issues={state.result.errors}
+              tone="text-red-700"
+            />
           )}
           {state.result.warnings.length > 0 && (
             <IssueTable

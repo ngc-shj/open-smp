@@ -15,7 +15,7 @@ reference for exploratory/manual verification; nothing here is manual-only.
 
 1. http://localhost:3000/login → login with `demo` / `admin@demo.example` / `demo-admin-password`.
 2. `/accounts` defaults to the orphan tab; verify ≥1 row.
-3. Switch tabs ghost / ambiguous / matched — each shows ≥1 seeded row.
+3. Switch tabs Ghost / Ambiguous / Matched (the `?status=` values stay lowercase) — each shows ≥1 seeded row.
 4. Ghost row: status chip red, evidence popover shows rule id + matched value + the identity's leave date context.
 5. Ambiguous row: candidates listed; NO single identity name rendered.
 6. Column check: app, email, name, account status, admin badge, last activity, link status, confidence; freshness footer shows the last sync time.

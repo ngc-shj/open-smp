@@ -396,10 +396,38 @@ E2E tier — the only place a page BODY can be observed:
   constant is better than the figure being buried in a sentence, and it is still
   a copy. Trigger: any change to that cap, or the constant moving into
   `@open-smp/api-types`.
-- **The plural selection is untested** at `BulkLabelBar` and `SaasAppManager`
-  (no jsdom project).
-- **`→` and `—` stay literals** in `auditTransition`, on the same ground the
-  detector's allowlist uses: the same glyph in every locale.
+- **One branch of the plural selection is unobserved** at `BulkLabelBar` and
+  `SaasAppManager`. Corrected in review round 1: the earlier wording said the
+  selection was untested, and both call sites are in fact exercised end to end —
+  `labeling.spec.ts:200` pins `.one`, `apps.spec.ts:213` pins `.other`. What is
+  unobserved is the other branch at each site, one axis and one side each
+  (RT10). Trigger: either branch changing, or a jsdom project arriving for an
+  unrelated reason.
+- **`SEEDED_ACCOUNTS.chip` is apps/web copy inside a seed mirror.** The file
+  documents itself as a mirror of `apps/api/src/seed.ts`, and `chip` has no
+  counterpart there — it is the `en` dictionary value for the row's link status,
+  kept in the fixture because `e2e/package.json` declares only
+  `@playwright/test` and a spec cannot import the dictionary. Duplicating at the
+  outermost tier is deliberate: an assertion that derives its expectation from
+  the dictionary the page renders from asserts nothing. It is en-only, and
+  `apps/web/test/link-statuses.test.ts` now reads the fixture as text and
+  compares each `chip` against `translate('en', …)`, so the two cannot drift.
+  Trigger: a spec needing the `ja` chip, which would need a second field.
+- **`accountStatus` stays English** in the accounts and identity tables.
+  Reported in review round 1 alongside the link-status vocabulary, which WAS
+  converted. This one is not, and the reason is the boundary rather than the
+  effort: `AccountLink.accountStatus` is a bare `string` on the wire, so
+  `apps/web` has no closed domain to key a `Record` by. The producing union
+  lives in `packages/connectors/core`, which apps/web may not import (C8: the
+  API is the only data path), so converting it means adding the domain to
+  `@open-smp/api-types` — a second declaration of the connector's union with
+  nothing in the type system connecting them, which is its own contract.
+  Trigger: `accountStatus` gaining a domain in `@open-smp/api-types`.
+- **`→` and `—` stay literals** in `auditTransition`, on the ground the detector
+  actually applies: it skips any text with no letter, so a glyph never reaches
+  the allowlist at all. Corrected in review round 1 — the earlier wording cited
+  the allowlist, and those glyphs sat there as entries that could never fire;
+  they were removed with the eight other unreachable ones.
 - **The app name in the delete confirmation lost its bold.** An interpolated
   value cannot carry markup, and splitting the sentence to keep it is the
   fragment shape the dictionary exists to avoid. The rendered text is unchanged.

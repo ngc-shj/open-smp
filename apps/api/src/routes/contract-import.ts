@@ -6,6 +6,7 @@ import {
   BILLING_CYCLES,
   CONTRACT_IMPORT_MAX_ROWS,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
   type BillingCycle,
   type ContractImportResponse,
   type ImportRowIssue,
@@ -330,7 +331,9 @@ export function registerContractImportRoute(app: FastifyInstance, deps: AppDeps)
           'code' in err &&
           err.code === 'FST_REQ_FILE_TOO_LARGE';
         if (isFileTooLarge) {
-          return reply.code(400).send({ error: 'file exceeds 10MB limit' });
+          return reply
+            .code(400)
+            .send({ error: `file exceeds ${MAX_UPLOAD_LABEL} limit` });
         }
         throw err;
       }

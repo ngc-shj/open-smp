@@ -28,7 +28,9 @@ test.describe('sync', () => {
       const status = account.status;
       await page.goto(`/accounts?status=${status}`);
       const row = page.getByRole('row', { name: new RegExp(account.email) });
-      await expect(row.getByText(status, { exact: true })).toBeVisible();
+      // `account.chip`, not `status`: the chip renders dictionary copy now, and
+      // the domain value is what goes in the URL above.
+      await expect(row.getByText(account.chip, { exact: true })).toBeVisible();
     }
   });
 });

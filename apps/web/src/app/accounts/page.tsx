@@ -12,7 +12,7 @@ import { LABEL_KIND_KEYS } from '@/lib/label-kinds';
 import { getTranslator } from '@/lib/i18n/server';
 import { LabelFilter } from '@/components/LabelFilter';
 import { LABEL_FILTER_VALUES, type LabelFilterValue } from '@/lib/label-filters';
-import { ACCOUNT_TABS } from '@/lib/link-statuses';
+import { ACCOUNT_TABS, LINK_STATUS_KEYS, linkStatusKeyFor } from '@/lib/link-statuses';
 import { AccountSelectCheckbox, AccountSelectionProvider } from '@/components/AccountSelection';
 
 
@@ -93,7 +93,7 @@ export default async function AccountsPage({
                   : 'border-transparent text-neutral-500 hover:text-neutral-800'
               }`}
             >
-              {tab}
+              {t(LINK_STATUS_KEYS[tab])}
             </Link>
           ))}
         </nav>
@@ -140,7 +140,11 @@ export default async function AccountsPage({
                     </td>
                     <td className="px-3 py-2 text-neutral-500">{item.lastActivityAt ?? '—'}</td>
                     <td className="px-3 py-2">
-                      {item.link ? <StatusChip status={item.link.status} /> : <StatusChip status="orphan" />}
+                      {(() => {
+                        const status = item.link ? item.link.status : 'orphan';
+                        const key = linkStatusKeyFor(status);
+                        return <StatusChip status={status} label={key ? t(key) : undefined} />;
+                      })()}
                     </td>
                     <td className="px-3 py-2">
                       {item.link?.identityId ? (

@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { useTranslator } from '@/lib/i18n/locale-context';
 import { BulkLabelBar } from './BulkLabelBar';
 
 type SelectionContextValue = {
@@ -47,6 +48,7 @@ export function AccountSelectionProvider({ children }: { children: ReactNode }) 
 }
 
 export function AccountSelectCheckbox({ accountId }: { accountId: string }) {
+  const t = useTranslator();
   const context = useContext(SelectionContext);
   if (!context) {
     throw new Error('AccountSelectCheckbox must be rendered inside AccountSelectionProvider');
@@ -55,7 +57,16 @@ export function AccountSelectCheckbox({ accountId }: { accountId: string }) {
   return (
     <input
       type="checkbox"
-      aria-label={`Select ${accountId}`}
+      // A PARAMETERISED KEY, not `t('table.select') + ' ' + accountId`: a
+      // sentence assembled from fragments is what the dictionary exists to
+      // avoid, and it does not survive a language whose word order differs.
+      //
+      // This was the one copy attribute of twelve that never reached `t()`, and
+      // C2's ratchet could not report it — the attribute scan matches a quoted
+      // literal, and a JSX expression attribute never matches. Under `ja` a
+      // screen-reader user got "Select <uuid>" on every row of the page the
+      // plan measured as the largest copy surface.
+      aria-label={t('table.selectAccount', { account: accountId })}
       checked={context.selected.has(accountId)}
       onChange={() => context.toggle(accountId)}
       className="h-3.5 w-3.5 rounded border-neutral-300"

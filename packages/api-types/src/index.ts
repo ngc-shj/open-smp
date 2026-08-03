@@ -411,10 +411,36 @@ export type ContractImportResponse = {
 
 // SC37. Both import routes bound the multipart body at this size, and the
 // upload form refuses a larger file before sending it — three sites that were
-// hand-synced comments until C39's gate was widened to admit a scalar. The
-// user-facing "max 10MB" strings are still literals: they are asserted by an
-// E2E spec and by the manual-test doc, so deriving them is a separate change.
+// hand-synced comments until C39's gate was widened to admit a scalar.
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The cap as a person reads it, derived from the cap the code enforces.
+ *
+ * "the user-facing strings are still literals … deriving them is a separate
+ * change" stood here for two contracts, and the i18n contract then added two
+ * MORE members to the class — one per locale — one line below a key that
+ * parameterises its own cap and a comment explaining why. This is that separate
+ * change. The first version of this docstring said six and omitted the two
+ * client-side pre-checks that PRODUCE the string, which both files identify as
+ * the dominant path (a server 400 on an aborted upload does not reliably
+ * survive the Next proxy). So the map key derived while its producer stayed
+ * literal, and they agreed only because the cap happened to be 10MB.
+ *
+ * SEVEN, counted rather than asserted: two API route errors
+ * (hr-import.ts, contract-import.ts), two client pre-check messages
+ * (import/page.tsx, ContractImportForm.tsx), ONE web error-map key (the two
+ * maps were collapsed into apps/web/src/lib/upload-failure.ts in the same
+ * branch, which the second version of this docstring still counted as two), and
+ * both dictionaries' `{max}`.
+ *
+ * Three further sites assert the rendered figure and are deliberately NOT
+ * derived, because an assertion that computes its own expectation asserts
+ * nothing: e2e/specs/import.spec.ts, apps/api/test/api.integration.test.ts, and
+ * docs/manual-tests/ui-import.md. They red when the cap moves, which is the
+ * point; they are named in the i18n plan's residue list.
+ */
+export const MAX_UPLOAD_LABEL = `${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB`;
 
 // The row caps cross for the same reason the byte cap does, and for one more:
 // each route's over-limit error message INTERPOLATES its cap, and the upload

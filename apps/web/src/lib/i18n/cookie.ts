@@ -1,4 +1,5 @@
-import type { Locale } from './messages';
+import { DEFAULT_LOCALE, type Locale } from './messages';
+import { isLocale } from './translate';
 
 // i18n/C3. The cookie's name and its write form, in the one module both sides
 // can import.
@@ -33,10 +34,31 @@ export const LOCALE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
  * every other page stays in the old language while the control on that one page
  * insists it changed. Measured too: `/licenses` came back `lang="en"`.
  *
- * No `Secure`. The value is a display preference and carries nothing to
- * protect, while the attribute would make the control silently stop working on
- * any plain-HTTP deployment — a real failure in exchange for nothing.
+ * `Secure` CONDITIONALLY, derived from the page's own scheme. The first version
+ * declined it outright, reasoning that the attribute "would make the control
+ * silently stop working on any plain-HTTP deployment — a real failure in
+ * exchange for nothing". The premise is contradicted one file away: the session
+ * cookie in apps/api/src/routes/login.ts records the same constraint (the
+ * http://localhost compose demo) and resolves it with
+ * `secure: new URL(appOrigin).protocol === 'https:'`. The conditional form was
+ * already the house pattern.
+ *
+ * What it protects is small — the value is a display preference, and the reader
+ * validates by membership before use — so this is about the recorded reason
+ * rather than the exposure. This module is where the next first-party
+ * browser-written cookie will be modelled from, and "Secure is unavailable" is
+ * the wrong thing to leave there.
  */
 export function localeCookie(locale: Locale): string {
-  return `${LOCALE_COOKIE}=${locale}; path=/; max-age=${LOCALE_COOKIE_MAX_AGE}; samesite=lax`;
+  // MEMBERSHIP AT BOTH ENDS. The reader decides by `LOCALES.includes`; the one
+  // caller decided by an `as Locale` cast, and this function then interpolated
+  // that value straight into a cookie GRAMMAR. Closed by construction today —
+  // the values come from a `<select>` built from LOCALES — but the module's
+  // obvious next step is negotiation from `Accept-Language` or a `?lang=`
+  // parameter, and either makes `en; max-age=0` an attribute injection that
+  // rescopes or expires the cookie. Guarding the exported function is what a
+  // future caller reaches; guarding the caller is not.
+  const safe = isLocale(locale) ? locale : DEFAULT_LOCALE;
+  const secure = typeof location !== 'undefined' && location.protocol === 'https:' ? '; secure' : '';
+  return `${LOCALE_COOKIE}=${safe}; path=/; max-age=${LOCALE_COOKIE_MAX_AGE}; samesite=lax${secure}`;
 }

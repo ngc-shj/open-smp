@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { findUntranslatedLiterals } from './untranslated-literals';
+import { NOT_COPY, findUntranslatedLiterals } from './untranslated-literals';
 
 // i18n/C2. The plan named the hard part, and it is not the string count: it is
 // that a PARTIAL migration looks finished. A page half-extracted renders
@@ -77,6 +77,22 @@ describe('i18n/C2: the untranslated remainder only shrinks', () => {
     expect(stale, 'budget no longer tight').toEqual([]);
   });
 
+  it('the not-copy allowlist is exactly what review agreed to', () => {
+    // T3: once the remainder reached zero, adding ANY string to `NOT_COPY` left
+    // both assertions above untouched — the allowlist became a free widening of
+    // the gate, keyed by text so one entry exempts that string across all of
+    // apps/web. That is how `google-workspace` outlived its own subject and had
+    // to be removed by hand a contract later.
+    //
+    // Pinned by exact equality, the way CONTROL_FILES is pinned in
+    // package-test-parity.test.ts, so an addition reds and has to carry its
+    // reason in the diff that makes it. That is what the set's own docstring —
+    // "each needs a reason" — is trying to buy.
+    expect([...NOT_COPY].sort(), 'the not-copy allowlist changed').toEqual(
+      ['CSV', 'open-smp', 'saasAppId'].sort(),
+    );
+  });
+
   it('every budgeted file still exists', async () => {
     // A file renamed or deleted leaves its budget behind, and the leftover
     // entry then silently permits that many literals somewhere else the day
@@ -94,8 +110,41 @@ describe('the detector itself', () => {
     ]);
   });
 
-  it('reports a copy attribute', () => {
-    expect(findUntranslatedLiterals('f.tsx', '<input aria-label="Contract CSV" />')).toHaveLength(1);
+  it.each([
+    ['double-quoted', '<input aria-label="Contract CSV" />', 'Contract CSV'],
+    // The one-character bypass review round 1 closed. JSX permits single quotes
+    // and nothing in this repo enforces the style — no Prettier config, and the
+    // eslint config carries neither `jsx-quotes` nor the React plugin.
+    ['single-quoted', "<input aria-label='Contract CSV' />", 'Contract CSV'],
+    // The hole that CLOSING it opened, which is the larger of the two: the first
+    // fix shared one body class between both quote forms, so an apostrophe — the
+    // common case in English UI copy — went from found to missed.
+    ['an apostrophe inside double quotes', `<input aria-label="Owner's name" />`, "Owner's name"],
+    ['a double quote inside single quotes', `<input aria-label='He said "no"' />`, 'He said "no"'],
+  ])('reports a %s copy attribute', (_label, source, expected) => {
+    expect(findUntranslatedLiterals('f.tsx', source)).toEqual([{ file: 'f.tsx', text: expected }]);
+  });
+
+
+
+  it.each([
+    ['a trailing comment', 'const x = 1; // <span>Accounts</span>', 0],
+    ['a whole-line comment', '  // <span>Accounts</span>', 0],
+    // The bug the anchor was added for: a `//` inside a string used to delete the
+    // rest of its line, taking the bounding `<` with it.
+    // SAME LINE, AND NOT INSIDE A BLOCK COMMENT. The first version put the URL
+    // on its own line, so the unanchored strip ate that line and the JSX below
+    // survived. The second put it inside `{/* … */}`, which the block-comment
+    // pass deletes FIRST — so the `//` never reached the replace the case exists
+    // to exercise. Both were green under the very form they were written to
+    // reject; measured each time, and the measurement is what this third shape
+    // is derived from.
+    ['a URL and copy on one line', `const u = 'http://x/d'; <span>Accounts</span>`, 1],
+    // The attribute scan on the same axis, which the text-node case does not
+    // reach: the unanchored strip eats the attribute along with the rest.
+    ['a URL beside a copy attribute', `const u = 'http://x/d'; <input aria-label="Owner name" />`, 1],
+  ])('handles %s', (_label, source, expected) => {
+    expect(findUntranslatedLiterals('f.tsx', source)).toHaveLength(expected);
   });
 
   it('leaves a translated node alone', () => {

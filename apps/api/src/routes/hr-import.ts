@@ -7,6 +7,7 @@ import { MAX_IMPORT_ERRORS } from '../import-limits.js';
 import {
   HR_IMPORT_MAX_ROWS,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
   type ImportRowIssue,
   type HrImportResponse,
 } from '@open-smp/api-types';
@@ -129,7 +130,9 @@ export function registerHrImportRoute(app: FastifyInstance, deps: AppDeps): void
         const isFileTooLarge =
           typeof err === 'object' && err !== null && 'code' in err && err.code === 'FST_REQ_FILE_TOO_LARGE';
         if (isFileTooLarge) {
-          return reply.code(400).send({ error: 'file exceeds 10MB limit' });
+          return reply
+            .code(400)
+            .send({ error: `file exceeds ${MAX_UPLOAD_LABEL} limit` });
         }
         throw err;
       }

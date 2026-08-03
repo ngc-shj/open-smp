@@ -27,6 +27,7 @@ export {
   HR_IMPORT_MAX_ROWS,
   LINK_STATUSES,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
   isLabelAuditKind,
 } from '@open-smp/api-types';
 
