@@ -26,6 +26,16 @@
 //     are the ratchet slipping.
 //   - a copy attribute whose name is not in COPY_ATTRIBUTES (`aria-description`,
 //     `aria-placeholder`)
+//   - ANY COPY IN A `.ts` MODULE. This contract moved user-facing English out of
+//     three of them (label-kinds, label-filters, audit-transition), so the shape
+//     is real and can return. Review round 1 widened the file set to `.ts` to
+//     cover it and round 3 measured that the widening was inert: the copy in
+//     those modules was object-literal values and bare `return` strings, and
+//     neither the text scan nor the attribute scan can match either. The
+//     widening also forced the text scan off for `.ts` (generics and comparisons
+//     are constant there), which added a branch nothing could observe. Withdrawn
+//     rather than layered on: a scan that reaches this shape is a different
+//     scan, not a wider file set.
 // Two bypasses found in review are CLOSED rather than listed: single-quoted
 // copy attributes, and a `//` inside a string eating the rest of its line.
 // The E2E marker assertion covers the opposite direction — a key that is wired
@@ -97,17 +107,7 @@ export function findUntranslatedLiterals(file: string, source: string): Finding[
   const code = stripComments(source);
   const findings: Finding[] = [];
 
-  // THE TEXT-NODE SCAN IS JSX-ONLY, and this is what lets the attribute scan
-  // reach `.ts`. `>` and `<` are also generics and comparisons, which is rare
-  // enough in `.tsx` to budget and constant in `.ts` — widening the file set
-  // without this split reported `(path: string): Promise` from api-server.ts on
-  // the first run. A copy ATTRIBUTE is unambiguous in either.
-  //
-  // The file set matters because this contract MOVED user-facing English out of
-  // three `.ts` modules, so `.ts` demonstrably holds copy and can again.
-  const isJsx = file.endsWith('.tsx');
-
-  for (const match of isJsx ? code.matchAll(/>([^<>{}]+)</g) : []) {
+  for (const match of code.matchAll(/>([^<>{}]+)</g)) {
     const text = match[1]!.trim();
     if (text === '' || !/\p{L}/u.test(text)) continue;
     if (NOT_COPY.has(text)) continue;

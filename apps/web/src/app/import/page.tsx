@@ -8,7 +8,7 @@ import { NavBar } from '@/components/NavBar';
 import { useTranslator } from '@/lib/i18n/locale-context';
 import type { MessageKey } from '@/lib/i18n/messages';
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, type HrImportResponse } from '@/lib/api-types';
-import { HR_ROW_CAP, uploadFailure } from '@/lib/upload-failure';
+import { hrUploadFailure } from '@/lib/upload-failure';
 
 // Checked client-side because an over-limit upload aborted mid-stream by the
 // server does not reliably deliver its 400 through the Next proxy. The value is
@@ -137,7 +137,7 @@ export default function ImportPage() {
             <div className="mt-2 text-sm text-red-700">
               <p>
                 {(() => {
-                  const failure = uploadFailure(state.rawMessage, HR_ROW_CAP);
+                  const failure = hrUploadFailure(state.rawMessage);
                   return t(failure.key, failure.max === undefined ? undefined : { max: failure.max });
                 })()}
               </p>

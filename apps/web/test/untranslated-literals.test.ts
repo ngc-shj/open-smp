@@ -45,11 +45,7 @@ async function tsxFiles(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...(await tsxFiles(full)));
-    // `.ts` as well as `.tsx`: this contract MOVED user-facing English out of
-    // three `.ts` modules (label-kinds, label-filters, audit-transition), so a
-    // `.ts` file under apps/web/src demonstrably holds copy and can again. The
-    // attribute scan then also covers a `.ts` file that builds one.
-    else if (/\.tsx?$/.test(entry.name)) files.push(full);
+    else if (entry.name.endsWith('.tsx')) files.push(full);
   }
   return files;
 }
@@ -129,38 +125,24 @@ describe('the detector itself', () => {
     expect(findUntranslatedLiterals('f.tsx', source)).toEqual([{ file: 'f.tsx', text: expected }]);
   });
 
-  it('scans copy attributes in a .ts module, where this contract found copy before', () => {
-    // The widening's own subject, which nothing in `src` supplies today — so
-    // reverting the file set to `.tsx` left the suite green and the change had
-    // no observer at all.
-    expect(findUntranslatedLiterals('lib/x.ts', '<input placeholder="Search apps" />')).toEqual([
-      { file: 'lib/x.ts', text: 'Search apps' },
-    ]);
-  });
 
-  it('does not run the JSX text scan on a .ts module', () => {
-    // The other side of the same branch. Generics and comparisons are constant
-    // in `.ts` and rare in `.tsx`, so running the text scan there reported
-    // `(path: string): Promise` as copy on the first widened run.
-    expect(findUntranslatedLiterals('lib/x.ts', 'function f(p: string): Promise<void> {}')).toEqual(
-      [],
-    );
-    // The allow side: the same source in a .tsx file is still scanned.
-    expect(findUntranslatedLiterals('f.tsx', '<span>Accounts</span>')).toHaveLength(1);
-  });
 
   it.each([
     ['a trailing comment', 'const x = 1; // <span>Accounts</span>', 0],
     ['a whole-line comment', '  // <span>Accounts</span>', 0],
     // The bug the anchor was added for: a `//` inside a string used to delete the
     // rest of its line, taking the bounding `<` with it.
-    // SAME LINE, deliberately. On its own line the unanchored strip eats only
-    // that line and the JSX below survives — measured, and the first version of
-    // this fixture was green under the very form it was written to reject. The
-    // bug is that the URL's `//` takes the rest of ITS line, including a `<`
-    // that would have bounded real copy.
-    ['a URL inside a string beside copy', `<span>Accounts</span> {/* 'http://x/d' */}`, 1],
+    // SAME LINE, AND NOT INSIDE A BLOCK COMMENT. The first version put the URL
+    // on its own line, so the unanchored strip ate that line and the JSX below
+    // survived. The second put it inside `{/* … */}`, which the block-comment
+    // pass deletes FIRST — so the `//` never reached the replace the case exists
+    // to exercise. Both were green under the very form they were written to
+    // reject; measured each time, and the measurement is what this third shape
+    // is derived from.
     ['a URL and copy on one line', `const u = 'http://x/d'; <span>Accounts</span>`, 1],
+    // The attribute scan on the same axis, which the text-node case does not
+    // reach: the unanchored strip eats the attribute along with the rest.
+    ['a URL beside a copy attribute', `const u = 'http://x/d'; <input aria-label="Owner name" />`, 1],
   ])('handles %s', (_label, source, expected) => {
     expect(findUntranslatedLiterals('f.tsx', source)).toHaveLength(expected);
   });

@@ -97,23 +97,36 @@ describe('the upload-cap round trip', () => {
   // cannot be imported here. Read as TEXT, the way connector-credentials.test.ts
   // reads the worker's factory, because nothing in the type system connects a
   // string a component emits to a string another component uses as a key.
+  // EVERY producer and the key, derived by grep rather than remembered. The
+  // first version listed the two forms — and the same round then extracted the
+  // map into upload-failure.ts, moving the key this gate exists for out from
+  // under it, while the two API routes were never in it at all.
   const SITES = [
+    'apps/api/src/routes/hr-import.ts',
+    'apps/api/src/routes/contract-import.ts',
     'apps/web/src/app/import/page.tsx',
     'apps/web/src/components/ContractImportForm.tsx',
+    'apps/web/src/lib/upload-failure.ts',
   ];
 
-  it.each(SITES)('%s derives both the pre-check message and the map key', async (site) => {
+  it.each(SITES)('%s takes the cap from the constant, never by hand', async (site) => {
     const { readFile } = await import('node:fs/promises');
     const path = await import('node:path');
     const source = await readFile(path.join(import.meta.dirname, '..', '..', '..', site), 'utf8');
+    expect(source.length, `${site} is empty or missing`).toBeGreaterThan(0);
 
-    // Non-vacuity: the file really was read and really carries both halves.
-    expect(source.length).toBeGreaterThan(0);
-    expect(source, `${site} has no over-limit pre-check`).toContain('file exceeds');
+    // FLOORED. `toContain` proves the substring exists; it does not prove the
+    // regex matched, and a `for…of` over zero matches asserts nothing — so a
+    // reworded message (`… maximum`) or one assembled from parts passed the
+    // non-vacuity check and left the site unscanned.
+    const matches = [...source.matchAll(/file exceeds ([^`'"]*) limit/g)];
+    expect(matches.length, `${site} has no over-limit message this scan can see`).toBeGreaterThan(
+      0,
+    );
 
     // Every mention of the over-limit string interpolates the constant. A
     // hand-written figure here is the desynchronisation, in either direction.
-    for (const match of source.matchAll(/file exceeds ([^`'"]*) limit/g)) {
+    for (const match of matches) {
       expect(match[1], `${site} hand-writes the cap`).toBe('${MAX_UPLOAD_LABEL}');
     }
   });

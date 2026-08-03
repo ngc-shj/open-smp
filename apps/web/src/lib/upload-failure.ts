@@ -26,16 +26,26 @@ const UPLOAD_ERROR_KEYS: Record<string, MessageKey> = {
 
 export type UploadFailure = { key: MessageKey; max?: string };
 
-export function uploadFailure(rawMessage: string, rowCap: number): UploadFailure {
+function uploadFailure(rawMessage: string, rowCap: number): UploadFailure {
+  // The TYPE axis as well as the prototype one. `rawMessage` is `body.error`
+  // from `res.json()` with no runtime check, so a misbehaving API or an
+  // intermediary rewriting the body hands this an object — which `Object.hasOwn`
+  // would coerce, and which the raw-message line renders, throwing "Objects are
+  // not valid as a React child" and taking down the panel that exists to explain
+  // the refusal.
+  if (typeof rawMessage !== 'string') {
+    return { key: 'upload.failed' };
+  }
+
   const rowKey = `too many rows (max ${rowCap})`;
   const key = rawMessage === rowKey
-    ? ('upload.tooManyRows' as MessageKey)
+    ? 'upload.tooManyRows'
     : Object.hasOwn(UPLOAD_ERROR_KEYS, rawMessage)
       ? UPLOAD_ERROR_KEYS[rawMessage]
       : undefined;
 
   if (!key) {
-    return { key: 'upload.failed' as MessageKey };
+    return { key: 'upload.failed' };
   }
   // ONLY the two keys that take a cap get one. The first version handed `max`
   // to every message, including the three with no slot for it — harmless,
@@ -55,6 +65,23 @@ export function uploadFailure(rawMessage: string, rowCap: number): UploadFailure
   return { key };
 }
 
-/** The caps each form passes, kept here so neither re-spells the other's. */
-export const HR_ROW_CAP = HR_IMPORT_MAX_ROWS;
-export const CONTRACT_ROW_CAP = CONTRACT_IMPORT_MAX_ROWS;
+/**
+ * One entry point per form, each closing over its own cap.
+ *
+ * The first version of this extraction took the cap as a positional `number`,
+ * and review measured what that cost: `uploadFailure(raw, HR_ROW_CAP)` in the
+ * contract form typechecks, passes every test, and makes that form fall through
+ * to the generic copy on a row-cap refusal — the exact asymmetry the extraction
+ * was made to remove, relocated from the map to the argument. Before the
+ * extraction each form named its own constant inside its own file, so a
+ * mis-wire meant editing a template literal that named the wrong one.
+ *
+ * A caller cannot supply the wrong cap to these, because it does not supply one.
+ */
+export function hrUploadFailure(rawMessage: string): UploadFailure {
+  return uploadFailure(rawMessage, HR_IMPORT_MAX_ROWS);
+}
+
+export function contractUploadFailure(rawMessage: string): UploadFailure {
+  return uploadFailure(rawMessage, CONTRACT_IMPORT_MAX_ROWS);
+}

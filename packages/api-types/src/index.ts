@@ -421,19 +421,24 @@ export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
  * change" stood here for two contracts, and the i18n contract then added two
  * MORE members to the class — one per locale — one line below a key that
  * parameterises its own cap and a comment explaining why. This is that separate
- * change. It reaches EIGHT sites, and the first version of this docstring said
- * six — the two it omitted were the client-side pre-checks that PRODUCE the
- * string, which both files' comments identify as the dominant path (a server
- * 400 on an aborted upload does not reliably survive the Next proxy). So the
- * map key derived while its producer stayed literal, and they agreed only
- * because the cap happened to be 10MB. Raising it broke the lookup and fell
- * through to the generic copy — verbatim the failure the derivation was made to
- * prevent.
+ * change. The first version of this docstring said six and omitted the two
+ * client-side pre-checks that PRODUCE the string, which both files identify as
+ * the dominant path (a server 400 on an aborted upload does not reliably
+ * survive the Next proxy). So the map key derived while its producer stayed
+ * literal, and they agreed only because the cap happened to be 10MB.
  *
- * The eight: two API route errors, two client pre-check messages, two web error
- * map keys, and both dictionaries' `{max}`. Three test and doc sites assert the
- * rendered figure and are listed in the i18n plan's residue rather than derived,
- * because an assertion that computes its own expectation asserts nothing.
+ * SEVEN, counted rather than asserted: two API route errors
+ * (hr-import.ts, contract-import.ts), two client pre-check messages
+ * (import/page.tsx, ContractImportForm.tsx), ONE web error-map key (the two
+ * maps were collapsed into apps/web/src/lib/upload-failure.ts in the same
+ * branch, which the second version of this docstring still counted as two), and
+ * both dictionaries' `{max}`.
+ *
+ * Three further sites assert the rendered figure and are deliberately NOT
+ * derived, because an assertion that computes its own expectation asserts
+ * nothing: e2e/specs/import.spec.ts, apps/api/test/api.integration.test.ts, and
+ * docs/manual-tests/ui-import.md. They red when the cap moves, which is the
+ * point; they are named in the i18n plan's residue list.
  */
 export const MAX_UPLOAD_LABEL = `${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB`;
 

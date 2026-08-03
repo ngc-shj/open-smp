@@ -175,9 +175,23 @@ describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
       'utf8',
     );
 
-    const pairs = [...source.matchAll(/status:\s*'([^']+)',\s*\n?\s*chip:\s*'([^']+)'/g)];
-    // Non-vacuity: the fixture really was parsed, and it really carries pairs.
-    expect(pairs.length, 'no status/chip pairs parsed from the fixture').toBeGreaterThan(0);
+    // `[^}]*` between the fields, the way seed-gate-agreement.test.ts parses this
+    // same file — the first version required `chip` to be the IMMEDIATELY next
+    // property, so inserting a field between them, reordering them, or switching
+    // to double quotes dropped that entry silently.
+    const pairs = [...source.matchAll(/status:\s*'([^']+)'[^}]*?chip:\s*'([^']+)'/g)];
+
+    // DERIVED, not floored. `> 0` proved the parse was non-empty and nothing
+    // else: four ordinary fixture edits left one pair matched and four entries
+    // unchecked. The count comes from the file's own `chip:` occurrences, and
+    // the statuses from the domain — so a fixture that stops covering a status
+    // is loud rather than absent.
+    expect(pairs.length, 'the parse missed a chip the fixture declares').toBe(
+      [...source.matchAll(/chip:/g)].length,
+    );
+    expect(new Set(pairs.map(([, status]) => status)), 'the fixture stopped covering a status').toEqual(
+      new Set(LINK_STATUSES),
+    );
 
     for (const [, status, chip] of pairs) {
       const key = LINK_STATUS_KEYS[status as keyof typeof LINK_STATUS_KEYS];

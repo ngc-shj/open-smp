@@ -19,19 +19,35 @@ export const ACCOUNT_TABS: readonly LinkStatus[] = ['orphan', 'ghost', 'ambiguou
 /**
  * Display key per identity status, keyed by the domain.
  *
- * A `Record`, not the inline ternary this replaced. `identity.status` is a
- * two-member union today, so the ternary was exhaustive — but a third member
- * added to the union rendered as "Active", a silent wrong answer on the field
- * rather than a marker or a build failure. `packages/schema` declares this as a
- * real pgEnum, so a third member is a migration away.
+ * A `Record`, not the inline ternary this replaced — and read through a guard,
+ * which the first version was not.
  *
- * Beside LINK_STATUS_KEYS because it is the same shape and the same argument:
- * a status with no copy is a compile error.
+ * WHAT THIS DOES AND DOES NOT BUY, because the first version claimed more. A
+ * status added to `IdentityDetailResponse['status']` is a compile error here.
+ * A status added to the DATABASE is not: `identityStatusEnum` in
+ * packages/schema is a hand-written second declaration — unlike
+ * `linkStatusEnum`, which derives from LINK_STATUSES — and the API narrows the
+ * row's `string` to the union with a bare `as`. So the migration the first
+ * version named as the threat produces no compile error at all, and a bare
+ * index then rendered `⟨undefined⟩` where the ternary it replaced rendered the
+ * raw value.
+ *
+ * Hence `identityStatusKeyFor`, the same shape as `linkStatusKeyFor` below and
+ * for the same stated reason: an unexpected status is data worth seeing.
  */
 export const IDENTITY_STATUS_KEYS: Record<IdentityDetailResponse['status'], MessageKey> = {
   active: 'identityStatus.active',
   left: 'identityStatus.left',
 };
+
+/**
+ * The string-indexed read of the identity vocabulary. See `linkStatusKeyFor`.
+ */
+export function identityStatusKeyFor(status: string): MessageKey | null {
+  return Object.hasOwn(IDENTITY_STATUS_KEYS, status)
+    ? (IDENTITY_STATUS_KEYS as Record<string, MessageKey>)[status]!
+    : null;
+}
 
 /**
  * Display key per link status, keyed by the domain.

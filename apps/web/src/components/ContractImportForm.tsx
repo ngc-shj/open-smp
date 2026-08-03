@@ -10,7 +10,7 @@ import {
   type ContractImportResponse,
   type ImportRowIssue,
 } from '@/lib/api-types';
-import { CONTRACT_ROW_CAP, uploadFailure } from '@/lib/upload-failure';
+import { contractUploadFailure } from '@/lib/upload-failure';
 
 // Maps known API error strings (contract-import.ts) to the key of friendlier
 // copy; the raw string is always shown alongside in smaller print for support
@@ -110,7 +110,9 @@ export function ContractImportForm() {
   return (
     <form onSubmit={handleUpload} className="rounded-lg border border-neutral-200 bg-white p-4">
       <h2 className="mb-1 text-sm font-semibold text-neutral-900">{t('contracts.upload')}</h2>
-      <p className="mb-2 text-xs text-neutral-500">{t('contracts.columnsHint', { columns: COLUMNS })}</p>
+      <p className="mb-2 text-xs text-neutral-500">
+        {t('contracts.columnsHint', { columns: COLUMNS })}
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <input
           ref={fileInputRef}
@@ -135,9 +137,9 @@ export function ContractImportForm() {
         <div className="mt-2 text-sm text-red-700">
           <p>
             {(() => {
-                  const failure = uploadFailure(state.rawMessage, CONTRACT_ROW_CAP);
-                  return t(failure.key, failure.max === undefined ? undefined : { max: failure.max });
-                })()}
+              const failure = contractUploadFailure(state.rawMessage);
+              return t(failure.key, failure.max === undefined ? undefined : { max: failure.max });
+            })()}
           </p>
           <p className="text-xs text-neutral-400">{state.rawMessage}</p>
         </div>
@@ -157,7 +159,12 @@ export function ContractImportForm() {
             </p>
           )}
           {state.result.errors.length > 0 && (
-            <IssueTable t={t} title={t('issue.errors')} issues={state.result.errors} tone="text-red-700" />
+            <IssueTable
+              t={t}
+              title={t('issue.errors')}
+              issues={state.result.errors}
+              tone="text-red-700"
+            />
           )}
           {state.result.warnings.length > 0 && (
             <IssueTable
