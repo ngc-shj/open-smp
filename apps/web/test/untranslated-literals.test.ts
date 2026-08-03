@@ -154,7 +154,13 @@ describe('the detector itself', () => {
     ['a whole-line comment', '  // <span>Accounts</span>', 0],
     // The bug the anchor was added for: a `//` inside a string used to delete the
     // rest of its line, taking the bounding `<` with it.
-    ['a URL inside a string', `const u = 'http://x.example/docs';\n<span>Accounts</span>`, 1],
+    // SAME LINE, deliberately. On its own line the unanchored strip eats only
+    // that line and the JSX below survives — measured, and the first version of
+    // this fixture was green under the very form it was written to reject. The
+    // bug is that the URL's `//` takes the rest of ITS line, including a `<`
+    // that would have bounded real copy.
+    ['a URL inside a string beside copy', `<span>Accounts</span> {/* 'http://x/d' */}`, 1],
+    ['a URL and copy on one line', `const u = 'http://x/d'; <span>Accounts</span>`, 1],
   ])('handles %s', (_label, source, expected) => {
     expect(findUntranslatedLiterals('f.tsx', source)).toHaveLength(expected);
   });

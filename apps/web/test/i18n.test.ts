@@ -110,9 +110,13 @@ describe('the upload-cap round trip', () => {
   });
 
   it('states the cap in whole units, so the sentence a reader sees stays short', () => {
-    // `10 * 1000 * 1000` divided by 1024^2 is 9.5367431640625, which would land
-    // verbatim in the copy AND in the map key. Rounded, and the unit named for
-    // what the divisor actually is.
+    // A SHAPE GUARD on the shipped constant, and honest about what it is not.
+    // `10 * 1000 * 1000` over 1024^2 is 9.5367431640625, which would land
+    // verbatim in the copy and in the map key — but `Math.round`'s removal
+    // cannot be observed by a mutation, because the current cap divides exactly
+    // and the harness cuts one file at a time. What this DOES red on is the
+    // shape: a label hand-written as `10 MB`, `10MiB`, or with the figure typed
+    // out beside the constant.
     expect(MAX_UPLOAD_LABEL).toMatch(/^\d+MB$/);
   });
 });
