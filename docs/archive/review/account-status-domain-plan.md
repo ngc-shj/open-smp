@@ -746,3 +746,84 @@ operator must be told.
 | C7 | Manual test section in `ui-orphan-list.md`, with its manual-only clause retracted | pending |
 
 No contract locks until plan review closes.
+
+## Implementation Checklist
+
+Authored in Phase 2 Step 2-1 from its own impact analysis. Not a findings list — Phase 3 reads
+this as the set of files that must appear in the diff.
+
+### Files that must be modified
+
+**C1 — the domain**
+- `packages/api-types/src/index.ts` — add `ACCOUNT_STATUSES` (frozen, migration order) + `AccountStatus`; rewrite the `LINK_STATUSES` docstring at `:16-20` (both errors); leave `:84-89` untouched.
+- `apps/web/src/lib/api-types.ts` — `AccountStatus` into the type block (`:34-60`, compile-enforced); `ACCOUNT_STATUSES` into the value block (`:23-32`, review-enforced).
+
+**C2 — the derivations** (9 edits; members 1 and 9 are non-members by exclusion)
+- `packages/schema/src/tables.ts:38-42` → `pgEnum('account_status', ACCOUNT_STATUSES)`
+- `packages/connectors/core/src/index.ts:19` → `accountStatus: AccountStatus`
+- `packages/connectors/core/src/raw-account.schema.ts:7` → `z.enum(ACCOUNT_STATUSES)` **by reference**
+- `packages/matcher/src/types.ts:16` → `accountStatus: AccountStatus`
+- `apps/worker/src/sync.ts:69`, `apps/worker/src/match.ts:31`, `apps/api/src/seed.ts:67` → `AccountStatus`
+- `packages/matcher/test/match.property.test.ts:21` → generator from `ACCOUNT_STATUSES` (fixture input)
+- `apps/api/test/licenses-rollup.integration.test.ts:29` → `status: AccountStatus` (fixture input type)
+
+**C3/C4/C5 — the web side**
+- `apps/web/src/lib/account-statuses.ts` (new) — `ACCOUNT_STATUS_KEYS`, `accountStatusKeyFor`
+- `apps/web/src/lib/i18n/messages.ts` — three keys in each locale, adjacent to `identityStatus.*`
+- `apps/web/src/app/accounts/page.tsx:135`, `apps/web/src/app/identities/[identityId]/page.tsx:98`
+- `apps/web/src/lib/csv-export.ts` — **unchanged**, verified by I6.7
+
+**C6 — the observers**
+- `packages/schema/test/tables.test.ts` — I6.1 comment; I6.8 new cell (inline `stripTsComments` body)
+- `apps/web/test/account-statuses.test.ts` (new) — I6.2, I6.3, I6.11
+- `packages/schema/test/link-status-enum.integration.test.ts` — I6.4, second `describe`, filename kept
+- `e2e/specs/i18n.spec.ts` — I6.5, I6.6
+- `e2e/fixtures/seed-facts.ts` — `accountStatus` + `accountStatusText` on all five entries
+- `apps/web/test/csv-export.test.ts` — I6.7
+- `packages/matcher/test/match.property.test.ts` — I6.9
+- `packages/connectors/core/test/raw-account.test.ts` — I6.10 (file exists)
+
+**C7** — `docs/manual-tests/ui-orphan-list.md`
+
+### All-test-tree enumeration (R19)
+
+`accountStatus` / `account_status` appears in three test roots, all enumerated above:
+centralized `test/` (`packages/*/test`, `apps/*/test`), and `e2e/`. There is **no** co-located
+`*.test.ts` beside source anywhere in this repo — verified: every test file lives under a `test/`
+or `e2e/specs/` directory. No parallel tree is left stale.
+
+### Shared utilities that MUST be reused (R1/R2)
+
+The two mechanical scanners were run and produced nothing usable here —
+`build-codebase-fingerprint.sh` fails on this platform (`declare -A` needs bash 4; macOS ships
+3.2) and `scan-shared-utils.sh` found no shared-module directories because this repo's shared code
+lives in `packages/*` and `apps/web/src/lib`, which its pattern does not match. Supplied by manual
+search instead, which is what the step's fallback prescribes:
+
+- `apps/web/src/lib/i18n/messages.ts` — `MessageKey`, and `translate` from `./i18n/translate`. Do not add a second key type or a second translate.
+- `apps/web/src/lib/link-statuses.ts:83-87` — `linkStatusKeyFor`'s `Object.hasOwn` shape. `accountStatusKeyFor` is a deliberate third copy (C3); do NOT extract a shared `messageKeyFor`.
+- `packages/api-types/src/index.ts:21-26` — the `Object.freeze([...] as const)` idiom. Not `BILLING_CYCLES`'s one-line form; multi-line, matching `LINK_STATUSES`.
+- `apps/api/test/strip-ts-comments.ts:20-44` — copy the **body** into `packages/schema/test/`; do not import across packages.
+- `apps/web/test/csv-export.test.ts:311-316` — `cellFor`'s shape. It is block-scoped inside `describe('buildLicensesCsv')`, so hoist it or write the local equivalent.
+- `apps/web/test/link-statuses.test.ts:179-220` — the fixture-binding cell's shape for I6.11, minus the set-coverage leg (see RT9).
+- `packages/schema/test/link-status-enum.integration.test.ts:43,62,76` — I6.4's three cells.
+
+### CI gate parity (Step 2-1 item 7)
+
+`extract-ci-checks.sh` emits `pnpm lint` / `pnpm typecheck` and then defers on multi-line `run:`
+blocks. Enumerated by hand from `.github/workflows/ci.yml`:
+
+| CI gate | Local equivalent | Disposition |
+|---|---|---|
+| `pnpm lint`, `pnpm typecheck`, `pnpm test:unit` (`checks`) | same commands | covered |
+| "Every assigned test file is inside a typecheck program" (`checks`) | none | **Relevant**: new test files must sit inside a member's tsconfig program. Verified in advance — `packages/connectors/core/tsconfig.json` includes `test`, and every other new cell lands in a file or directory already covered. Re-run the gate's own commands locally before pushing. |
+| `pnpm test:integration` (`integration`) | same | covered (needs Docker, VE2) |
+| `pnpm test:e2e` + "the suite executed its whole discovered set" (`compose-smoke`) | `pnpm test:e2e` | The discovered-vs-executed check is self-consistent, not a pinned count, so two added specs pass it. Needs a booted stack. |
+| `bash e2e/scripts/assert-seed-preserved.sh` (`compose-smoke`) | none | **Relevant to C7 only** — the manual perturbation must be restored or this reds. Not affected by the code change. |
+| `bash scripts/assert-ci-executed.sh` (`audit`) | none | Requires `GH_REPO`/`GH_RUN_ID`; cannot run locally. **Deferred parity gap — reason: needs a GitHub run id, which does not exist before push.** Not affected by this change (adds no CI job or step). |
+| `pnpm audit --prod` (`audit`) | same | covered; adds no dependency |
+
+**There is no local pre-PR aggregate script in this repo**, so no script to extend. Recorded
+rather than invented: adding one is a repo-wide decision outside this plan's scope, and the four
+gates above that have no local equivalent are each either verified in advance or inapplicable to
+this diff.
