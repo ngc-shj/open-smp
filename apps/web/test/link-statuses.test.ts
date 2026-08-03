@@ -5,8 +5,11 @@ import {
   ACCOUNT_TABS,
   CHIP_CLASSES,
   CHIP_CLASS_FALLBACK,
+  LINK_STATUS_KEYS,
   chipClassFor,
+  linkStatusKeyFor,
 } from '../src/lib/link-statuses';
+import { translate } from '../src/lib/i18n/translate';
 
 // C40 acceptance criteria 2-4. These assert against the same module StatusChip
 // and the accounts page render from — not a transcription — which is why the
@@ -101,5 +104,33 @@ describe('C40/I40.6: every chip class has a rule in globals.css', () => {
       .filter((token) => token !== 'status-chip')
       .filter((token) => !new RegExp(`\\.${token}\\s*\\{[^}]*@apply[^}]*\\}`).test(css));
     expect(missing).toEqual([]);
+  });
+});
+
+describe('i18n: the link-status vocabulary reaches the dictionary', () => {
+  it('covers the whole domain and resolves through a real message', () => {
+    // The twin of label-kinds' map, missing until review round 1. This
+    // vocabulary reaches the reader in three places — the accounts tab strip and
+    // two chips — and none went through the dictionary, so `/accounts` under
+    // `ja` read a translated column heading over English values.
+    expect(Object.keys(LINK_STATUS_KEYS).sort()).toEqual([...LINK_STATUSES].sort());
+
+    for (const status of LINK_STATUSES) {
+      const rendered = translate('ja', LINK_STATUS_KEYS[status]);
+      // Resolves to a real message, not the marker — and to JAPANESE, which is
+      // what makes this more than a key-existence check.
+      expect(rendered, status).not.toContain('⟨');
+      expect(rendered, status).not.toBe(translate('en', LINK_STATUS_KEYS[status]));
+    }
+  });
+
+  it('returns null for a status outside the domain rather than reaching the prototype', () => {
+    // `chipClassFor`'s lesson, applied to the sibling read: five inputs broke
+    // that helper because a bare index is not nullish for a prototype member.
+    for (const outside of ['constructor', 'toString', 'valueOf', 'unknown-status']) {
+      expect(linkStatusKeyFor(outside), outside).toBeNull();
+    }
+    // The allow side, or a helper that returned null for everything would pass.
+    expect(linkStatusKeyFor('matched')).toBe('linkStatus.matched');
   });
 });

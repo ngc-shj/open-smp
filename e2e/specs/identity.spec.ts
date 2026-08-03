@@ -36,7 +36,7 @@ test.describe('identity detail', () => {
     // bob.suzuki's identity is seeded status=left with a leftAt date, so both
     // the status and the date cell must render — asserting only the heading
     // would pass against a page that dropped the whole detail block.
-    await expect(page.getByText('left', { exact: true })).toBeVisible();
+    await expect(page.getByText('Left', { exact: true })).toBeVisible();
     await expect(page.getByText(/2024-03-31/)).toBeVisible();
   });
 

@@ -396,8 +396,23 @@ E2E tier — the only place a page BODY can be observed:
   constant is better than the figure being buried in a sentence, and it is still
   a copy. Trigger: any change to that cap, or the constant moving into
   `@open-smp/api-types`.
-- **The plural selection is untested** at `BulkLabelBar` and `SaasAppManager`
-  (no jsdom project).
+- **One branch of the plural selection is unobserved** at `BulkLabelBar` and
+  `SaasAppManager`. Corrected in review round 1: the earlier wording said the
+  selection was untested, and both call sites are in fact exercised end to end —
+  `labeling.spec.ts:200` pins `.one`, `apps.spec.ts:213` pins `.other`. What is
+  unobserved is the other branch at each site, one axis and one side each
+  (RT10). Trigger: either branch changing, or a jsdom project arriving for an
+  unrelated reason.
+- **`accountStatus` stays English** in the accounts and identity tables.
+  Reported in review round 1 alongside the link-status vocabulary, which WAS
+  converted. This one is not, and the reason is the boundary rather than the
+  effort: `AccountLink.accountStatus` is a bare `string` on the wire, so
+  `apps/web` has no closed domain to key a `Record` by. The producing union
+  lives in `packages/connectors/core`, which apps/web may not import (C8: the
+  API is the only data path), so converting it means adding the domain to
+  `@open-smp/api-types` — a second declaration of the connector's union with
+  nothing in the type system connecting them, which is its own contract.
+  Trigger: `accountStatus` gaining a domain in `@open-smp/api-types`.
 - **`→` and `—` stay literals** in `auditTransition`, on the same ground the
   detector's allowlist uses: the same glyph in every locale.
 - **The app name in the delete confirmation lost its bold.** An interpolated

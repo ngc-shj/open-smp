@@ -5,6 +5,7 @@ import { NavBar } from '@/components/NavBar';
 import { StatusChip } from '@/components/StatusChip';
 import { LABEL_KIND_KEYS } from '@/lib/label-kinds';
 import { getTranslator } from '@/lib/i18n/server';
+import { linkStatusKeyFor } from '@/lib/link-statuses';
 
 async function fetchIdentity(identityId: string): Promise<IdentityDetailResponse | null> {
   const res = await apiFetch(`/api/identities/${encodeURIComponent(identityId)}`);
@@ -54,7 +55,9 @@ export default async function IdentityDetailPage({
         <dl className="mb-6 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-neutral-500">{t('identity.status')}</dt>
-            <dd className="text-neutral-900">{identity.status}</dd>
+            <dd className="text-neutral-900">
+              {t(identity.status === 'left' ? 'identityStatus.left' : 'identityStatus.active')}
+            </dd>
           </div>
           <div>
             <dt className="text-neutral-500">{t('identity.leftAt')}</dt>
@@ -97,7 +100,13 @@ export default async function IdentityDetailPage({
                   </td>
                   <td className="px-3 py-2 text-neutral-500">{account.lastActivityAt ?? '—'}</td>
                   <td className="px-3 py-2">
-                    <StatusChip status={account.linkStatus} />
+                    <StatusChip
+                      status={account.linkStatus}
+                      label={(() => {
+                        const key = linkStatusKeyFor(account.linkStatus);
+                        return key ? t(key) : undefined;
+                      })()}
+                    />
                   </td>
                   <td className="px-3 py-2 text-neutral-500">{account.confidence.toFixed(2)}</td>
                   <td className="px-3 py-2">

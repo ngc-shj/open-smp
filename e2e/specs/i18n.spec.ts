@@ -151,17 +151,17 @@ test.describe('i18n', () => {
     }
   });
 
-  test('renders no untranslated-key marker anywhere in the chrome', async ({ page, context }) => {
-    // The marker is what an unresolvable key renders as. Its presence on a real
-    // page is the defect this whole design exists to make visible, so its
-    // ABSENCE is worth asserting on the surface that is actually wired.
-    await context.addCookies([{ name: 'locale', value: 'ja', url: 'http://localhost:3000' }]);
-    try {
-      await page.goto('/accounts');
+  test('renders no untranslated-key marker under the DEFAULT locale', async ({ page }) => {
+    // Repointed. This asserted the navbar under `ja`, which the body-copy loop
+    // above already covers on the same page — the navbar is inside the body, so
+    // no production edit could red it without redding that first. What nothing
+    // asserted is the marker's absence under `en`: every other `⟨` assertion in
+    // this suite runs with the ja cookie set, so an en-only key gap was
+    // invisible at this tier.
+    await page.context().clearCookies({ name: 'locale' });
+    await page.goto('/accounts');
 
-      await expect(page.getByTestId('navbar')).not.toContainText('⟨');
-    } finally {
-      await context.clearCookies({ name: 'locale' });
-    }
+    await expect(page.locator('body')).not.toContainText('⟨');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   });
 });

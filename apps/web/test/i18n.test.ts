@@ -77,6 +77,28 @@ describe('the dictionaries', () => {
 });
 
 describe('translate', () => {
+  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])(
+    'marks the unsupplied placeholder {%s} instead of reaching the prototype',
+    (name) => {
+      // `in` reaches the prototype, so these four resolved to inherited members
+      // and put `function toString() { [native code] }` into the sentence. The
+      // same defect `chipClassFor` records as a paid-for lesson, in the helper
+      // whose contract is "a placeholder nobody supplied is marked where it
+      // stands".
+      const rendered = translate('en', 'table.selectAccount', {} as Record<string, string>);
+      expect(rendered).toContain(missingMarker('account'));
+
+      const withOther = translate('en', 'table.selectAccount', { [name]: 'x' });
+      expect(withOther, name).toContain(missingMarker('account'));
+    },
+  );
+
+  it('still substitutes an own property', () => {
+    // The allow side: a guard that marked everything would satisfy the cell
+    // above and break every parameterised message.
+    expect(translate('en', 'table.selectAccount', { account: 'a-1' })).toBe('Select a-1');
+  });
+
   it('returns the message for the locale asked for', () => {
     expect(translate('en', 'nav.accounts')).toBe('Accounts');
     expect(translate('ja', 'nav.accounts')).toBe('アカウント');
@@ -153,7 +175,13 @@ describe('interpolation', () => {
     //
     // What this does NOT cover, stated rather than implied: the selection at
     // the call sites (BulkLabelBar, SaasAppManager). There is no jsdom project
-    // here, so no unit test can render either one.
+    // here, so no unit test can render either one — but both ARE exercised end
+    // to end, which the earlier wording ("untested") understated:
+    // labeling.spec.ts pins the `.one` branch and apps.spec.ts the `.other`.
+    // What is genuinely unobserved is the SECOND branch at each site — one axis
+    // and one side each (RT10) — which is a narrower and more actionable
+    // statement than one that points a future cycle at a jsdom project it does
+    // not need.
     expect(MESSAGES.en['label.applied.one']).not.toBe(MESSAGES.en['label.applied.other']);
     expect(translate('en', 'label.applied.one', { count: 1 })).toBe('Labeled 1 account.');
     expect(translate('en', 'label.applied.other', { count: 3 })).toBe('Labeled 3 accounts.');
@@ -228,6 +256,52 @@ describe('i18n/C3: what the switch writes', () => {
 
     expect([...attributes_.keys()][0]).toBe(LOCALE_COOKIE);
     expect(attributes_.get(LOCALE_COOKIE)).toBe(locale);
+  });
+
+  it('refuses a value outside the locale set rather than interpolating it', () => {
+    // MEMBERSHIP AT BOTH ENDS. The reader decided by `LOCALES.includes`; the one
+    // caller decided by an `as Locale` cast, and this function interpolated the
+    // result straight into a cookie GRAMMAR. Closed by construction today, but
+    // the module's obvious next step — negotiation from Accept-Language, or a
+    // `?lang=` parameter — makes an attribute injection out of it.
+    const attacked = localeCookie('en; max-age=0' as never);
+
+    expect(attributes(attacked).get(LOCALE_COOKIE)).toBe('en');
+    expect(attributes(attacked).get('max-age')).toBe(String(LOCALE_COOKIE_MAX_AGE));
+    // The allow side: a guard that rewrote everything to the default would
+    // satisfy the assertions above and break the control.
+    expect(attributes(localeCookie('ja')).get(LOCALE_COOKIE)).toBe('ja');
+  });
+
+  it('adds Secure on https and omits it on plain http', () => {
+    // The first version declined `Secure` outright, reasoning the attribute
+    // "would make the control silently stop working on any plain-HTTP
+    // deployment". The session cookie in apps/api resolves the same constraint
+    // conditionally, from the deployment's scheme — the conditional form was
+    // already the house pattern, and this asserts both directions of it.
+    const original = globalThis.location;
+    try {
+      Object.defineProperty(globalThis, 'location', {
+        value: { protocol: 'https:' },
+        configurable: true,
+      });
+      expect(attributes(localeCookie('ja')).has('secure')).toBe(true);
+
+      Object.defineProperty(globalThis, 'location', {
+        value: { protocol: 'http:' },
+        configurable: true,
+      });
+      expect(attributes(localeCookie('ja')).has('secure')).toBe(false);
+    } finally {
+      if (original === undefined) {
+        Reflect.deleteProperty(globalThis, 'location');
+      } else {
+        Object.defineProperty(globalThis, 'location', {
+          value: original,
+          configurable: true,
+        });
+      }
+    }
   });
 
   it('scopes the choice to the whole site', () => {

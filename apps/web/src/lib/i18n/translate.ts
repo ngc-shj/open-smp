@@ -58,7 +58,14 @@ export function translate(locale: Locale, key: MessageKey, params?: MessageParam
   // the whole message down with it: the rest of the sentence is still worth
   // reading, and the hole is where the reader needs to see it.
   return message.replace(PLACEHOLDER, (whole, name: string) =>
-    params && name in params ? String(params[name]) : missingMarker(name),
+    // `Object.hasOwn`, not `in`: `in` reaches the prototype, so `{toString}`,
+    // `{constructor}` and `{valueOf}` resolved to inherited members and put
+    // `function toString() { [native code] }` into the sentence instead of the
+    // marker. Unreachable from today's dictionary — placeholder names are
+    // authored — but this is the same defect `chipClassFor` in link-statuses.ts
+    // records as a paid-for lesson, and the contract here is the same shape: a
+    // placeholder nobody supplied is marked where it stands.
+    params && Object.hasOwn(params, name) ? String(params[name]) : missingMarker(name),
   );
 }
 

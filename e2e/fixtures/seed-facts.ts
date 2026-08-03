@@ -10,12 +10,42 @@
 // second would have silently overwritten the first in
 // seed-gate-agreement.test.ts's parser. The key is now a name and the status is
 // data, so the gate's parser reads the claim instead of inferring it.
+// `status` is the DOMAIN value — it goes into `?status=` and into the seed —
+// and `chip` is what a reader sees. They were the same string until the i18n
+// review routed the link-status vocabulary through the dictionary, and three
+// specs asserted the domain value as rendered text. Kept apart here so the next
+// copy change moves one field and not four call sites.
 export const SEEDED_ACCOUNTS = {
-  matched: { email: 'alice.tanaka@demo.example', displayName: 'Alice Tanaka', status: 'matched' },
-  ghost: { email: 'bob.suzuki@demo.example', displayName: 'Bob Suzuki', status: 'ghost' },
-  ambiguous: { email: 'shared.mailbox@demo.example', displayName: 'Shared Mailbox', status: 'ambiguous' },
-  orphan: { email: 'unknown.contractor@demo.example', displayName: 'Unknown Contractor', status: 'orphan' },
-  slackOrphan: { email: 'chris.wong@demo.example', displayName: 'Chris Wong', status: 'orphan' },
+  matched: {
+    email: 'alice.tanaka@demo.example',
+    displayName: 'Alice Tanaka',
+    status: 'matched',
+    chip: 'Matched',
+  },
+  ghost: {
+    email: 'bob.suzuki@demo.example',
+    displayName: 'Bob Suzuki',
+    status: 'ghost',
+    chip: 'Ghost',
+  },
+  ambiguous: {
+    email: 'shared.mailbox@demo.example',
+    displayName: 'Shared Mailbox',
+    status: 'ambiguous',
+    chip: 'Ambiguous',
+  },
+  orphan: {
+    email: 'unknown.contractor@demo.example',
+    displayName: 'Unknown Contractor',
+    status: 'orphan',
+    chip: 'Orphan',
+  },
+  slackOrphan: {
+    email: 'chris.wong@demo.example',
+    displayName: 'Chris Wong',
+    status: 'orphan',
+    chip: 'Orphan',
+  },
 } as const;
 
 /**
