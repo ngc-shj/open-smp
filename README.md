@@ -28,11 +28,17 @@ version 1, append a generated key as version 2
 (`ENCRYPTION_KEYS=1:<old>,2:<new>`), then re-encrypt every row onto version 2:
 
 ```bash
-ROTATE_CONFIRM=yes pnpm -C apps/worker rotate-credentials
+docker compose up -d api worker    # recreate them so they read the new .env
+docker compose exec -e ROTATE_CONFIRM=yes worker pnpm rotate-credentials
 ```
 
-It prints the retirement-gate count and exits non-zero while any row is still
-on an older version; once it reports zero, drop version 1 from `.env`.
+The sweep runs **inside** the worker container. Editing `.env` does not reach a
+running container, and `postgres` publishes no host port, so the same command on
+the host reaches neither the key nor the database.
+
+It prints the retirement-gate count and exits non-zero while any row still holds
+a credential on an older version; once it reports zero, drop version 1 from
+`.env` and recreate the two services again.
 
 This boots Postgres, Redis, the API, the worker, and the web UI, then runs a
 one-shot seed job that creates a demo tenant with sample accounts (including

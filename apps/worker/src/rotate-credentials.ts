@@ -41,11 +41,25 @@ async function loadTenants(pool: Pool): Promise<TenantRow[]> {
   return rows;
 }
 
+/**
+ * What counts as outstanding, declared once because the sweep and the retirement
+ * gate MUST agree on it. They did not: the gate counted `credentials_key_version
+ * <> $1` alone, so a saas_app registered without credentials — never a rotation
+ * target, and holding nothing encrypted under any key — was counted as
+ * outstanding forever.
+ *
+ * Measured on a running stack before the fix: `re-encrypted 2, failed 0`
+ * followed by `1 rows remaining on non-current versions`, exit 1. No number of
+ * re-runs could move it, so the key-retirement gate the plan specifies could
+ * never be satisfied and the superseded key could never be dropped.
+ */
+const OUTSTANDING = 'credentials_enc IS NOT NULL AND credentials_key_version <> $1';
+
 async function loadStaleSaasApps(tx: PoolClient, currentKeyVersion: number): Promise<StaleSaasAppRow[]> {
   const { rows } = await tx.query<StaleSaasAppRow>(
     `SELECT id, credentials_enc, credentials_key_version
      FROM saas_apps
-     WHERE credentials_enc IS NOT NULL AND credentials_key_version <> $1`,
+     WHERE ${OUTSTANDING}`,
     [currentKeyVersion],
   );
   return rows;
@@ -138,7 +152,7 @@ async function countRemaining(pool: Pool, tenants: TenantRow[], currentKeyVersio
   for (const tenant of tenants) {
     await withTenant(pool, tenant.id, async (tx) => {
       const { rows } = await tx.query<{ count: string }>(
-        'SELECT count(*)::text AS count FROM saas_apps WHERE credentials_key_version <> $1',
+        `SELECT count(*)::text AS count FROM saas_apps WHERE ${OUTSTANDING}`,
         [currentKeyVersion],
       );
       sum += Number.parseInt(rows[0]?.count ?? '0', 10);

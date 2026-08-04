@@ -18,6 +18,7 @@ let appPool: Pool;
 
 const tenantA = randomUUID();
 const tenantB = randomUUID();
+const tenantC = randomUUID();
 
 const keys = new Map<number, Buffer>([
   [1, Buffer.alloc(32, 1)],
@@ -62,6 +63,10 @@ beforeAll(async () => {
   await adminPool.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant B')`, [
     tenantB,
     `tenant-b-${tenantB}`,
+  ]);
+  await adminPool.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'Tenant C')`, [
+    tenantC,
+    `tenant-c-${tenantC}`,
   ]);
 }, 180_000);
 
@@ -121,5 +126,44 @@ describe('C9 rotation sweep acceptance', () => {
 
     expect(JSON.parse(Buffer.from(decryptedA).toString('utf8'))).toEqual({ apiKey: `key-for-${tenantA}` });
     expect(JSON.parse(Buffer.from(decryptedB).toString('utf8'))).toEqual({ apiKey: `key-for-${tenantB}` });
+  });
+
+  it('an app registered without credentials does not hold the retirement gate open', async () => {
+    // The case the sweep above cannot reach, because every row it seeds HAS
+    // credentials. `loadStaleSaasApps` skips a row with none — there is nothing
+    // to re-encrypt — while the gate counted it, so the two disagreed and the
+    // gate could not reach 0.
+    //
+    // Found by running the documented rotation procedure against the demo stack,
+    // where the seeded `notion` app is registered with no credentials:
+    // `re-encrypted 2, failed 0` and `1 rows remaining`, exit 1, unmoved by
+    // re-runs. Nothing in this suite could see it, because the suite only ever
+    // asked about rows that were rotation targets.
+    const saasAppId = randomUUID();
+    await withTenant(appPool, tenantC, async (tx) => {
+      await tx.query(
+        `INSERT INTO saas_apps (id, tenant_id, key, display_name, credentials_enc, credentials_key_version)
+         VALUES ($1, $2, 'no-credentials-app', 'No Credentials', NULL, 1)`,
+        [saasAppId, tenantC],
+      );
+    });
+
+    try {
+      const result = await runRotationSweep({ pool: appPool, encryptionKeys: keys });
+
+      expect(result.anyFailed).toBe(false);
+      // Not a rotation target...
+      expect(result.perTenant.find((r) => r.tenantId === tenantC)?.reencrypted).toBe(0);
+      // ...so it must not be counted as one either. This is the assertion that
+      // reds without the fix.
+      expect(result.remainingOnNonCurrentVersions).toBe(0);
+    } finally {
+      // The gate sums across every tenant, so a row left behind here would decide
+      // the outcome of any sweep asserted elsewhere in this file. Removing it
+      // keeps the two tests independent of the order they run in.
+      await withTenant(appPool, tenantC, async (tx) => {
+        await tx.query('DELETE FROM saas_apps WHERE id = $1', [saasAppId]);
+      });
+    }
   });
 });
