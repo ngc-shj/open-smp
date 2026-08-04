@@ -311,8 +311,8 @@ Three of Round 3's four Majors are one defect wearing three faces:
 **A commit edits a file and, in the same commit, invalidates a `file:line` range into that file —
 including ranges the same commit wrote.**
 
-- The N-2 fix re-pointed four documents to `seed-facts.ts:98-102` *and* grew that comment from five
-  lines to twelve. The new range cut mid-sentence at "…leaves ROLLUP_SQL's seat CTE **and**", and
+- The N-2 fix re-pointed four documents at `seed-facts.ts` lines 98–102 *and* grew that comment from
+  five lines to twelve, in one commit. The new range cut mid-sentence at "…leaves ROLLUP_SQL's seat CTE **and**", and
   excluded `:103-106` — the correction the round had just landed. **N-2 recurring inside the commit
   that fixed N-2.**
 - The T4 fix added three lines to `link-statuses.test.ts` and left the range reconciled in that same

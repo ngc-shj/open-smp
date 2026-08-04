@@ -270,3 +270,29 @@ The verification apparatus a review builds is itself reviewable surface, and pas
 cheapest way to close a class is to stop reading for it and start checking for it. The signal that
 the point has arrived: every instance of the class is mechanically decidable, and the reviewers say
 so unprompted.
+
+## D11 — the gate caught the commit that added it, in CI, on the first run
+
+`pnpm check:citations` was green locally, then the Round-3 record and the checker's own docstring
+were written, then the commit landed **without re-running the gate**. CI caught two stale ranges
+over `seed-facts.ts` (both ending at line 102 where the comment now runs to 106) — one in
+`code-review.md`, one inside `check-citations.mjs` itself.
+
+So the defect the gate exists for was committed in the commit that adds the gate. That is the
+strongest evidence available that the gate was the right artifact, and it is also a process failure
+worth naming: **a gate run before the last edit is a gate that did not run.** Phase 2-4's own
+worktree-drift note says exactly this about aggregate scripts; it applies to any gate.
+
+**The fix taught the gate something.** Both hits were *narrative about a past citation* — the
+code-review sentence describing which range the earlier fix had used, and the checker's own
+illustrative example. The mechanical repair — re-pointing them at the current range — was applied first and then
+reverted, because it would have made the record say the earlier fix used the correct range, which is
+the opposite of what happened. **Falsifying a record to satisfy a gate is the failure a gate is meant
+to prevent, not cause.** Both were rephrased out of the colon form instead, and the limitation is now
+stated in `check-citations.mjs` so the next person meets it as a documented edge rather than as a
+temptation.
+
+A third instance appeared while this entry was being written: the sentence naming the two hits
+carried the range in colon form and the gate flagged it on the next run. Rephrased the same way.
+The limitation is real and recurs the moment you write *about* a citation, which is why the rule
+("rephrase, never re-point") is in the script rather than only here.

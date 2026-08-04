@@ -19,6 +19,13 @@
 //      next line is stopping mid-thought, and the half it cuts is the half a
 //      reader never sees. Same for a range that starts mid-block.
 //
+// A KNOWN LIMIT, learned the hard way. It cannot tell a live citation from a
+// NARRATIVE about a dead one — "the fix re-pointed four documents to foo.ts:1-2"
+// parses as a citation to foo.ts:1-2. The right response is to rephrase the
+// narrative (drop the colon form), never to "correct" the range: that would
+// falsify the record to satisfy the gate, which is the failure a gate is
+// supposed to prevent, not cause.
+//
 // WHAT IT DOES NOT. It cannot tell whether the cited lines SAY what the citing
 // text claims. That is the reader's job and always was; this only removes the
 // class where the reader is looking at the wrong lines. Declared here rather
@@ -71,8 +78,8 @@ function firstResolvable(refs) {
   return null;
 }
 
-// Repo files by basename, so a short-form citation (`seed-facts.ts:98-102`)
-// resolves too. Only when the basename is unique — an ambiguous one is not a
+// Repo files by basename, so a short-form citation — one written without its
+// directory — resolves too. Only when the basename is unique — an ambiguous one is not a
 // citation this can adjudicate, and guessing would be worse than skipping.
 const byBasename = new Map();
 for (const f of execSync('git ls-files', { encoding: 'utf8', cwd: ROOT }).split('\n').filter(Boolean)) {
