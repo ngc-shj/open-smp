@@ -665,6 +665,13 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // change reds only behind a full compose boot. The addition-guard below
       // caught it.
       'apps/web/test/account-statuses.test.ts',
+      // NFR4. Scans every tracked file for a string that would boot as
+      // ENCRYPTION_KEYS, which is a repository-wide relation rather than the
+      // behaviour of packages/crypto. Its subject survived for the whole life of
+      // the repository behind a comment saying the committed key was demo-only,
+      // so its deletion returns the tree to a state a reader had already
+      // approved once. The addition-guard below caught it.
+      'packages/crypto/test/no-committed-key.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

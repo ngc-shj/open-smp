@@ -9,8 +9,30 @@ orphan & ghost account detection. See `docs/archive/review/mvp-account-matching-
 ## Quick start
 
 ```bash
+./scripts/setup-env.sh   # writes .env with a freshly generated encryption key
 docker compose up --build
 ```
+
+The repository ships no usable `ENCRYPTION_KEYS`, so the stack refuses to start
+until `.env` exists — a committed key would be decryptable by anyone with a
+clone. `.env` is gitignored; keep the one you generate, because the stack's
+stored credentials are encrypted under it and a second key cannot read them.
+
+Upgrading a stack that ran before the key was removed needs one extra step: a
+freshly generated key cannot read the `saas_apps.credentials_enc` rows already
+in the volume. Nothing announces that — the stack boots, the seed job succeeds,
+and the mismatch surfaces only when something decrypts a stored credential, as
+a failure indistinguishable from the connector rejecting it. Recover the old
+value from `docker-compose.yml` in the git history and put it in `.env` as
+version 1, append a generated key as version 2
+(`ENCRYPTION_KEYS=1:<old>,2:<new>`), then re-encrypt every row onto version 2:
+
+```bash
+ROTATE_CONFIRM=yes pnpm -C apps/worker rotate-credentials
+```
+
+It prints the retirement-gate count and exits non-zero while any row is still
+on an older version; once it reports zero, drop version 1 from `.env`.
 
 This boots Postgres, Redis, the API, the worker, and the web UI, then runs a
 one-shot seed job that creates a demo tenant with sample accounts (including

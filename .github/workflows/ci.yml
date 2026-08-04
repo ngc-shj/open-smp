@@ -122,6 +122,37 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      - name: The stack refuses to boot without a key, and setup-env.sh supplies one
+        # NFR4's fail-closed half, adjudicated by compose itself rather than by
+        # reading docker-compose.yml. A unit test can see that the file says
+        # `${ENCRYPTION_KEYS:?…}`; only this can see that a fresh clone with no
+        # `.env` actually stops. Both halves are needed — a committed default
+        # restored under a different name would leave the text gate green here,
+        # and this step alone cannot say whether the value that resolved came
+        # from the repository or from the operator.
+        #
+        # First, with no `.env` on disk (checkout leaves none, and `.env` is
+        # gitignored so nothing can arrive with the tree). Judged by this step's
+        # own exit status, no pipe.
+        run: |
+          set -euo pipefail
+          if docker compose config >/dev/null 2>&1; then
+            echo "docker compose config resolved with no .env — a usable ENCRYPTION_KEYS is back in the tree" >&2
+            exit 1
+          fi
+          ./scripts/setup-env.sh
+          docker compose config >/dev/null
+
+          # Re-running must not mint a second key. This job's volume is empty, so
+          # nothing here would notice either way — the property being pinned is an
+          # operator's: on a stack that has run, the first key is what
+          # `saas_apps.credentials_enc` was encrypted under, and a regenerated
+          # `.env` reports nothing until the first decrypt. CI is the only place
+          # that executes this script, so it is the only place that can catch it.
+          before=$(sha256sum .env)
+          ./scripts/setup-env.sh
+          [ "$before" = "$(sha256sum .env)" ] || { echo "setup-env.sh overwrote an existing .env" >&2; exit 1; }
+
       - name: Build and start the stack
         run: docker compose up -d --build
 
