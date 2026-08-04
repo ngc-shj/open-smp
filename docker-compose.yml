@@ -38,10 +38,14 @@ services:
       ADMIN_DATABASE_URL: postgres://opensmp:opensmp@postgres:5432/opensmp
       REDIS_URL: redis://:opensmp-redis@redis:6379
       APP_ORIGIN: http://localhost:3000
-      # Dev/demo-only key (fixed so compose runs are reproducible): a real
-      # deployment MUST generate its own via `openssl rand -base64 32` and
-      # keep it out of the repo. Never reuse this value in production.
-      ENCRYPTION_KEYS: "1:dMHgYty3ZhjhJ8bOxaTNMoenZ35KF7LBwNoT6B7b7cc="
+      # NFR4. This used to be a fixed literal, so that every clone booted with
+      # the same key and any deployment inheriting this file had every tenant's
+      # credentials decryptable from a public repository. `:?` makes the stack
+      # refuse to start rather than fall back to anything committed — api, worker
+      # and seed must all resolve the SAME key, so a per-service default would be
+      # worse than none. `scripts/setup-env.sh` writes the gitignored `.env` that
+      # compose reads this from.
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?run ./scripts/setup-env.sh first (writes .env with a generated key)}
       PORT: "3001"
     ports:
       - "3001:3001"
@@ -72,7 +76,8 @@ services:
     environment:
       DATABASE_URL: postgres://opensmp_app:opensmp@postgres:5432/opensmp
       REDIS_URL: redis://:opensmp-redis@redis:6379
-      ENCRYPTION_KEYS: "1:dMHgYty3ZhjhJ8bOxaTNMoenZ35KF7LBwNoT6B7b7cc="
+      # Same value as the api service resolves — see the note there.
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?run ./scripts/setup-env.sh first (writes .env with a generated key)}
     depends_on:
       api:
         condition: service_healthy
@@ -101,7 +106,8 @@ services:
       target: api
     environment:
       DATABASE_URL: postgres://opensmp_app:opensmp@postgres:5432/opensmp
-      ENCRYPTION_KEYS: "1:dMHgYty3ZhjhJ8bOxaTNMoenZ35KF7LBwNoT6B7b7cc="
+      # Same value as the api service resolves — see the note there.
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?run ./scripts/setup-env.sh first (writes .env with a generated key)}
     # WORKDIR is already apps/api (api target), so this runs the local
     # tsx binary directly rather than re-resolving a workspace filter.
     command: ["pnpm", "exec", "tsx", "src/seed.ts"]
