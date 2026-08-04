@@ -42,6 +42,11 @@ const COMPOSE = 'docker-compose.yml';
  * key stored under a different encoding, and a key in an untracked file. The
  * first two are not usable without an edit, and `.env`/`.env.*` are gitignored,
  * so the third cannot arrive through this repository.
+ *
+ * This file is itself in the scanned set. That holds only because the needle is
+ * a regex whose source does not match itself — replacing it with a literal
+ * string flags its own definition, which is what happened when the pattern was
+ * mutated to prove it still had a failing state.
  */
 const USABLE_KEY = /[0-9]+:[A-Za-z0-9+/]{43}=/;
 
@@ -72,9 +77,14 @@ describe('NFR4: no usable encryption key is committed', () => {
     expect(parseEncryptionKeys(synthetic).get(1)).toEqual(Buffer.alloc(32, 7));
     expect(USABLE_KEY.test(synthetic)).toBe(true);
 
-    // The literal this cycle removed, pinned so the detector cannot be widened
-    // past the case it exists for.
-    expect(USABLE_KEY.test('1:dMHgYty3ZhjhJ8bOxaTNMoenZ35KF7LBwNoT6B7b7cc=')).toBe(true);
+    // The value this cycle removed is deliberately NOT pinned here. An earlier
+    // revision wrote it out as a second case, on the reasoning that the detector
+    // should be held to the literal it was built for — which put a usable key
+    // back into a tracked file, the one condition the assertion below forbids.
+    // It went green until the commit that tracked this file, because
+    // `git ls-files` reads the index and an untracked file is invisible to it.
+    // The synthetic key is structurally identical and is the same thing
+    // `parseEncryptionKeys` accepts, which was all the second case ever bought.
   });
 
   it('no tracked file holds a string that would boot as ENCRYPTION_KEYS', () => {
