@@ -1,4 +1,4 @@
-import type { TokenCapability } from '@open-smp/api-types';
+import type { AccountStatus, TokenCapability } from '@open-smp/api-types';
 
 export interface Logger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -16,7 +16,7 @@ export interface RawAccount {
   externalId: string; // provider-stable ID (GWS: user.id, NOT email)
   email: string | null;
   displayName: string | null;
-  accountStatus: 'active' | 'suspended' | 'archived';
+  accountStatus: AccountStatus;
   isAdmin: boolean;
   lastActivityAt: string | null; // ISO 8601
   raw: unknown; // provider payload, stored in discovery_events only

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { LINK_STATUSES } from '@open-smp/api-types';
+import { LINK_STATUSES } from '../src/lib/api-types';
 import {
   ACCOUNT_TABS,
   CHIP_CLASSES,
@@ -180,7 +180,7 @@ describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
   it('every seeded chip is the en copy for its status', async () => {
     // THE SECOND DECLARATION. `chip` in e2e/fixtures/seed-facts.ts is
     // apps/web's `en` copy, kept there because a spec cannot import the
-    // dictionary — e2e/package.json declares only @playwright/test. Duplicating
+    // dictionary — e2e/package.json declares only @playwright/test and @types/node. Duplicating
     // at the outermost tier is right (deriving the expectation from the same
     // dictionary the page renders from asserts nothing), but nothing bound the
     // two, so a copy change reddened only the E2E behind a full compose boot.
@@ -196,9 +196,19 @@ describe('i18n: the E2E chip fixture matches the dictionary it mirrors', () => {
 
     // `[^}]*` between the fields, the way seed-gate-agreement.test.ts parses this
     // same file — the first version required `chip` to be the IMMEDIATELY next
-    // property, so inserting a field between them, reordering them, or switching
-    // to double quotes dropped that entry silently.
-    const pairs = [...source.matchAll(/status:\s*'([^']+)'[^}]*?chip:\s*'([^']+)'/g)];
+    // property, so inserting a field between them dropped that entry silently.
+    // Measured (account-status branch, Phase 3 round 2): the span buys ONLY the
+    // inserted-field case. Reordering the two, or switching to double quotes,
+    // still drops the entry — this sentence used to claim all three. What makes
+    // a drop loud rather than silent is the derived count below, not the span.
+    //
+    // `[^']*`, not `[^']+`, on both captures: with `+` an emptied `chip: ''`
+    // produces NO match rather than an empty capture, so it surfaces as a count
+    // mismatch instead of naming the entry. Measured — 4 pairs against 5
+    // `chip:` either way, so nothing was vacuous; `*` only improves the
+    // diagnosis. Carried over from account-statuses.test.ts, which made this
+    // argument first.
+    const pairs = [...source.matchAll(/status:\s*'([^']*)'[^}]*?chip:\s*'([^']*)'/g)];
 
     // DERIVED, not floored. `> 0` proved the parse was non-empty and nothing
     // else: four ordinary fixture edits left one pair matched and four entries

@@ -13,6 +13,7 @@ import { getTranslator } from '@/lib/i18n/server';
 import { LabelFilter } from '@/components/LabelFilter';
 import { LABEL_FILTER_VALUES, type LabelFilterValue } from '@/lib/label-filters';
 import { ACCOUNT_TABS, LINK_STATUS_KEYS, linkStatusKeyFor } from '@/lib/link-statuses';
+import { accountStatusKeyFor } from '@/lib/account-statuses';
 import { AccountSelectCheckbox, AccountSelectionProvider } from '@/components/AccountSelection';
 
 
@@ -132,7 +133,12 @@ export default async function AccountsPage({
                     <td className="px-3 py-2 text-neutral-700">{item.appName}</td>
                     <td className="px-3 py-2 text-neutral-700">{item.email ?? '—'}</td>
                     <td className="px-3 py-2 text-neutral-700">{item.displayName ?? '—'}</td>
-                    <td className="px-3 py-2 text-neutral-700">{item.accountStatus}</td>
+                    <td className="px-3 py-2 text-neutral-700">
+                      {(() => {
+                        const key = accountStatusKeyFor(item.accountStatus);
+                        return key ? t(key) : item.accountStatus;
+                      })()}
+                    </td>
                     <td className="px-3 py-2">
                       {item.isAdmin && (
                         <span className="status-chip bg-neutral-200 text-neutral-700">{t('value.admin')}</span>

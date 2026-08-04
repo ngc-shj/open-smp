@@ -10,7 +10,7 @@ import { createPool, withTenant } from '@open-smp/schema';
 import { encryptCredentialRecord, parseEncryptionKeys } from '@open-smp/crypto';
 import { defaultRules, matchAccounts, type AccountView, type IdentityView } from '@open-smp/matcher';
 import { z } from 'zod';
-import { TOKEN_AUDIT_EVENT_SOURCE } from '@open-smp/api-types';
+import { TOKEN_AUDIT_EVENT_SOURCE, type AccountStatus } from '@open-smp/api-types';
 import { ARGON2ID_OPTIONS } from './auth.js';
 import { recordTokenAudit } from './audit.js';
 
@@ -64,7 +64,7 @@ type SeedAccount = {
   externalId: string;
   email: string;
   displayName: string;
-  accountStatus: 'active' | 'suspended' | 'archived';
+  accountStatus: AccountStatus;
   isAdmin: boolean;
   lastActivityAt: string | null;
 };

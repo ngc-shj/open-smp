@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { buildAccountsCsv, buildLicensesCsv, neutralizeCell } from '../src/lib/csv-export';
 import type { AccountListItem, LicenseRollupItem } from '../src/lib/api-types';
 
+/**
+ * The cell under a named column, located through the header rather than by index.
+ *
+ * Hoisted to module scope so both exports can use it; it was declared inside
+ * `describe('buildLicensesCsv')` and therefore unreachable from the accounts
+ * cells. `record.split(',')` has no quote awareness, so every caller must use a
+ * fixture whose cells contain no comma.
+ */
+function cellFor(csv: string, column: string): string {
+  const [header, record] = csv.split('\r\n');
+  const index = header!.split(',').indexOf(`"${column}"`);
+  expect(index, `no ${column} column in the header`).toBeGreaterThanOrEqual(0);
+  return record!.split(',')[index]!;
+}
+
 describe('neutralizeCell', () => {
   const dangerousChars = ['=', '+', '-', '@', '\t', '\r'];
 
@@ -144,6 +159,43 @@ describe('buildAccountsCsv wiring', () => {
     const dataLine = csv.split('\r\n')[1]!;
 
     expect(dataLine).toContain("'=HYPERLINK");
+  });
+});
+
+// I6.7 / Requirement 3. The two render sites now translate accountStatus; this
+// export must NOT. It feeds spreadsheets and scripts, and translating it would
+// make the same file parse differently depending on the exporter's locale.
+describe('I6.7: the accounts export carries the raw domain value, not the translated copy', () => {
+  // Minimal and COMMA-FREE: cellFor splits on `,` with no quote awareness, so a
+  // fixture cell containing a comma would shift every column after it and the
+  // failure would look like a wrong value rather than a wrong parse.
+  const plainItem: AccountListItem = {
+    accountId: 'acct-csv',
+    appKey: 'google-workspace',
+    appName: 'Google Workspace',
+    email: 'ok@example.com',
+    displayName: 'Ok Person',
+    accountStatus: 'active',
+    isAdmin: false,
+    lastActivityAt: null,
+    lastSyncedAt: '2026-01-02T00:00:00.000Z',
+    link: null,
+    label: null,
+  };
+
+  it('emits the accountStatus column as the domain value', () => {
+    // Located THROUGH THE HEADER, not by substring and not by index. CSV_HEADER
+    // (csv-export.ts:73-88) and the fields array (:102-117) are two
+    // hand-maintained parallel lists with no gate that they stay aligned, so a
+    // column inserted into one and not the other must red here — a
+    // `toContain('"active"')` would survive that, since some other cell would
+    // still carry the string.
+    //
+    // The expectation is the LITERAL 'active'. Writing ACCOUNT_STATUSES[0]
+    // would rebuild the tautology this cell exists to break: the point is that
+    // the exported text is the domain value and not its translation, and a
+    // derived expectation cannot tell those apart.
+    expect(cellFor(buildAccountsCsv([plainItem]), 'accountStatus')).toBe('"active"');
   });
 });
 
@@ -306,14 +358,6 @@ describe('buildLicensesCsv', () => {
     expect(csv).toContain('"1234567890.99"');
     expect(csv).toContain('"10.50"');
   });
-
-  /** The cell under a named column, located through the header rather than by index. */
-  function cellFor(csv: string, column: string): string {
-    const [header, record] = csv.split('\r\n');
-    const index = header!.split(',').indexOf(`"${column}"`);
-    expect(index, `no ${column} column in the header`).toBeGreaterThanOrEqual(0);
-    return record!.split(',')[index]!;
-  }
 
   it.each(['purchased', 'unassigned', 'unitPrice', 'reclaimableValue'])(
     'exports an absent %s as empty rather than as zero',

@@ -6,6 +6,7 @@ import { StatusChip } from '@/components/StatusChip';
 import { LABEL_KIND_KEYS } from '@/lib/label-kinds';
 import { getTranslator } from '@/lib/i18n/server';
 import { identityStatusKeyFor, linkStatusKeyFor } from '@/lib/link-statuses';
+import { accountStatusKeyFor } from '@/lib/account-statuses';
 
 async function fetchIdentity(identityId: string): Promise<IdentityDetailResponse | null> {
   const res = await apiFetch(`/api/identities/${encodeURIComponent(identityId)}`);
@@ -95,7 +96,12 @@ export default async function IdentityDetailPage({
                 <tr key={account.accountId}>
                   <td className="px-3 py-2 text-neutral-700">{account.appName}</td>
                   <td className="px-3 py-2 text-neutral-700">{account.email ?? '—'}</td>
-                  <td className="px-3 py-2 text-neutral-700">{account.accountStatus}</td>
+                  <td className="px-3 py-2 text-neutral-700">
+                    {(() => {
+                      const key = accountStatusKeyFor(account.accountStatus);
+                      return key ? t(key) : account.accountStatus;
+                    })()}
+                  </td>
                   <td className="px-3 py-2">
                     {account.isAdmin && (
                       <span className="status-chip bg-neutral-200 text-neutral-700">{t('value.admin')}</span>

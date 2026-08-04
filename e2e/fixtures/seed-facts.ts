@@ -15,36 +15,68 @@
 // review routed the link-status vocabulary through the dictionary, and three
 // specs asserted the domain value as rendered text. Kept apart here so the next
 // copy change moves one field and not four call sites.
+//
+// RT9. `accountStatus` and `accountStatusText` are the same split for the
+// ACCOUNT status — the second vocabulary this file now mirrors. `accountStatus`
+// is the domain value (a second hand-synced copy of seed.ts's, the duplication
+// this header's first paragraph already declares); `accountStatusText` is what
+// a reader sees.
+//
+// `accountStatusText` holds the **ja** copy while its neighbour `chip` holds
+// **en**. The asymmetry is deliberate, not an oversight: the specs that consume
+// `chip` run under the default locale, and the two that consume
+// `accountStatusText` (i18n.spec.ts, I6.5/I6.6) assert under the `ja` cookie —
+// `en` account-status copy is title-case of the domain value, so an assertion
+// against it would pass in the reverted state and observe nothing. A reader who
+// assumes symmetry and writes 'Active' here breaks both specs and the unit-tier
+// binding cell that pins this field to the dictionary.
+//
+// Both names are camelCase and must stay so. The parser in
+// apps/api/test/seed-gate-agreement.test.ts reads this file with a greedy
+// `[^}]*` before a lowercase `status:`; a field spelled `account_status:` would
+// be captured as the LINK status for every entry and red that gate, in another
+// app, with a message about the shell seed gate. `accountStatus:` is safe
+// because the substring is `Status:`, capital S.
 export const SEEDED_ACCOUNTS = {
   matched: {
     email: 'alice.tanaka@demo.example',
     displayName: 'Alice Tanaka',
     status: 'matched',
     chip: 'Matched',
+    accountStatus: 'active',
+    accountStatusText: '有効',
   },
   ghost: {
     email: 'bob.suzuki@demo.example',
     displayName: 'Bob Suzuki',
     status: 'ghost',
     chip: 'Ghost',
+    accountStatus: 'active',
+    accountStatusText: '有効',
   },
   ambiguous: {
     email: 'shared.mailbox@demo.example',
     displayName: 'Shared Mailbox',
     status: 'ambiguous',
     chip: 'Ambiguous',
+    accountStatus: 'active',
+    accountStatusText: '有効',
   },
   orphan: {
     email: 'unknown.contractor@demo.example',
     displayName: 'Unknown Contractor',
     status: 'orphan',
     chip: 'Orphan',
+    accountStatus: 'active',
+    accountStatusText: '有効',
   },
   slackOrphan: {
     email: 'chris.wong@demo.example',
     displayName: 'Chris Wong',
     status: 'orphan',
     chip: 'Orphan',
+    accountStatus: 'active',
+    accountStatusText: '有効',
   },
 } as const;
 
@@ -65,9 +97,16 @@ export const SAAS_APP_DISPLAY_NAME = 'Google Workspace';
 
 // C6. The seed writes CONTRACTS and no new accounts, which is what makes the
 // licences cases reachable at all: every constraint behind round 2's
-// "not jointly reachable" finding is about accounts (this app's count is pinned
-// at 4 by apps.spec.ts, and a new unmatched account reds the tenant-scoped
-// orphan count in accounts.spec.ts). Nothing pins the number of applications.
+// "not jointly reachable" finding is about accounts: this app's count is pinned
+// at 4 by apps.spec.ts:213's hardcoded "Cannot delete — 4 accounts still
+// attributed", and a non-`active` account leaves ROLLUP_SQL's seat CTE and
+// moves the figures assert-seed-preserved.sh:116-117 pins. It is NOT the orphan
+// count — SEEDED_ORPHAN_EMAILS above is derived from this same fixture and
+// accounts.spec.ts:72-80 derives both its loop and its toHaveCount from it, so
+// an added orphan-linked account joins the set rather than breaking a count.
+// (That clause said the opposite until Phase 3 round 2; it was stale from
+// before SC2/C5 converted the assertion off toHaveCount(1).)
+// Nothing pins the number of applications.
 //
 // Three seats against four assigned, so the demo opens on an over-allocation —
 // and two of those four seats are reclaimable, so it is actionable from the

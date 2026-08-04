@@ -8,7 +8,7 @@ import {
   type IdentityView,
   type LinkResult,
 } from '@open-smp/matcher';
-import { MATCH_EVENT_SOURCE } from '@open-smp/api-types';
+import { MATCH_EVENT_SOURCE, type AccountStatus } from '@open-smp/api-types';
 import type { MatchJobData, MatchJobResult } from '@open-smp/queues';
 
 export interface MatchDeps {
@@ -28,7 +28,7 @@ interface AccountRow {
   id: string;
   email: string | null;
   display_name: string | null;
-  account_status: 'active' | 'suspended' | 'archived';
+  account_status: AccountStatus;
 }
 
 async function loadIdentities(tx: PoolClient): Promise<IdentityView[]> {

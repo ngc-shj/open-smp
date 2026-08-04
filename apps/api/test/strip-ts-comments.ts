@@ -11,11 +11,33 @@
  * is not a comment, and treating it as one swallows real code and reds the gate
  * for a reason unrelated to what it asserts.
  *
- * Not handled: a regex literal containing `/*`, which would open a phantom
- * block comment. Unreachable in the scanned files — neither contains a regex
- * literal, and `/a/*b/` is not valid TypeScript anyway — but stated rather
- * than assumed, since the next regex added to a scanned file is what would
- * turn this note into a false green.
+ * Not handled: **regex literals are not recognised at all.** The scanner knows
+ * quotes, backticks and comment openers and nothing else, so a `/…/` body is
+ * scanned as code. One cause, three symptoms: an opener inside it starts a
+ * phantom block comment; a `//` inside a character class starts a phantom line
+ * comment; and an odd number of quote characters inside it flips string/code
+ * phase for the rest of the file. Symptoms 1 and 2 DELETE real
+ * code — the false-GREEN direction for a negative check. Symptom 3 does the
+ * opposite first: the odd quote puts the scanner into string mode, so genuine
+ * comments downstream are emitted verbatim and the gate REDS on an intact file.
+ * It reaches false green only if a comment opener then sits inside a real
+ * string further down.
+ *
+ * A second, separate mechanism: a template literal whose `${…}` interpolation
+ * nests a backtick ends the string region early, so the remainder of the real
+ * string is scanned as code. THAT ONE IS THE LIVE HAZARD FOR THIS COPY —
+ * apps/api/src/routes/accounts.ts carries six template literals, all
+ * interpolating, the largest at :132-157.
+ *
+ * The amplifier both share: the `'` and `"` scan is NOT newline-terminated —
+ * it runs to the next matching quote anywhere in the file, or to EOF, so a
+ * stray quote from any source becomes a file-wide phase offset rather than a
+ * one-line one. Bounded fix: stop that scan at a newline.
+ *
+ * Neither is reachable today; that is a measurement, not a property. The
+ * earlier note here dismissed the class with `/a/*b/`, which is indeed invalid
+ * TypeScript — but `/[//]/` is valid and reproduces it, so the dismissal rested
+ * on the wrong example.
  */
 export function stripTsComments(source: string): string {
   let out = '';

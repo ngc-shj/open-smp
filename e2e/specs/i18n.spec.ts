@@ -151,6 +151,67 @@ test.describe('i18n', () => {
     }
   });
 
+  // I6.5/I6.6. The account-status VALUES, not the column heading — the heading
+  // has read Japanese since the i18n cycle, which is what made the English
+  // values under it read as an inconsistency. Per VE5 both pages are async
+  // server components that fetch, so no unit tier can reach their JSX: this is
+  // the only tier that observes the render.
+  //
+  // Under `ja` deliberately. The `en` copy is title-case of the domain value,
+  // so an `en` assertion would pass in the reverted state and observe nothing.
+  // It also avoids a collision `en` would have: identityStatus.active is
+  // already 'Active', while under `ja` the identity reads 在籍 and the account
+  // reads 有効.
+  //
+  // `?status=matched`, not a bare `/accounts`: apps/web/src/app/accounts/page.tsx:60
+  // resolves an unrecognised `?status=` to 'orphan', so a bare navigation
+  // renders only the orphan-linked accounts. Row-scoped on the seeded email —
+  // the locator identity.spec.ts:23,28 already proves against both pages.
+  test('the accounts table renders the account status in Japanese', async ({ page, context }) => {
+    await context.addCookies([{ name: 'locale', value: 'ja', url: 'http://localhost:3000' }]);
+    try {
+      await page.goto('/accounts?status=matched');
+
+      const row = page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.matched.email) });
+      await expect(row).toBeVisible();
+      // The seeded fixture's own copy, not a literal repeated here: a
+      // dictionary change moves one field in seed-facts.ts, and the unit-tier
+      // binding cell (apps/web/test/account-statuses.test.ts) keeps that field
+      // honest against the dictionary.
+      await expect(row).toContainText(SEEDED_ACCOUNTS.matched.accountStatusText);
+      // Replaced, not joined — and this is the half that reds on a reverted
+      // render site, where the cell still reads the raw domain value.
+      await expect(row).not.toContainText(SEEDED_ACCOUNTS.matched.accountStatus);
+    } finally {
+      await context.clearCookies({ name: 'locale' });
+    }
+  });
+
+  test('the identity detail page renders the account status in Japanese', async ({
+    page,
+    context,
+  }) => {
+    // Its own navigation rather than a continuation of the test above: the two
+    // render sites are separate expressions in separate files, and a shared
+    // navigation would make one failure hide the other.
+    await context.addCookies([{ name: 'locale', value: 'ja', url: 'http://localhost:3000' }]);
+    try {
+      await page.goto('/accounts?status=matched');
+      await page
+        .getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.matched.email) })
+        .getByRole('link')
+        .click();
+      await expect(page).toHaveURL(/\/identities\/[0-9a-f-]{36}$/);
+
+      const row = page.getByRole('row', { name: new RegExp(SEEDED_ACCOUNTS.matched.email) });
+      await expect(row).toBeVisible();
+      await expect(row).toContainText(SEEDED_ACCOUNTS.matched.accountStatusText);
+      await expect(row).not.toContainText(SEEDED_ACCOUNTS.matched.accountStatus);
+    } finally {
+      await context.clearCookies({ name: 'locale' });
+    }
+  });
+
   test('renders no untranslated-key marker under the DEFAULT locale', async ({ page }) => {
     // Repointed. This asserted the navbar under `ja`, which the body-copy loop
     // above already covers on the same page — the navbar is inside the body, so

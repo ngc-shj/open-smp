@@ -658,6 +658,13 @@ describe('C3 positive controls: inventory, reconciliation, canaries, environment
       // changes, which is a repository-wide relation rather than the behaviour
       // of one module. The addition-guard below caught it.
       'packages/crypto/test/crypto.test.ts',
+      // C6/I6.11, the account-status cycle. The twin of link-statuses.test.ts
+      // above: it reads e2e/fixtures/seed-facts.ts and binds that fixture's
+      // hand-synced ja copy to apps/web's dictionary, which is a repository-wide
+      // relation rather than the behaviour of one module. Without it a copy
+      // change reds only behind a full compose boot. The addition-guard below
+      // caught it.
+      'apps/web/test/account-statuses.test.ts',
     ];
     const unit = await rootListing('unit');
     expect(CONTROL_FILES.filter((f) => !unit.has(f)), 'security-control test files no longer assigned').toEqual([]);

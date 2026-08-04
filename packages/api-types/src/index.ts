@@ -15,9 +15,12 @@
 //
 // Frozen for the same reason as ACCOUNT_LABEL_KINDS below: `as const` is erased
 // at runtime, and the C39 boundary gate requires every array this package
-// exports to be frozen. Note the freeze does NOT protect z.enum() — that
-// snapshots its members at construction — but it is what keeps a live-read
-// guard (isAccountLabelKind's shape) honest if one is added here later.
+// exports to be frozen. The freeze IS live, and bounded: `z.enum(LINK_STATUSES)`
+// at apps/api/src/routes/accounts.ts:21 holds this array by reference and builds
+// its member Set lazily, on the first STRING-VALUED parse of that field — so
+// until that parse a push would widen the validator, and the freeze is what
+// makes the push throw instead. "Could widen", not "would". The same bound is
+// stated where it is observed, in packages/connectors/core/test/.
 export const LINK_STATUSES = Object.freeze([
   'matched',
   'orphan',
@@ -26,6 +29,16 @@ export const LINK_STATUSES = Object.freeze([
 ] as const);
 
 export type LinkStatus = (typeof LINK_STATUSES)[number];
+
+// Frozen for the same reason as LINK_STATUSES. Declaration order is the
+// Postgres enum's order (migration 0001_init.sql:8), which has shipped.
+export const ACCOUNT_STATUSES = Object.freeze([
+  'active',
+  'suspended',
+  'archived',
+] as const);
+
+export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 
 // Frozen for the same reason as LINK_STATUSES. Declaration order is the
 // Postgres enum's sort order, so it must match migrations/0006_saas_contracts.sql.

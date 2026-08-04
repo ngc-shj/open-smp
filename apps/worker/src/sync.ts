@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import type { AccountStatus } from '@open-smp/api-types';
 import {
   parseCredentialRecord,
   rawAccountSchema,
@@ -66,7 +67,7 @@ async function upsertAccount(
     externalId: string;
     email: string | null;
     displayName: string | null;
-    accountStatus: 'active' | 'suspended' | 'archived';
+    accountStatus: AccountStatus;
     isAdmin: boolean;
     lastActivityAt: string | null;
   },
