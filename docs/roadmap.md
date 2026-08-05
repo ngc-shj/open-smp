@@ -22,14 +22,20 @@ from the README:
 | layer | what exists |
 |---|---|
 | tables | `tenants` `users` `sessions` `identities` `saas_apps` `saas_accounts` `account_links` `account_labels` `discovery_events` `saas_contracts` `tenant_context` |
-| connector | Google Workspace only — `users.list` under `admin.directory.user.readonly`, and `tokens.list` under `admin.directory.user.security` on its own JWT client |
-| worker | `sync`, `match`, `rotate-credentials` |
-| API | login/logout, accounts, identities, saas-apps, account-labels (+bulk), events (+cursor), hr-import, contract-import, licenses, sync-match, token-audit |
+| connector | **two.** Google Workspace — `users.list` under `admin.directory.user.readonly`, `tokens.list` under `admin.directory.user.security` on its own JWT client, `tokenCapability: 'per-user-grants'`. Slack — `users.list` on an `apikey` credential, `tokenCapability: 'none'` |
+| worker | `sync`, `match`, `token-audit`, `rotate-credentials` |
+| API | login/logout, accounts, identities, saas-apps (GET/POST/PATCH/DELETE), account-labels (+bulk), events (+cursor), jobs, hr-import, contract-import, licenses, sync, match, token-audit |
 | web | login, home, accounts, apps, events, identity detail, import, licenses, discovery |
 
 Derived, not recalled: the tables from `CREATE TABLE` across the migrations, the API
 from the exact-equality route sweep in `api.integration.test.ts` (which is asserted,
-so it cannot drift from the app), the pages from `apps/web/src/app/**/page.tsx`.
+so it cannot drift from the app), the pages from `apps/web/src/app/**/page.tsx`, the
+connectors from each implementation's own `tokenCapability` and `authKind` fields.
+
+This re-measurement was nine merges late, which is the same decay `SC65` names and
+the second occurrence of it. The connector row still said "Google Workspace only"
+after a second connector shipped, and the item the order called *next* had been
+closed four merges earlier. Nothing reads this file, so nothing said so.
 
 `tenant_context` is not a domain table — it is `SCL8`'s write-once record of the
 tenant a transaction claimed, which exists so a later `set_config` cannot re-point
@@ -60,7 +66,7 @@ approximated.
 | discovery of unmanaged apps (multi-route) | yes — accounting/ERP, extension | yes | yes — Zluri claims 9 routes | **one route: OAuth grants** |
 | **cost and licence optimisation** | yes | yes — unused/duplicate licences surfaced | yes, and it is the headline | **built, from contracts** — not from usage |
 | **lifecycle automation (grant / revoke on leave)** | yes — offboard in a few clicks | yes, and it is the selling point | yes | **detects, cannot act** |
-| connector breadth | 200+ | many | many | **1** |
+| connector breadth | 200+ | many | many | **2** |
 | device management | — | yes (specific to the JP market) | — | out of scope here |
 
 Sources: [Admina](https://admina.moneyforward.com/us),
@@ -90,6 +96,10 @@ it reports what ONE audit run observed rather than a durable inventory (`SCT3`).
 ## Order
 
 **SC5 → SC3 → SC2 → SC4.** Peripheral work waits behind all four.
+
+**Three of the four are done. SC4 is next, and it is the first item in this
+ordering that nothing else is waiting on** — SC5, SC3 and SC2 each existed partly
+to make SC4 worth more, and all three have paid out.
 
 1. ~~**SC5 — licence and cost.**~~ **Done** — `docs/archive/review/saas-license-cost-plan.md`,
    revision 6; contracts C1–C6, shipped across #15, #16, #17 and #18.
@@ -121,50 +131,63 @@ it reports what ONE audit run observed rather than a durable inventory (`SCT3`).
    It also confirmed the entry's own caution about evidence. No test in this
    repository can show the Google call works (no real tenant), so the connector
    is proven by injection and the plan says so rather than implying otherwise.
-3. **SC2 — a second connector.** *Next, and blocked on one input this repository
-   cannot supply: which provider.* The reason it was third rather than first is
-   argued below, and SC3's completion changed the balance — see the second data
-   point there.
+3. ~~**SC2 — a second connector.**~~ **Done** —
+   `docs/archive/review/second-connector-plan.md`; contracts C1–C6, shipped
+   across #39, #40, #41, #42 and #43.
 
-   **What the choice decides is not effort but what `SCT1` can learn.** A
-   capability vocabulary designed against implementations that all *have* every
-   capability is a rename of "optional method": the only thing that makes it
-   non-vacuous is a connector that legitimately **lacks** one. So a second
-   directory provider — one with both `listUsers` and a grants endpoint — would
-   validate the interface least, while a provider with accounts and no
-   third-party-grant concept is the one that forces the vocabulary to say
-   something. `authKind` is the same shape: `'apikey'` and `'scim'` are declared
-   and neither has ever been implemented.
+   **Chosen: Slack**, on what it could *disprove* rather than on market share.
+   Microsoft 365 was the higher-value integration and the one that would have
+   taught `SCT1` nothing, because it has both capabilities and maps onto
+   `RawAccount` without friction.
 
-   Two things are true whatever is chosen. No test here can show a provider call
-   works — there is no real tenant, so connectors are proven by injection, and
-   the plan must say so rather than implying otherwise. And the second
-   account-bearing application reds `apps.spec.ts`'s account count and
-   `accounts.spec.ts`'s tenant-scoped orphan count (`SCL16`), which the plan has
-   to decide rather than discover.
+   The bet paid out on both axes the entry named, which is why they were written
+   down before the work rather than after it.
 
-   **Chosen: Slack**, on the argument above rather than on market share —
-   Microsoft 365 is the higher-value integration and the one that would teach
-   `SCT1` nothing, because it has both capabilities and maps onto `RawAccount`
-   without friction. Slack has accounts and no third-party-grant concept, which
-   is the negative case a capability vocabulary needs to be more than a rename;
-   it is the first `authKind: 'apikey'` implementation; and it is not an identity
-   provider, so whether `RawAccount`'s `accountStatus` / `isAdmin` survive the
-   mapping is itself the measurement. If they do not, that is the interface
-   defect this ordering has been waiting to surface.
-4. **SC4 — lifecycle automation.** Last because it is the only item that writes to a
-   customer's identity provider. It needs write scopes, a confirmation and audit
-   path, and a failure model for partial revocation — and it is worth far more once
-   SC5 can say which access costs money and SC3 can say which applications exist.
+   **`SCT1` is closed.** `tokenCapability` is a REQUIRED field on the interface —
+   `'per-user-grants'` from Google Workspace, `'none'` from Slack — and a test
+   asserts it agrees with whether `listTokens` is present, which the type system
+   cannot do because an optional method's presence is not visible in the type.
+   The vocabulary is non-vacuous *only* because one implementation answers "no".
+   Designed against two connectors that both had grants, it would have been a
+   rename of "optional method", which is exactly what the entry predicted.
+
+   **The `accountStatus` measurement came back the way it warned it might.** The
+   field did not survive the mapping: it had no shared domain, so each connector
+   was free to invent its own strings, and the UI was translating whatever
+   arrived. #45 gave it one. That is the interface defect this ordering was
+   waiting to surface — surfaced at the price of a second connector rather than a
+   fifth.
+
+   `authKind: 'apikey'` now has its first implementation. `'scim'` still has
+   none, and is still a declared value nothing has ever exercised.
+4. **SC4 — lifecycle automation.** **Next.** It is last in this ordering and
+   first in what remains: the only item that writes to a customer's identity
+   provider. It needs write scopes, a confirmation and audit path, and a failure
+   model for partial revocation.
+
+   Its three predecessors were ordered ahead of it partly to make it worth more,
+   and each has paid: SC5 can say which access costs money, SC3 can say which
+   applications exist, and SC2 established that a connector may legitimately
+   answer "no" to a capability — which is the vocabulary a revoke path needs
+   before it is written, not after. Slack has no third-party-grant concept and
+   Google Workspace does; a lifecycle action that assumes every connector can do
+   everything would repeat `SCT1` one layer up.
+
+   **What blocks it is not a product decision this time.** SC2 was blocked on
+   *which provider*, which no artifact here could answer. SC4 is blocked on
+   nothing external — it is expensive and dangerous, which is a different thing
+   from being blocked, and the plan is where that is priced.
 
 ### The alternative, and what it silently satisfies
 
-**Doing SC2 first is a real argument, not a strawman.** `packages/connectors/core`
-defines the connector interface and exactly one implementation has ever been written
-against it. An abstraction validated by a single implementation is not validated, and
-every feature added on top of it raises the cost of correcting it later. That is the
-thing the chosen order does not satisfy: it spends SC5 and SC3 on an interface whose
-shape is still an assumption.
+**Doing SC2 first was a real argument, not a strawman**, and it is kept here in the
+tense it was made in, because the outcome below is only worth anything against what
+was actually claimed beforehand. `packages/connectors/core` defined the connector
+interface and exactly one implementation had ever been written against it. An
+abstraction validated by a single implementation is not validated, and every feature
+added on top of it raises the cost of correcting it later. That was the thing the
+chosen order did not satisfy: it spent SC5 and SC3 on an interface whose shape was
+still an assumption.
 
 **Two data points since, and they point in opposite directions.**
 
@@ -182,37 +205,57 @@ asks. SC3 declined to invent one, because inventing it against one implementatio
 is the same error one layer up.
 
 So the ordering's bet paid off in the direction it claimed — the defect surfaced
-at a capability's cost rather than a connector's — and the debt it named is now
-concrete and waiting for SC2 as `SCT1`. What remains true is that the interface is
-still unvalidated: it now has one implementation and one *recorded* gap.
+at a capability's cost rather than a connector's — and the debt it named went to
+SC2 as `SCT1`.
 
-It is third anyway because SC3 exercises that interface on a second *capability*
-(tokens rather than users) inside the connector that exists, which surfaces
-interface defects at a fraction of a second connector's cost, and because a second
-connector multiplies inventory the product still cannot price or act on.
+**SC2 has since settled the argument, and not entirely in the ordering's favour.**
+The interface now has two implementations that *disagree* about a capability,
+which is the only configuration in which a capability vocabulary means anything:
+`tokenCapability` and the first `authKind: 'apikey'` came out of that
+disagreement, and the `accountStatus` domain came out of the mapping. Doing SC2
+first would have bought those findings three cycles earlier. What it would have
+cost is what the alternative never said out loud: SC5 and SC3 would have waited
+behind a provider choice nothing in this repository could make, and the record
+shows that choice stayed open long enough for a whole i18n cycle to run as the
+contingency.
 
-**Trigger that flips this order:** if SC5 or SC3 turns out to need a change to the
-connector interface itself — not an addition to it — stop and do SC2 first, because
-that is the evidence the interface is being designed against one example.
+It was third because SC3 could exercise the same interface on a second
+*capability* (tokens rather than users) inside the connector that already
+existed, at a fraction of a second connector's cost.
+
+What remains unvalidated is narrower than it was, and it is exactly what SC4
+walks into: two implementations, both directory-shaped, **both read-only**.
+Nothing in the connector interface has ever been exercised by a write.
+
+~~**Trigger that flips this order:**~~ **Spent.** It said: if SC5 or SC3 needs a
+change to the connector *interface* rather than an addition to it, stop and do SC2
+first. SC5 never touched the interface and SC3 added to it without changing it, so
+the trigger was weighed twice and fired neither time. SC2 has since run in its
+ordered position.
 
 ## Deliberately not next
 
 - **Browser extension (SC1)** — one discovery route among several, and the most
   expensive: a separate MV3 build, a separate distribution channel, and a separate
-  security review. SC3 buys discovery first at a fraction of the cost.
+  security review. SC3 bought discovery first at a fraction of that cost, and
+  `/discovery` now answers *"what exists that nobody registered?"* from OAuth
+  grants. The extension answers a **different** question — what a browser actually
+  visits — so it is not made redundant by SC3, only outranked by it. It stays
+  behind SC4 on the same argument: SC4 acts on access the product can already see,
+  and SC1 widens what it can see before anything can act.
 - ~~**i18n**~~ — **Done**, `docs/archive/review/i18n-plan.md`, revision 5;
   contracts C1–C3 shipped across #35, #36 and #37. The UI has a dictionary, two
   locales, a switch, and a ratcheted count of what is left — which is zero, with
   one entry retained that is the detector's own residue rather than copy.
 
   **It never claimed to earn its way past SC2, and it did not.** It ran because
-  SC2 was blocked on a product decision nothing in this repository can make
-  (*which* second connector) and i18n was blocked on nothing. That was a
-  contingency, and **the contingency is now spent**: there is no second
-  unblocked item of comparable size behind it. If the provider choice is still
-  open, the next cycle has no equivalent thing to do instead, and the honest
-  options are to make the choice, or to pick from the peripheral list below
-  knowing that is what is being done.
+  SC2 was blocked on a product decision nothing in this repository could make
+  (*which* second connector) and i18n was blocked on nothing.
+
+  **The condition that justified it is gone.** The provider choice was made,
+  SC2 ran and closed, and SC4 is blocked on nothing external. There is no
+  contingency slot open now: work that is not SC4 is a choice to do something
+  other than the next item, which the list below is for.
 - **Hierarchical tenants (SC6)**, **OIDC/Keycloak SSO for the app itself (SC7)**,
   **connection pooler support (SC9)**, **`discovery_events` retention (SC10)** — all
   still deferred on their original terms.
